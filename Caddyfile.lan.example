@@ -1,0 +1,13 @@
+# Example unified LAN endpoint. Replace the listen address and TeslaMateAPI
+# upstream for your host. My T should use http://192.168.1.10:8080 as its
+# TeslaMate base URL in this example.
+http://192.168.1.10:8080 {
+	@my_t_companion path_regexp ^/api/v1/(capabilities|cars/[0-9]+/states|cars/[0-9]+/navigation/current-drive)$
+	handle @my_t_companion {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8081
+	}
+}

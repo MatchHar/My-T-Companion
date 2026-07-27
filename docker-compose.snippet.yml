@@ -1,0 +1,31 @@
+  mycarmate-states-api:
+    build: /opt/teslamate/my-t-parking-monitor
+    image: myt/parking-monitor:1.4.1
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    depends_on:
+      - database
+    environment:
+      - DATABASE_USER=teslamate
+      - DATABASE_PASS=${DATABASE_PASS}
+      - DATABASE_NAME=teslamate
+      - DATABASE_HOST=database
+      - PGOPTIONS=-c default_transaction_read_only=on
+      - API_TOKEN=${MY_T_API_TOKEN}
+      - AUTH_PROBE_URL=${AUTH_PROBE_URL:-}
+      - TZ=${TZ:-UTC}
+    ports:
+      - "127.0.0.1:8083:8080"
+    healthcheck:
+      test: ["CMD", "/app/states-api", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

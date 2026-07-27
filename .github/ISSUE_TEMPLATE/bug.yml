@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible Companion installation or API problem
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, VINs, locations, `.env` files, or raw database exports.
+  - type: input
+    id: companion-version
+    attributes:
+      label: Companion version
+      placeholder: "1.4.1"
+    validations:
+      required: true
+  - type: input
+    id: teslamate-version
+    attributes:
+      label: TeslaMate version
+    validations:
+      required: true
+  - type: dropdown
+    id: proxy
+    attributes:
+      label: Reverse proxy
+      options:
+        - Caddy
+        - Nginx
+        - Traefik
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Redacted reproduction steps and output
+      description: Remove tokens, hostnames, IPs, VINs, coordinates, and personal data.
+    validations:
+      required: true

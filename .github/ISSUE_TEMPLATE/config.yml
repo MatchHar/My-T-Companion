@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/MatchHar/My-T-Parking-Monitor/security/advisories/new
+    about: Privately report vulnerabilities. Never post credentials or vehicle data publicly.

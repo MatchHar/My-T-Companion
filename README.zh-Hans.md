@@ -1,0 +1,291 @@
+# My T VPS Companion
+
+[English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
+
+> 当前版本：`1.4.1`。项目正在私有仓库中验证，完成公开发布准备后再开放给所有用户。
+>
+> App Store 当前公开版本为 My T 3.10，尚未提供停车监控接入。提前安装本组件
+> 不会显示相关页面；请等待 My T 版本说明明确列出支持后再用于日常使用。
+
+**本组件专为
+[My T iPhone App 开发，可在 App Store 下载](https://apps.apple.com/cn/app/my-t/id6780299502)。**
+如果您是从 TeslaMate 项目找到这里，请先通过此链接确认并下载配套的 My T App。
+
+My T 的完整产品介绍、TeslaMateAPI 部署、连接安全与故障排查，请查看
+[My T 公开文档仓库](https://github.com/MatchHar/My-T-App)。
+
+My T VPS Companion 是部署在 TeslaMate 服务器上的可选独立组件，为 My T
+提供完整的车辆状态历史和可靠的实时行驶轨迹。长期停车监控与实时导航共用
+同一个容器、认证方式、安装命令和更新流程。
+
+组件只读取现有 TeslaMate PostgreSQL 数据库，不修改 TeslaMate、不创建数据表，
+也不会复制、删除或改写车辆历史。TeslaMate 数据库始终是唯一数据来源，历史
+保留时间取决于用户自己的 TeslaMate 数据库与备份策略。
+
+请在 **TeslaMate 已部署并正常运行之后** 安装本组件。它不能替代 TeslaMate
+或 TeslaMateAPI。
+
+## 为什么 My T 需要这个补充组件
+
+[My T](https://apps.apple.com/cn/app/my-t/id6780299502) 是用于查看用户自建
+TeslaMate 数据的 iPhone App。普通行程、充电、统计和当前车辆信息继续由标准
+TeslaMate/TeslaMateAPI 提供，本组件只补充两个手机端无法可靠还原的场景：
+
+1. **长期停车监控**：需要完整的 `online`、`offline`、`asleep` 状态顺序，
+   以及每次状态切换前后的真实电量和续航。App 关闭期间发生的事件无法由手机
+   事后重建。
+2. **正在行驶时的实时导航**：需要 TeslaMate 保存的最早真实 GPS 点和后续
+   增量轨迹。My T 打开时看到的位置不能冒充真实行程起点。
+
+VPS Companion 只提供这些缺失的只读能力。TeslaMate 仍是唯一数据来源；
+My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
+
+### My T 功能对照
+
+| My T 功能 | 未部署组件 | 已部署组件 |
+| --- | --- | --- |
+| 行程、充电、统计 | 使用标准 TeslaMate API，正常可用 | 保持不变 |
+| 基础停车历史 | 根据普通行程和停车记录显示 | 保持不变 |
+| 休眠与唤醒流水 | 可能不完整，My T 不会估算缺失事件 | 显示 TeslaMate 真实保存的完整状态顺序 |
+| 停车电量与续航变化 | 仅在已有真实数据时显示 | 显示切换前后 30 分钟内的真实边界观测 |
+| 停车途中充电 | 充电记录正常可查 | 可与停车状态流水结合显示 |
+| 正在行驶地图 | 没有真实起点时只显示车辆位置和速度 | 显示不可变真实起点及增量真实轨迹 |
+
+本组件完全可选。My T 会自动检测；用户不需要在 App 内新增服务器、账号或车辆连接。
+
+## TeslaMate 部署在家庭或私人内网
+
+本组件可以读取部署在内网的 TeslaMate 数据库，但 My T 必须通过**同一个统一
+访问地址**连接 TeslaMateAPI 和本组件。My T 会在已经配置的 TeslaMate 服务器
+地址上检测 `/api/v1/capabilities`，不需要、也不会另外配置一个组件地址。
+
+| 内网架构 | 使用结果 |
+| --- | --- |
+| TeslaMateAPI 与本组件经过同一个 Caddy/Nginx/Traefik 地址转发 | 支持 |
+| My T 直接连接 `http://内网IP:8081`，没有反向代理 | TeslaMate 基础功能可用，但无法访问本组件 |
+| 通过 VPN、Tailscale 或其他私人网络访问同一个反向代理地址 | 支持 |
+
+组件的 `8083` 端口会有意保持只绑定 `127.0.0.1`，不能直接开放到内网或公网。
+原来直接使用 `8081` 的用户，需要先增加一个统一反向代理：将三个组件接口转发
+到 `127.0.0.1:8083`，其余 TeslaMateAPI 请求转发到 `127.0.0.1:8081`，然后
+在 My T 中使用这个统一地址。仓库内的 `Caddyfile.snippet` 已列出所需接口。
+
+安装程序可以自动处理能够识别的系统 Caddy。Nginx、Traefik、容器版 Caddy 或
+自定义内网网关需要管理员手动加入路由；只安装容器、不配置统一入口时，My T
+不会显示增强功能。
+
+## 数据如何流动
+
+```text
+车辆 → TeslaMate → PostgreSQL
+                       │ Docker 内网只读连接
+                       ▼
+               My T VPS Companion
+                       │ 现有 HTTPS/API 认证
+                       ▼
+                    My T App
+```
+
+- Tesla 账号授权始终由 TeslaMate 管理。
+- VPS Companion 不连接 Tesla，也不会唤醒车辆。
+- My T 不会把车辆历史转发到开发者运营的云端。
+- 数据只在用户自己的 VPS 与 iPhone 之间，通过现有安全域名或私人网络传输。
+
+## 哪些用户需要安装
+
+符合以下条件时建议安装：
+
+- 在 My T 中使用自建 TeslaMate 数据源。
+- 希望查看可靠的长期停车休眠/唤醒历史，或完整的正在行驶轨迹。
+- 可以管理 TeslaMate Docker 主机并执行 `sudo` 命令。
+- TeslaMate API 已通过 HTTPS、VPN 和认证进行保护。
+
+以下情况不需要安装：
+
+- My T 只连接 Tessie。
+- 只需要基础行程、充电和统计功能。
+- 无法管理 TeslaMate 服务器。
+
+组件不会提高 TeslaMate 的采集能力，只能返回 TeslaMate 实际保存的数据。
+
+## 校验后安装固定版本
+
+安装使用固定 GitHub Release，不直接执行会变化的 `main` 分支。私有测试期间：
+
+```sh
+version=1.4.1; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+```
+
+仓库及正式 Release 公开后：
+
+```sh
+version=1.4.1; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+```
+
+只有本地服务和 My T 统一入口都验证成功，安装器才报告完整成功。手动使用
+Nginx、Traefik 或容器代理时，必须加入并验证仓库提供的路由。安装器还会：
+
+- 自动检测 TeslaMate 数据库容器和 Docker 网络。
+- 复用现有数据库密码与 API 认证，不要求在 My T 中增加第二套账号。
+- 支持 Bearer Token、Basic Auth、`X-API-Token` 和 Cloudflare Access
+  Service Token。
+- 在修改反向代理前创建备份。
+- 检查现有 `/api/ping` 是否受到认证保护；如果公开可访问则拒绝安装。
+- 自动处理可识别的系统 Caddy 配置。
+- 对无法安全识别的 Nginx、Traefik、容器化 Caddy 或自定义布局停止自动修改，
+  并提示手动加入 `Caddyfile.snippet` 中的路由。
+
+## 提供的功能
+
+- 显示 TeslaMate 真实记录的 `online`、`offline`、`asleep` 等状态区间。
+- 显示状态开始前与结束后的真实电量百分比和额定续航。
+- 边界数据携带真实观测时间；仅使用状态切换前后 30 分钟内的采样。
+- 没有真实采样时显示未知，不估算唤醒事件、电量或续航消耗。
+- 提供能力检测接口，让 App 区分“未部署”和“已部署但没有事件”。
+- 实时计算仍在进行的停车状态，建议 App 每 30 秒刷新。
+- 提供当前 TeslaMate 行程 ID、不可变的最早真实 GPS 点和带时间的轨迹点。
+- 支持 `afterPointId` 增量分页，避免手机反复下载完整行驶轨迹。
+- TeslaMate 已建立行程但尚未保存有效 GPS 点时，明确返回
+  `waiting_for_positions`。
+- 不会把 App 打开时看到的车辆位置伪装成真实行程起点。
+
+## API 接口
+
+- `GET /api/v1/capabilities`
+- `GET /api/v1/cars/{car_id}/states?startDate=...&endDate=...`
+- `GET /api/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
+- `GET /api/healthz`
+
+所有车辆数据与能力接口都使用现有 TeslaMate API 认证。`/api/healthz`
+不包含车辆数据，并且服务端口只绑定到本机回环地址。
+
+## 安全部署要求
+
+- Linux 主机已安装 Docker Engine 与 Docker Compose v2。
+- TeslaMate Docker Compose 已正常运行。
+- PostgreSQL 服务默认名为 `database`。
+- TeslaMate `.env` 中存在 `DATABASE_PASS`。
+- 现有 TeslaMate API 已通过 HTTPS、VPN 或 Cloudflare Access 保护。
+- 端口 `8083` 必须绑定为 `127.0.0.1:8083`，不能直接开放到公网。
+
+1.4.1 默认安全措施：
+
+- 容器以非 root 用户 UID 10001 运行。
+- 根文件系统只读。
+- 移除全部 Linux capabilities。
+- 启用 `no-new-privileges`。
+- PostgreSQL 会话强制设置
+  `PGOPTIONS=-c default_transaction_read_only=on`。
+- 健康检查同时验证服务和数据库连接。
+- HTTP 服务设置读取、写入、请求头和空闲超时。
+- API Token 使用固定时间比较。
+
+详细要求请阅读 [SECURITY.md](SECURITY.md)。
+
+## 验证
+
+```sh
+curl --fail http://127.0.0.1:8083/api/healthz
+curl --fail \
+  -H "Authorization: Bearer ${MY_T_API_TOKEN}" \
+  http://127.0.0.1:8083/api/v1/capabilities
+```
+
+第一条应返回 `OK`。第二条应包含：
+
+- `parking_state_history`
+- `state_boundary_battery`
+- `state_boundary_rated_range`
+- `current_drive_trajectory`
+
+还应确认未认证请求被拒绝：
+
+```sh
+curl -o /dev/null -w "%{http_code}\n" \
+  http://127.0.0.1:8083/api/v1/capabilities
+```
+
+预期返回 `401`。
+
+## 更新
+
+已安装的更新程序会下载最新固定版本、校验 SHA-256、备份现有安装，再运行
+可重复执行的安装程序：
+
+```sh
+sudo /opt/my-t-parking-monitor/update.sh
+```
+
+指定版本可执行：
+`sudo MY_T_VERSION=1.4.1 /opt/my-t-parking-monitor/update.sh`。
+
+组件没有独立数据库或数据迁移。更新不会改变 TeslaMate 历史数据。
+
+## 卸载或回滚
+
+安装器管理的部署可执行：
+
+```sh
+sudo /opt/my-t-parking-monitor/uninstall.sh
+```
+
+卸载脚本会停止并移除独立 Companion 容器，以及安装器创建的 Caddy 路由；
+`/opt/my-t-parking-monitor` 会保留以便恢复。手动配置的反向代理路由需要手动删除。
+卸载不影响 TeslaMate 主服务及其数据库。
+
+## 数据含义
+
+对于 `offline` 或 `asleep` 区间：
+
+- `start_telemetry` 是车辆休眠前最后一次真实观测。
+- `end_telemetry` 是 TeslaMate 在车辆恢复后记录的第一次真实观测。
+
+两者差值是“观测到的停车消耗”，不是估算值。正在进行的休眠在车辆真正唤醒前
+不会产生结束观测。
+
+## 未安装时的 App 行为
+
+My T 通过 `/api/v1/capabilities` 自动检测组件。未安装或不可用时：
+
+- 基础 TeslaMate 行程、充电和停车记录继续正常工作。
+- App 会说明完整休眠、唤醒、电量与续航流水需要可选 VPS 组件。
+- App 不会虚构缺失事件或估算电量消耗。
+- 实时导航没有足够真实轨迹点时，只显示真实车辆位置和速度，不伪造起点或路线。
+
+## 相容性与版本记录
+
+- [相容性与发布验证](COMPATIBILITY.md)
+- [安全政策](SECURITY.md)
+- [版本更新记录](CHANGELOG.md)
+- [MIT License](LICENSE)
+
+## 项目范围与独立性声明
+
+这是专为 My T 设计的独立补充项目，与 Tesla, Inc.、TeslaMate 官方维护者及
+TeslaMateAPI 维护者不存在隶属或官方认可关系。组件不保存 Tesla 账号凭证、
+不发送车辆控制命令、不唤醒车辆，也不替代 TeslaMate 官方部署。
+
+## 常见问题
+
+### 会修改或复制 TeslaMate 历史吗？
+
+不会。所有查询都在 PostgreSQL 只读事务模式下执行。组件没有自己的数据库、
+数据迁移或后台采集器。
+
+### 可以找回以前缺失的唤醒记录吗？
+
+可以显示仍保存在 TeslaMate `states` 表中的历史事件，但无法恢复 TeslaMate
+从未采集或已经按用户保留策略删除的数据。
+
+### 会唤醒车辆或增加停车耗电吗？
+
+不会。组件只读取数据库，不调用任何车辆控制接口。
+
+### 安装后需要修改 My T 设置吗？
+
+通常不需要。安装器复用现有 TeslaMate API 域名和认证，My T 会自动检测能力接口。
+
+### 卸载会影响 TeslaMate 吗？
+
+不会。Companion 是独立 Compose 项目；卸载脚本只移除自身容器和安装器管理的
+代理路由，TeslaMate 主服务及数据库保持不变。
