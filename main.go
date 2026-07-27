@@ -20,7 +20,7 @@ import (
 const headerAPIVersion = "API-Version"
 
 var (
-	apiVersion       = "1.4.1"
+	apiVersion       = "1.5.0"
 	db               *sql.DB
 	apiToken         string
 	authProbeURL     string
@@ -28,6 +28,7 @@ var (
 	location         *time.Location
 	carIDPath        = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
 	currentDrivePath = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
+	softwarePush     *softwareNotificationMonitor
 )
 
 type telemetrySample struct {
@@ -123,11 +124,15 @@ func main() {
 
 	initDB()
 	defer db.Close()
+	softwarePush = newSoftwareNotificationMonitorFromEnvironment()
+	softwarePush.start()
+	defer softwarePush.stop()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", handlePing)
 	mux.HandleFunc("/api/healthz", handleHealth)
 	mux.HandleFunc("/api/v1/capabilities", handleCapabilities)
+	mux.HandleFunc("/api/v1/notifications/software-update/status", handleSoftwareNotificationStatus)
 	mux.HandleFunc("/", handleStates)
 
 	addr := ":8080"
@@ -203,6 +208,8 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"current_drive_trajectory",
 			"immutable_current_drive_start",
 			"incremental_drive_points",
+			"vehicle_software_update_events",
+			"apns_relay_delivery_status",
 		},
 		"data_policy":                 "teslamate_read_only_observations",
 		"storage_mode":                "teslamate_source_of_truth",
@@ -217,6 +224,22 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"updates",
 		},
 	})
+}
+
+func handleSoftwareNotificationStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	if softwarePush == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, softwarePush.status())
 }
 
 func handleStates(w http.ResponseWriter, r *http.Request) {

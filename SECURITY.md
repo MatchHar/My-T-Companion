@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published release. Version 1.4.1 is
-currently being validated privately before public availability.
+Security fixes are provided for the latest published release. Version 1.5.0 is
+the current source version.
 
 ## Deployment requirements
 

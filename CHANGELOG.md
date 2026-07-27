@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0
+
+- Subscribe to TeslaMate's genuine MQTT software-update fields.
+- Persist per-car state and delivered event IDs across container restarts.
+- Send privacy-minimal, HMAC-SHA256 signed events to a configured HTTPS My T
+  APNs relay with bounded retry.
+- Add authenticated notification status at
+  `/api/v1/notifications/software-update/status`.
+- Keep push disabled unless installation ID, relay URL, and relay secret are
+  configured together. Payloads exclude VIN, location, TeslaMate credentials,
+  battery, route, and driving history.
+
 ## 1.4.1
 
 ### Added

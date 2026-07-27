@@ -2,7 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 目前公開版本：`1.4.1`，這是首個提供 SHA-256 校驗安裝包的公開版本。
+> 目前原始碼版本：`1.5.0`。車輛軟體原生推送為選用功能，在 My T 提供安全配對前
+> 保持關閉。
 >
 > App Store 目前公開版本為 My T 3.10，尚未提供停車監控整合。提前安裝本元件
 > 不會顯示相關頁面；請等待 My T 版本說明明確列出支援後再作日常使用。
@@ -10,6 +11,18 @@
 **本元件專為
 [My T iPhone App 開發，可於 App Store 下載](https://apps.apple.com/cn/app/my-t/id6780299502)。**
 如果您是從 TeslaMate 專案找到這裡，請先透過此連結確認並下載配套的 My T App。
+
+## iPhone 原生車輛軟體更新通知
+
+1.5.0 訂閱 TeslaMate MQTT 中車輛真實回報的 `update_available`、
+`update_version` 和目前版本變化，不猜測可用版本、不存取 Tesla，也不喚醒車輛。
+
+此功能預設關閉。My T 配對將提供安裝 ID、HTTPS 中繼位址和每次安裝獨立的密鑰，
+三項必須同時設定。事件使用 HMAC-SHA256 簽署，並在獨立 Docker 資料卷中保存
+去重狀態。推送內容不包含 VIN、位置、TeslaMate 憑證、資料庫密碼、電池、路線或
+行駛歷史。Apple APNs 私鑰絕不會放入本公開專案或使用者 VPS。
+
+狀態介面：`GET /api/v1/notifications/software-update/status`。
 
 My T 的完整產品介紹、TeslaMateAPI 部署、連線安全及故障排查，請查看
 [My T 公開文件倉庫](https://github.com/MatchHar/My-T-App)。

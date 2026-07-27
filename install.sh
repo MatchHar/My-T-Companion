@@ -17,6 +17,9 @@ CADDY_FILE="${CADDY_FILE:-/etc/caddy/Caddyfile}"
 MY_T_BASE_URL="${MY_T_BASE_URL:-}"
 MY_T_AUTH_HEADER="${MY_T_AUTH_HEADER:-}"
 MY_T_AUTH_PROBE_URL="${MY_T_AUTH_PROBE_URL:-}"
+PUSH_INSTALLATION_ID="${PUSH_INSTALLATION_ID:-}"
+PUSH_RELAY_URL="${PUSH_RELAY_URL:-}"
+PUSH_RELAY_SECRET="${PUSH_RELAY_SECRET:-}"
 
 log() {
   printf '[My T Parking Monitor] %s\n' "$*"
@@ -55,7 +58,7 @@ require_command curl
 [[ -f "$TESLAMATE_DIR/.env" ]] || fail "TeslaMate .env not found."
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || fail "Invalid or missing VERSION file."
-[[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" ]] \
+[[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" && -f "$SOURCE_DIR/notification.go" ]] \
   || fail "Run install.sh from a complete My-T-Parking-Monitor checkout."
 
 log "Checking the existing TeslaMate deployment"
@@ -97,6 +100,20 @@ timezone="$(
     || printf 'UTC'
 )"
 
+push_installation_id="${PUSH_INSTALLATION_ID:-$(read_env_value PUSH_INSTALLATION_ID "$ENV_FILE" || true)}"
+push_relay_url="${PUSH_RELAY_URL:-$(read_env_value PUSH_RELAY_URL "$ENV_FILE" || true)}"
+push_relay_secret="${PUSH_RELAY_SECRET:-$(read_env_value PUSH_RELAY_SECRET "$ENV_FILE" || true)}"
+if [[ -n "$push_relay_url" && ! "$push_relay_url" =~ ^https:// ]]; then
+  fail "PUSH_RELAY_URL must use HTTPS."
+fi
+push_values=0
+[[ -n "$push_installation_id" ]] && push_values=$((push_values + 1))
+[[ -n "$push_relay_url" ]] && push_values=$((push_values + 1))
+[[ -n "$push_relay_secret" ]] && push_values=$((push_values + 1))
+if [[ "$push_values" -ne 0 && "$push_values" -ne 3 ]]; then
+  fail "Software push requires PUSH_INSTALLATION_ID, PUSH_RELAY_URL, and PUSH_RELAY_SECRET together."
+fi
+
 auth_probe_url="$(
   if [[ -n "$MY_T_AUTH_PROBE_URL" ]]; then
     printf '%s' "$MY_T_AUTH_PROBE_URL"
@@ -136,6 +153,7 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
     install -m 0644 "$SOURCE_DIR/go.sum" "$INSTALL_DIR/go.sum"
   fi
   install -m 0644 "$SOURCE_DIR/main.go" "$INSTALL_DIR/main.go"
+  install -m 0644 "$SOURCE_DIR/notification.go" "$INSTALL_DIR/notification.go"
   install -m 0644 "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
   install -m 0755 "$SOURCE_DIR/update.sh" "$INSTALL_DIR/update.sh"
@@ -153,6 +171,9 @@ umask 077
   printf 'AUTH_PROBE_URL=%s\n' "$auth_probe_url"
   printf 'TZ=%s\n' "$timezone"
   printf 'TESLAMATE_NETWORK=%s\n' "$database_network"
+  printf 'PUSH_INSTALLATION_ID=%s\n' "$push_installation_id"
+  printf 'PUSH_RELAY_URL=%s\n' "$push_relay_url"
+  printf 'PUSH_RELAY_SECRET=%s\n' "$push_relay_secret"
 } > "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
@@ -179,8 +200,15 @@ services:
       API_TOKEN: ${MY_T_API_TOKEN}
       AUTH_PROBE_URL: ${AUTH_PROBE_URL:-}
       TZ: ${TZ:-UTC}
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      PUSH_INSTALLATION_ID: ${PUSH_INSTALLATION_ID:-}
+      PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
+      PUSH_RELAY_SECRET: ${PUSH_RELAY_SECRET:-}
+      PUSH_STATE_PATH: /data/software-notifications.json
     ports:
       - "127.0.0.1:8083:8080"
+    volumes:
+      - notification-state:/data
     healthcheck:
       test: ["CMD", "/app/states-api", "-healthcheck"]
       interval: 30s
@@ -189,6 +217,9 @@ services:
       start_period: 10s
     networks:
       - teslamate
+
+volumes:
+  notification-state:
 
 networks:
   teslamate:
@@ -219,11 +250,13 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   missing_states=true
   missing_capabilities=true
   missing_current_drive=true
+  missing_notification_status=true
   grep -qE 'cars/.*/states|parking_states|my_t_parking_states' "$CADDY_FILE" && missing_states=false
   grep -qE 'api/v1/capabilities|parking_capabilities|my_t_parking_capabilities' "$CADDY_FILE" && missing_capabilities=false
   grep -qE 'current-drive|my_t_current_drive' "$CADDY_FILE" && missing_current_drive=false
+  grep -qE 'notifications/software-update/status|my_t_software_push_status' "$CADDY_FILE" && missing_notification_status=false
 
-  if [[ "$missing_states" == true || "$missing_capabilities" == true || "$missing_current_drive" == true ]]; then
+  if [[ "$missing_states" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_notification_status" == true ]]; then
     route_anchor="$(grep -nE '^[[:space:]]*handle[[:space:]]+@(teslamate_api|api)' "$CADDY_FILE" | head -n 1 | cut -d: -f1 || true)"
     if [[ -z "$route_anchor" ]]; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
@@ -255,6 +288,15 @@ CADDY
       cat >> "$route_file" <<'CADDY'
 	@my_t_parking_capabilities path /api/v1/capabilities
 	handle @my_t_parking_capabilities {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+CADDY
+    fi
+    if [[ "$missing_notification_status" == true ]]; then
+      cat >> "$route_file" <<'CADDY'
+	@my_t_software_push_status path /api/v1/notifications/software-update/status
+	handle @my_t_software_push_status {
 		reverse_proxy 127.0.0.1:8083
 	}
 
@@ -301,6 +343,8 @@ printf '%s' "$capabilities" | grep -q '"parking_state_history"' \
   || fail "Capability verification failed."
 printf '%s' "$capabilities" | grep -q '"current_drive_trajectory"' \
   || fail "Current-drive capability verification failed."
+printf '%s' "$capabilities" | grep -q '"vehicle_software_update_events"' \
+  || fail "Software-update capability verification failed."
 
 if [[ "$proxy_ready" != true ]]; then
   if [[ -z "$MY_T_BASE_URL" ]]; then

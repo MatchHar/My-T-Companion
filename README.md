@@ -2,7 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> Current release: `1.4.1` is the first public, checksummed release.
+> Current source version: `1.5.0`. Native vehicle software push is optional
+> and remains disabled until My T supplies a secure relay pairing.
 >
 > The public App Store build is currently My T 3.10 and does not yet expose
 > Parking Monitor integration. Installing this companion early will not add
@@ -139,6 +140,29 @@ its own retention period; available history follows the TeslaMate database.
 | 1.3.0 | Immutable current-drive start and incremental trajectory paging |
 | 1.4.0 | Capability discovery, hardened container/database access, safe install and uninstall |
 | 1.4.1 | Checksummed release updates, rollback backups, unified-route verification, and broader LAN/proxy guidance |
+| 1.5.0 | MQTT software-update detection, persistent deduplication, signed relay delivery, and authenticated status |
+
+## Native iPhone vehicle software notifications
+
+Version 1.5.0 observes TeslaMate's genuine MQTT `update_available`,
+`update_version`, and installed-version fields. It does not guess availability,
+contact Tesla, or wake the vehicle.
+
+Push is off by default. My T pairing will provide an installation ID, an HTTPS
+relay URL, and a per-installation secret. All three must be configured together.
+Events are HMAC-SHA256 signed and deduplicated across container restarts.
+
+Payloads never contain VIN, location, TeslaMate credentials, database
+passwords, battery data, routes, or driving history. The APNs signing key is not
+part of this repository and must never be copied to a user's VPS. Until pairing
+is available, leave push unconfigured; parking and live navigation continue to
+work normally.
+
+Authenticated status:
+
+```text
+GET /api/v1/notifications/software-update/status
+```
 
 See [CHANGELOG.md](CHANGELOG.md) for complete changes and
 [RELEASE_NOTES_1.4.1.md](RELEASE_NOTES_1.4.1.md) for the publication candidate.

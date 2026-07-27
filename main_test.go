@@ -1,8 +1,15 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,6 +23,89 @@ func TestTokenEqual(t *testing.T) {
 		if tokenEqual(candidate, "correct-token") {
 			t.Fatalf("unexpected token match for %q", candidate)
 		}
+	}
+}
+
+func TestSoftwareNotificationRelaySignatureAndPrivacy(t *testing.T) {
+	t.Parallel()
+	const secret = "relay-secret"
+	var received softwareNotificationEvent
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signature := hmac.New(sha256.New, []byte(secret))
+		_, _ = signature.Write(body)
+		want := "sha256=" + hex.EncodeToString(signature.Sum(nil))
+		if !hmac.Equal([]byte(r.Header.Get("X-My-T-Signature")), []byte(want)) {
+			t.Fatal("relay signature mismatch")
+		}
+		if strings.Contains(string(body), "VIN") || strings.Contains(string(body), "latitude") {
+			t.Fatal("payload contains prohibited vehicle data")
+		}
+		if err := json.Unmarshal(body, &received); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	monitor := &softwareNotificationMonitor{
+		relayURL:       server.URL,
+		relaySecret:    secret,
+		installationID: "installation-1",
+		httpClient:     server.Client(),
+	}
+	event := softwareNotificationEvent{
+		EventID:        "event-1",
+		InstallationID: "installation-1",
+		CarID:          1,
+		VehicleName:    "MY CAR",
+		Type:           "update_available",
+		CurrentVersion: "2026.20.6",
+		UpdateVersion:  "2026.26.3",
+		ObservedAt:     "2026-07-27T12:00:00Z",
+	}
+	if err := monitor.deliver(event); err != nil {
+		t.Fatal(err)
+	}
+	if received.UpdateVersion != event.UpdateVersion || received.InstallationID != event.InstallationID {
+		t.Fatalf("unexpected relay event: %+v", received)
+	}
+}
+
+func TestSoftwareNotificationStatePersistence(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	monitor := &softwareNotificationMonitor{
+		statePath: path,
+		store: softwareNotificationStore{
+			Cars: map[int]carSoftwareState{
+				1: {Version: "2026.20.6", UpdateAvailable: true, UpdateVersion: "2026.26.3"},
+			},
+			Delivered: map[string]string{"event-1": "2026-07-27T12:00:00Z"},
+		},
+	}
+	monitor.mu.Lock()
+	if err := monitor.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	monitor.mu.Unlock()
+
+	loaded := &softwareNotificationMonitor{
+		statePath: path,
+		store: softwareNotificationStore{
+			Cars:      map[int]carSoftwareState{},
+			Delivered: map[string]string{},
+		},
+	}
+	loaded.load()
+	if loaded.store.Cars[1].UpdateVersion != "2026.26.3" {
+		t.Fatalf("state was not restored: %+v", loaded.store)
+	}
+	if _, ok := loaded.store.Delivered["event-1"]; !ok {
+		t.Fatal("delivered event deduplication was not restored")
 	}
 }
 

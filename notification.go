@@ -1,0 +1,368 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+)
+
+type softwareNotificationEvent struct {
+	EventID        string `json:"event_id"`
+	InstallationID string `json:"installation_id"`
+	CarID          int    `json:"car_id"`
+	VehicleName    string `json:"vehicle_name,omitempty"`
+	Type           string `json:"type"`
+	CurrentVersion string `json:"current_version,omitempty"`
+	UpdateVersion  string `json:"update_version,omitempty"`
+	ObservedAt     string `json:"observed_at"`
+}
+
+type carSoftwareState struct {
+	DisplayName     string `json:"display_name,omitempty"`
+	Version         string `json:"version,omitempty"`
+	UpdateAvailable bool   `json:"update_available"`
+	UpdateVersion   string `json:"update_version,omitempty"`
+	DownloadPercent int    `json:"download_percent,omitempty"`
+	InstallPercent  int    `json:"install_percent,omitempty"`
+}
+
+type softwareNotificationStore struct {
+	Cars      map[int]carSoftwareState `json:"cars"`
+	Delivered map[string]string        `json:"delivered"`
+}
+
+type softwareNotificationMonitor struct {
+	mu             sync.Mutex
+	store          softwareNotificationStore
+	statePath      string
+	installationID string
+	relayURL       string
+	relaySecret    string
+	mqttBroker     string
+	mqttClientID   string
+	mqttUsername   string
+	mqttPassword   string
+	client         mqtt.Client
+	httpClient     *http.Client
+	inFlight       map[string]bool
+	enabled        bool
+	connected      bool
+	lastEventAt    *time.Time
+	lastError      string
+}
+
+func newSoftwareNotificationMonitorFromEnvironment() *softwareNotificationMonitor {
+	installationID := strings.TrimSpace(os.Getenv("PUSH_INSTALLATION_ID"))
+	relayURL := strings.TrimSpace(os.Getenv("PUSH_RELAY_URL"))
+	relaySecret := strings.TrimSpace(os.Getenv("PUSH_RELAY_SECRET"))
+	monitor := &softwareNotificationMonitor{
+		statePath:      getenv("PUSH_STATE_PATH", "/data/software-notifications.json"),
+		installationID: installationID,
+		relayURL:       relayURL,
+		relaySecret:    relaySecret,
+		mqttBroker:     getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
+		mqttClientID:   getenv("MQTT_CLIENT_ID", "my-t-parking-monitor"),
+		mqttUsername:   strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
+		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
+		httpClient:     &http.Client{Timeout: 12 * time.Second},
+		inFlight:       map[string]bool{},
+		store: softwareNotificationStore{
+			Cars:      map[int]carSoftwareState{},
+			Delivered: map[string]string{},
+		},
+	}
+	monitor.enabled = installationID != "" && relayURL != "" && relaySecret != ""
+	monitor.load()
+	return monitor
+}
+
+func (m *softwareNotificationMonitor) start() {
+	if !m.enabled {
+		log.Printf("[info] vehicle software push disabled; relay pairing is not configured")
+		return
+	}
+
+	options := mqtt.NewClientOptions().
+		AddBroker(m.mqttBroker).
+		SetClientID(m.mqttClientID).
+		SetAutoReconnect(true).
+		SetConnectRetry(true).
+		SetConnectRetryInterval(10 * time.Second).
+		SetKeepAlive(30 * time.Second).
+		SetOrderMatters(false)
+	if m.mqttUsername != "" {
+		options.SetUsername(m.mqttUsername)
+		options.SetPassword(m.mqttPassword)
+	}
+	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+		m.mu.Lock()
+		m.connected = false
+		m.lastError = err.Error()
+		m.mu.Unlock()
+		log.Printf("[warn] TeslaMate MQTT disconnected: %v", err)
+	})
+	options.SetOnConnectHandler(func(client mqtt.Client) {
+		token := client.SubscribeMultiple(map[string]byte{
+			"teslamate/cars/+/display_name":     1,
+			"teslamate/cars/+/version":          1,
+			"teslamate/cars/+/update_available": 1,
+			"teslamate/cars/+/update_version":   1,
+			"teslamate/cars/+/download_perc":    1,
+			"teslamate/cars/+/install_perc":     1,
+		}, m.handleMQTTMessage)
+		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
+			m.mu.Lock()
+			m.connected = true
+			m.lastError = ""
+			m.mu.Unlock()
+			log.Printf("[info] subscribed to TeslaMate software update MQTT topics")
+			return
+		}
+		err := token.Error()
+		if err == nil {
+			err = fmt.Errorf("MQTT subscription timed out")
+		}
+		m.mu.Lock()
+		m.connected = false
+		m.lastError = err.Error()
+		m.mu.Unlock()
+		log.Printf("[error] TeslaMate MQTT subscribe: %v", err)
+	})
+
+	m.client = mqtt.NewClient(options)
+	token := m.client.Connect()
+	if !token.WaitTimeout(15 * time.Second) {
+		m.mu.Lock()
+		m.lastError = "MQTT initial connection timed out"
+		m.mu.Unlock()
+		return
+	}
+	if err := token.Error(); err != nil {
+		m.mu.Lock()
+		m.lastError = err.Error()
+		m.mu.Unlock()
+		log.Printf("[warn] TeslaMate MQTT initial connection: %v", err)
+	}
+}
+
+func (m *softwareNotificationMonitor) stop() {
+	if m.client != nil && m.client.IsConnected() {
+		m.client.Disconnect(250)
+	}
+}
+
+func (m *softwareNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message mqtt.Message) {
+	parts := strings.Split(message.Topic(), "/")
+	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" {
+		return
+	}
+	carID, err := strconv.Atoi(parts[2])
+	if err != nil || carID <= 0 {
+		return
+	}
+	field := parts[3]
+	switch field {
+	case "display_name", "version", "update_available", "update_version", "download_perc", "install_perc":
+	default:
+		return
+	}
+	m.observe(carID, field, strings.TrimSpace(string(message.Payload())), time.Now().UTC())
+}
+
+func (m *softwareNotificationMonitor) observe(carID int, field, value string, observedAt time.Time) {
+	m.mu.Lock()
+	state := m.store.Cars[carID]
+	previous := state
+	switch field {
+	case "display_name":
+		state.DisplayName = normalizedMQTTValue(value)
+	case "version":
+		state.Version = normalizedMQTTValue(value)
+	case "update_available":
+		state.UpdateAvailable = strings.EqualFold(value, "true") || value == "1"
+	case "update_version":
+		state.UpdateVersion = normalizedMQTTValue(value)
+	case "download_perc":
+		state.DownloadPercent, _ = strconv.Atoi(value)
+	case "install_perc":
+		state.InstallPercent, _ = strconv.Atoi(value)
+	}
+	m.store.Cars[carID] = state
+	_ = m.saveLocked()
+
+	var event *softwareNotificationEvent
+	if state.UpdateAvailable && state.UpdateVersion != "" &&
+		(!previous.UpdateAvailable || previous.UpdateVersion != state.UpdateVersion) {
+		event = m.makeEvent(carID, state, "update_available", state.UpdateVersion, observedAt)
+	} else if field == "version" && previous.Version != "" && state.Version != "" &&
+		previous.Version != state.Version {
+		event = m.makeEvent(carID, state, "update_installed", state.Version, observedAt)
+	}
+	if event == nil {
+		m.mu.Unlock()
+		return
+	}
+	if _, delivered := m.store.Delivered[event.EventID]; delivered {
+		m.mu.Unlock()
+		return
+	}
+	if m.inFlight[event.EventID] {
+		m.mu.Unlock()
+		return
+	}
+	m.inFlight[event.EventID] = true
+	m.mu.Unlock()
+
+	go m.deliverWithRetry(*event)
+}
+
+func (m *softwareNotificationMonitor) makeEvent(
+	carID int,
+	state carSoftwareState,
+	eventType, eventVersion string,
+	observedAt time.Time,
+) *softwareNotificationEvent {
+	idInput := fmt.Sprintf("%s:%d:%s:%s", m.installationID, carID, eventType, eventVersion)
+	idHash := sha256.Sum256([]byte(idInput))
+	return &softwareNotificationEvent{
+		EventID:        hex.EncodeToString(idHash[:16]),
+		InstallationID: m.installationID,
+		CarID:          carID,
+		VehicleName:    state.DisplayName,
+		Type:           eventType,
+		CurrentVersion: state.Version,
+		UpdateVersion:  state.UpdateVersion,
+		ObservedAt:     observedAt.Format(time.RFC3339),
+	}
+}
+
+func (m *softwareNotificationMonitor) deliverWithRetry(event softwareNotificationEvent) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.inFlight, event.EventID)
+		m.mu.Unlock()
+	}()
+	delays := []time.Duration{0, 5 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute}
+	for attempt, delay := range delays {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		if err := m.deliver(event); err != nil {
+			m.mu.Lock()
+			m.lastError = err.Error()
+			m.mu.Unlock()
+			log.Printf("[warn] push relay event=%s attempt=%d: %v", event.EventID, attempt+1, err)
+			continue
+		}
+		m.mu.Lock()
+		m.store.Delivered[event.EventID] = event.ObservedAt
+		m.lastError = ""
+		now := time.Now().UTC()
+		m.lastEventAt = &now
+		_ = m.saveLocked()
+		m.mu.Unlock()
+		return
+	}
+}
+
+func (m *softwareNotificationMonitor) deliver(event softwareNotificationEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	signature := hmac.New(sha256.New, []byte(m.relaySecret))
+	_, _ = signature.Write(payload)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.relayURL, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-My-T-Installation", m.installationID)
+	request.Header.Set("X-My-T-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
+	response, err := m.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("relay returned HTTP %d", response.StatusCode)
+	}
+	return nil
+}
+
+func (m *softwareNotificationMonitor) status() map[string]any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := map[string]any{
+		"enabled":          m.enabled,
+		"mqtt_connected":   m.connected,
+		"delivery_mode":    "developer_operated_apns_relay",
+		"privacy_mode":     "no_vin_location_or_teslamate_credentials",
+		"tracked_cars":     len(m.store.Cars),
+		"delivered_events": len(m.store.Delivered),
+	}
+	if m.lastEventAt != nil {
+		result["last_delivered_at"] = m.lastEventAt.Format(time.RFC3339)
+	}
+	if m.lastError != "" {
+		result["last_error"] = m.lastError
+	}
+	return result
+}
+
+func (m *softwareNotificationMonitor) load() {
+	data, err := os.ReadFile(m.statePath)
+	if err != nil {
+		return
+	}
+	var stored softwareNotificationStore
+	if json.Unmarshal(data, &stored) == nil {
+		if stored.Cars != nil {
+			m.store.Cars = stored.Cars
+		}
+		if stored.Delivered != nil {
+			m.store.Delivered = stored.Delivered
+		}
+	}
+}
+
+func (m *softwareNotificationMonitor) saveLocked() error {
+	if err := os.MkdirAll(filepath.Dir(m.statePath), 0700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(m.store)
+	if err != nil {
+		return err
+	}
+	temp := m.statePath + ".tmp"
+	if err := os.WriteFile(temp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(temp, m.statePath)
+}
+
+func normalizedMQTTValue(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "nil", "null", "unknown":
+		return ""
+	default:
+		return strings.TrimSpace(value)
+	}
+}

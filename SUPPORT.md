@@ -7,11 +7,14 @@ Before opening an issue:
 3. Run `curl --fail http://127.0.0.1:8083/api/healthz` on the host.
 4. Confirm the unified API address routes `/api/v1/capabilities` to the
    companion and requires authentication.
-5. Record the My T, companion, TeslaMate, Docker, and reverse-proxy versions.
+5. For optional software notifications, check the authenticated
+   `/api/v1/notifications/software-update/status` response.
+6. Record the My T, companion, TeslaMate, Docker, and reverse-proxy versions.
 
 Include redacted error text and reproduction steps. Never post `.env` files,
-tokens, cookies, database passwords, public server addresses, VINs, exact
-locations, database exports, or raw production logs.
+tokens, cookies, database passwords, relay secrets, installation IDs, device
+tokens, public server addresses, VINs, exact locations, database exports, or
+raw production logs.
 
 Use a normal GitHub issue for reproducible functional bugs and documentation
 problems. Use GitHub private vulnerability reporting for security issues.

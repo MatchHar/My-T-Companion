@@ -1,6 +1,7 @@
 # Compatibility and release validation
 
-Version `1.4.1` is being validated privately before the repository is made public.
+Version `1.5.0` adds optional TeslaMate MQTT software-update observation and
+signed relay delivery. Parking and navigation remain usable without pairing.
 
 ## Required baseline
 

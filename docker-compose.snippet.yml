@@ -1,6 +1,6 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-parking-monitor
-    image: myt/parking-monitor:1.4.1
+    image: myt/parking-monitor:1.5.0
     restart: unless-stopped
     init: true
     read_only: true
@@ -21,11 +21,21 @@
       - API_TOKEN=${MY_T_API_TOKEN}
       - AUTH_PROBE_URL=${AUTH_PROBE_URL:-}
       - TZ=${TZ:-UTC}
+      - MQTT_BROKER_URL=tcp://mosquitto:1883
+      - PUSH_INSTALLATION_ID=${PUSH_INSTALLATION_ID:-}
+      - PUSH_RELAY_URL=${PUSH_RELAY_URL:-}
+      - PUSH_RELAY_SECRET=${PUSH_RELAY_SECRET:-}
+      - PUSH_STATE_PATH=/data/software-notifications.json
     ports:
       - "127.0.0.1:8083:8080"
+    volumes:
+      - my-t-notification-state:/data
     healthcheck:
       test: ["CMD", "/app/states-api", "-healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  my-t-notification-state:
