@@ -112,6 +112,38 @@ Vehicle → TeslaMate → PostgreSQL
 - Data travels between the user's own VPS and iPhone through the user's
   existing secured API hostname or private network.
 
+## What deployment creates
+
+| Item | Created or changed? | Purpose |
+| --- | --- | --- |
+| A standalone Docker service and container | Yes | Runs the read-only companion API |
+| A loopback listener on `127.0.0.1:8083` | Yes | Keeps the service behind the existing protected reverse proxy |
+| Three reverse-proxy routes | Yes | Makes the capabilities, parking-state, and current-drive endpoints available through the My T base URL |
+| Installer configuration and recovery backups | Yes | Supports repeatable updates, rollback, and uninstall |
+| A new database or TeslaMate table | No | TeslaMate PostgreSQL remains the only source of truth |
+| A duplicate vehicle-history store | No | The companion queries data only when My T requests it |
+| TeslaMate data changes or vehicle commands | No | Database sessions are read-only and the service never connects to Tesla |
+
+The service reads only the TeslaMate `states`, `drives`, and `positions` data
+needed for its endpoints. It returns derived JSON state intervals, nearby real
+battery/range observations, the current drive's immutable first point, and
+incremental trajectory points. It does not run a background collector or define
+its own retention period; available history follows the TeslaMate database.
+
+## Capability by version
+
+| Companion version | Capability added |
+| --- | --- |
+| 1.0.0 | Read-only parking state-history endpoint |
+| 1.1.0 | Existing TeslaMate API authentication boundary |
+| 1.2.0 | Timestamped, freshness-limited battery and rated-range observations |
+| 1.3.0 | Immutable current-drive start and incremental trajectory paging |
+| 1.4.0 | Capability discovery, hardened container/database access, safe install and uninstall |
+| 1.4.1 | Checksummed release updates, rollback backups, unified-route verification, and broader LAN/proxy guidance |
+
+See [CHANGELOG.md](CHANGELOG.md) for complete changes and
+[RELEASE_NOTES_1.4.1.md](RELEASE_NOTES_1.4.1.md) for the publication candidate.
+
 ## Who should install it
 
 Install it when all of the following are true:

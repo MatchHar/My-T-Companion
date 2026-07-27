@@ -2,12 +2,39 @@
 
 ## 1.4.1
 
-- Install and update from immutable, checksummed GitHub Release archives.
-- Make the installed updater fetch and back up a real newer release.
-- Do not report full success until the unified My T proxy endpoint is ready.
-- Add LAN Caddy and host Nginx examples.
-- Add CI, release artifact generation, contribution guidance, and safe issue
-  templates.
+### Added
+
+- Immutable, checksummed GitHub Release installation and update flow.
+- Installed updater that can select a version and back up the current
+  installation before applying it.
+- Unified-route verification for the capabilities, parking-state, and
+  current-drive endpoints.
+- LAN Caddy and host Nginx examples, plus explicit guidance for Traefik,
+  containerized Caddy, VPN, and direct-LAN installations.
+- CI, deterministic release-archive generation, contribution guidance, safe
+  issue templates, and a public-release checklist.
+
+### Changed
+
+- Full install success is reported only when both the loopback service and the
+  authenticated My T base URL work.
+- Documentation now distinguishes files/routes created by the installer from
+  TeslaMate data, which is never copied or modified.
+
+### Security
+
+- Release archives must be verified against their published SHA-256 manifests.
+- Update failures retain recovery backups and do not silently replace the
+  working installation.
+
+### Compatibility and known limits
+
+- Works with VPS and private-LAN TeslaMate deployments when TeslaMateAPI and
+  the companion share one protected reverse-proxy address.
+- Nginx, Traefik, containerized Caddy, and custom proxies may require manual
+  route configuration.
+- The companion cannot recover samples TeslaMate never stored, and it does not
+  add Parking Monitor screens to My T versions that do not support them.
 
 ## 1.4.0
 
