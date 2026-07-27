@@ -109,6 +109,18 @@ func TestSoftwareNotificationStatePersistence(t *testing.T) {
 	}
 }
 
+func TestSoftwarePushPairingRejectsUntrustedRelay(t *testing.T) {
+	monitor := &softwareNotificationMonitor{}
+	err := monitor.configure(softwarePushPairing{
+		InstallationID: strings.Repeat("a", 48),
+		RelayURL:       "https://example.invalid/events",
+		RelaySecret:    strings.Repeat("b", 64),
+	})
+	if err == nil {
+		t.Fatal("expected untrusted relay URL to be rejected")
+	}
+}
+
 func TestParsePageLimit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

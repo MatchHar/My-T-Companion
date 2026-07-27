@@ -151,12 +151,19 @@ contact Tesla, or wake the vehicle.
 Push is off by default. My T pairing will provide an installation ID, an HTTPS
 relay URL, and a per-installation secret. All three must be configured together.
 Events are HMAC-SHA256 signed and deduplicated across container restarts.
+The App writes the pairing through the user's existing authenticated connection:
+
+```text
+POST /api/v1/notifications/software-update/pair
+```
+
+For SSRF protection, the Companion accepts only My T's official relay URL.
 
 Payloads never contain VIN, location, TeslaMate credentials, database
 passwords, battery data, routes, or driving history. The APNs signing key is not
-part of this repository and must never be copied to a user's VPS. Until pairing
-is available, leave push unconfigured; parking and live navigation continue to
-work normally.
+part of this repository and must never be copied to a user's VPS. Pairing is
+automatic after the user enables notifications in My T; parking and live
+navigation continue to work normally if push remains disabled.
 
 Authenticated status:
 
@@ -165,7 +172,7 @@ GET /api/v1/notifications/software-update/status
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for complete changes and
-[RELEASE_NOTES_1.4.1.md](RELEASE_NOTES_1.4.1.md) for the publication candidate.
+[RELEASE_NOTES_1.5.0.md](RELEASE_NOTES_1.5.0.md) for this release.
 
 ## Who should install it
 

@@ -133,6 +133,7 @@ func main() {
 	mux.HandleFunc("/api/healthz", handleHealth)
 	mux.HandleFunc("/api/v1/capabilities", handleCapabilities)
 	mux.HandleFunc("/api/v1/notifications/software-update/status", handleSoftwareNotificationStatus)
+	mux.HandleFunc("/api/v1/notifications/software-update/pair", handleSoftwareNotificationPair)
 	mux.HandleFunc("/", handleStates)
 
 	addr := ":8080"
@@ -148,6 +149,31 @@ func main() {
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	defer r.Body.Close()
+	var pairing softwarePushPairing
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&pairing) != nil || softwarePush == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pairing"})
+		return
+	}
+	if err := softwarePush.configure(pairing); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pairing"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"paired": true})
 }
 
 func runHealthcheck() {

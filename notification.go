@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,8 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
+
+const officialSoftwarePushRelayURL = "https://teslamate-api.samman.top/my-t-push/v1/events"
 
 type softwareNotificationEvent struct {
 	EventID        string `json:"event_id"`
@@ -45,6 +48,12 @@ type softwareNotificationStore struct {
 	Delivered map[string]string        `json:"delivered"`
 }
 
+type softwarePushPairing struct {
+	InstallationID string `json:"installation_id"`
+	RelayURL       string `json:"relay_url"`
+	RelaySecret    string `json:"relay_secret"`
+}
+
 type softwareNotificationMonitor struct {
 	mu             sync.Mutex
 	store          softwareNotificationStore
@@ -63,6 +72,7 @@ type softwareNotificationMonitor struct {
 	connected      bool
 	lastEventAt    *time.Time
 	lastError      string
+	started        bool
 }
 
 func newSoftwareNotificationMonitorFromEnvironment() *softwareNotificationMonitor {
@@ -87,10 +97,18 @@ func newSoftwareNotificationMonitorFromEnvironment() *softwareNotificationMonito
 	}
 	monitor.enabled = installationID != "" && relayURL != "" && relaySecret != ""
 	monitor.load()
+	monitor.loadPairing()
 	return monitor
 }
 
 func (m *softwareNotificationMonitor) start() {
+	m.mu.Lock()
+	if m.started {
+		m.mu.Unlock()
+		return
+	}
+	m.started = true
+	m.mu.Unlock()
 	if !m.enabled {
 		log.Printf("[info] vehicle software push disabled; relay pairing is not configured")
 		return
@@ -157,6 +175,67 @@ func (m *softwareNotificationMonitor) start() {
 		m.mu.Unlock()
 		log.Printf("[warn] TeslaMate MQTT initial connection: %v", err)
 	}
+}
+
+func (m *softwareNotificationMonitor) configure(pairing softwarePushPairing) error {
+	if len(pairing.InstallationID) != 48 {
+		return fmt.Errorf("missing pairing values")
+	}
+	if _, err := hex.DecodeString(pairing.InstallationID); err != nil {
+		return fmt.Errorf("invalid installation ID")
+	}
+	secret, err := hex.DecodeString(pairing.RelaySecret)
+	if err != nil || len(secret) != 32 {
+		return fmt.Errorf("invalid relay secret")
+	}
+	relayURL, err := url.Parse(pairing.RelayURL)
+	if err != nil || relayURL.String() != officialSoftwarePushRelayURL {
+		return fmt.Errorf("untrusted relay URL")
+	}
+	m.mu.Lock()
+	m.installationID = pairing.InstallationID
+	m.relayURL = pairing.RelayURL
+	m.relaySecret = pairing.RelaySecret
+	m.enabled = true
+	path := m.pairingPath()
+	data, err := json.Marshal(pairing)
+	if err == nil {
+		err = os.MkdirAll(filepath.Dir(path), 0700)
+	}
+	if err == nil {
+		err = os.WriteFile(path+".tmp", data, 0600)
+	}
+	if err == nil {
+		err = os.Rename(path+".tmp", path)
+	}
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	m.started = false
+	m.mu.Unlock()
+	m.start()
+	return nil
+}
+
+func (m *softwareNotificationMonitor) loadPairing() {
+	data, err := os.ReadFile(m.pairingPath())
+	if err != nil {
+		return
+	}
+	var pairing softwarePushPairing
+	if json.Unmarshal(data, &pairing) != nil || pairing.InstallationID == "" ||
+		pairing.RelayURL == "" || pairing.RelaySecret == "" {
+		return
+	}
+	m.installationID = pairing.InstallationID
+	m.relayURL = pairing.RelayURL
+	m.relaySecret = pairing.RelaySecret
+	m.enabled = true
+}
+
+func (m *softwareNotificationMonitor) pairingPath() string {
+	return filepath.Join(filepath.Dir(m.statePath), "software-push-pairing.json")
 }
 
 func (m *softwareNotificationMonitor) stop() {
@@ -284,7 +363,7 @@ func (m *softwareNotificationMonitor) deliver(event softwareNotificationEvent) e
 	if err != nil {
 		return err
 	}
-	signature := hmac.New(sha256.New, []byte(m.relaySecret))
+	signature := hmac.New(sha256.New, relaySecretBytes(m.relaySecret))
 	_, _ = signature.Write(payload)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -305,6 +384,13 @@ func (m *softwareNotificationMonitor) deliver(event softwareNotificationEvent) e
 		return fmt.Errorf("relay returned HTTP %d", response.StatusCode)
 	}
 	return nil
+}
+
+func relaySecretBytes(value string) []byte {
+	if decoded, err := hex.DecodeString(value); err == nil && len(decoded) >= 16 {
+		return decoded
+	}
+	return []byte(value)
 }
 
 func (m *softwareNotificationMonitor) status() map[string]any {

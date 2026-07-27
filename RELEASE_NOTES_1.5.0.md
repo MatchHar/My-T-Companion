@@ -9,6 +9,8 @@ notifications.
 - Sends privacy-minimal HMAC-SHA256 signed events only to configured HTTPS
   relays.
 - Exposes authenticated delivery status without exposing secrets.
+- Accepts automatic pairing from My T through the existing authenticated API.
+- Restricts delivery to the official My T HTTPS relay to prevent SSRF.
 
 Push remains disabled unless all pairing values are configured. Existing
 Parking Monitor and live-navigation features continue working unchanged. The

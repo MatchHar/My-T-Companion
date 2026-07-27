@@ -23,6 +23,9 @@
 行駛歷史。Apple APNs 私鑰絕不會放入本公開專案或使用者 VPS。
 
 狀態介面：`GET /api/v1/notifications/software-update/status`。
+使用者在 My T 中啟用通知後，App 會透過現有已驗證連線自動寫入配對：
+`POST /api/v1/notifications/software-update/pair`。為防止伺服器端請求偽造
+（SSRF），元件只接受 My T 官方中繼位址，不允許設定任意伺服器。
 
 My T 的完整產品介紹、TeslaMateAPI 部署、連線安全及故障排查，請查看
 [My T 公開文件倉庫](https://github.com/MatchHar/My-T-App)。
@@ -132,9 +135,10 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 | 1.3.0 | 不可變的真實行程起點與增量軌跡分頁 |
 | 1.4.0 | 能力偵測、容器與資料庫加固、安全安裝及解除安裝 |
 | 1.4.1 | 校驗版更新、回復備份、統一入口驗證及更完整的內網/代理說明 |
+| 1.5.0 | 原生軟體更新推送、持久去重、簽署中繼及 App 自動安全配對 |
 
-完整改動請查看 [CHANGELOG.md](CHANGELOG.md)，1.4.1 公開候選說明請查看
-[RELEASE_NOTES_1.4.1.md](RELEASE_NOTES_1.4.1.md)。
+完整改動請查看 [CHANGELOG.md](CHANGELOG.md)，1.5.0 說明請查看
+[RELEASE_NOTES_1.5.0.md](RELEASE_NOTES_1.5.0.md)。
 
 ## 哪些使用者需要安裝
 
