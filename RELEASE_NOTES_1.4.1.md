@@ -1,6 +1,6 @@
 # My T VPS Companion 1.4.1
 
-This is the publication candidate for the optional read-only companion used by
+This is the first public release of the optional read-only companion used by
 My T Parking Monitor and enhanced live navigation.
 
 ## Highlights

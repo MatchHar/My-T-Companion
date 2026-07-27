@@ -2,8 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> Current status: `1.4.1` is being validated in the private repository before
-> public availability.
+> Current release: `1.4.1` is the first public, checksummed release.
 >
 > The public App Store build is currently My T 3.10 and does not yet expose
 > Parking Monitor integration. Installing this companion early will not add
