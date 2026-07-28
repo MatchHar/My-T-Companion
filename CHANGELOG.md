@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.2
+
+- Fix the Caddy upgrade path so the new parking-event route is written only
+  after the temporary route file has been created.
+- Add a regression test for route-file initialization order.
+
 ## 1.9.1
 
 - Fix the one-command installer so it copies the new parking-event monitor

@@ -272,16 +272,6 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
     if [[ -z "$route_anchor" ]]; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
     fi
-    if [[ "$missing_parking_events" == true ]]; then
-      cat >> "$route_file" <<'CADDY'
-	@my_t_parking_events path_regexp my_t_parking_events ^/api/v1/cars/[0-9]+/parking-events$
-	handle @my_t_parking_events {
-		reverse_proxy 127.0.0.1:8083
-	}
-
-CADDY
-    fi
-
     backup="$CADDY_FILE.before-my-t-companion.$(date +%Y%m%d-%H%M%S)"
     cp "$CADDY_FILE" "$backup"
     route_file="$(mktemp)"
@@ -290,6 +280,15 @@ CADDY
       cat >> "$route_file" <<'CADDY'
 	@my_t_parking_states path_regexp my_t_parking_states ^/api/v1/cars/[0-9]+/states$
 	handle @my_t_parking_states {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+CADDY
+    fi
+    if [[ "$missing_parking_events" == true ]]; then
+      cat >> "$route_file" <<'CADDY'
+	@my_t_parking_events path_regexp my_t_parking_events ^/api/v1/cars/[0-9]+/parking-events$
+	handle @my_t_parking_events {
 		reverse_proxy 127.0.0.1:8083
 	}
 

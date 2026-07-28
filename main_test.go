@@ -39,6 +39,11 @@ func TestInstallerIncludesParkingEventMonitor(t *testing.T) {
 			t.Fatalf("installer is missing required parking monitor handling: %s", required)
 		}
 	}
+	routeFileInitialization := strings.Index(text, `route_file="$(mktemp)"`)
+	parkingRouteWrite := strings.Index(text, `if [[ "$missing_parking_events" == true ]]; then`)
+	if routeFileInitialization < 0 || parkingRouteWrite < 0 || routeFileInitialization > parkingRouteWrite {
+		t.Fatal("parking event route must be written only after route_file is initialized")
+	}
 }
 
 func TestTokenEqual(t *testing.T) {
