@@ -11,7 +11,7 @@
 > those screens. Wait for My T release notes that explicitly list support.
 
 **This companion is built specifically for the
-[My T iPhone app — download it from the App Store](https://apps.apple.com/cn/app/my-t/id6780299502).**
+[My T iPhone app — download it from the App Store](https://apps.apple.com/us/app/my-t/id6780299502).**
 Install My T first if you are looking for the app that uses these enhanced
 TeslaMate features.
 
@@ -37,7 +37,7 @@ not a replacement for TeslaMate or TeslaMateAPI.
 
 ## Why My T needs this companion
 
-[My T](https://apps.apple.com/cn/app/my-t/id6780299502) is an iPhone client for viewing
+[My T](https://apps.apple.com/us/app/my-t/id6780299502) is an iPhone client for viewing
 data stored on the user's own TeslaMate server. Standard TeslaMate and
 TeslaMateAPI endpoints remain sufficient for most trips, charging sessions,
 statistics, and current vehicle information.

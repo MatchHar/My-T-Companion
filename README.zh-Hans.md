@@ -9,7 +9,7 @@
 > 不会显示相关页面；请等待 My T 版本说明明确列出支持后再用于日常使用。
 
 **本组件专为
-[My T iPhone App 开发，可在 App Store 下载](https://apps.apple.com/cn/app/my-t/id6780299502)。**
+[My T iPhone App 开发，可在 App Store 下载](https://apps.apple.com/us/app/my-t/id6780299502)。**
 如果您是从 TeslaMate 项目找到这里，请先通过此链接确认并下载配套的 My T App。
 
 ## 充电锁屏实时活动
@@ -60,7 +60,7 @@ My T VPS Companion 是部署在 TeslaMate 服务器上的可选独立组件，�
 
 ## 为什么 My T 需要这个补充组件
 
-[My T](https://apps.apple.com/cn/app/my-t/id6780299502) 是用于查看用户自建
+[My T](https://apps.apple.com/us/app/my-t/id6780299502) 是用于查看用户自建
 TeslaMate 数据的 iPhone App。普通行程、充电、统计和当前车辆信息继续由标准
 TeslaMate/TeslaMateAPI 提供，本组件只补充两个手机端无法可靠还原的场景：
 
