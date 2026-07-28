@@ -1,6 +1,6 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-companion
-    image: myt/companion:1.9.0
+    image: myt/companion:1.9.1
     restart: unless-stopped
     init: true
     read_only: true

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.1
+
+- Fix the one-command installer so it copies the new parking-event monitor
+  source into the installation directory before building the container.
+- Keep 1.9.0 data/API behavior unchanged.
+
 ## 1.9.0
 
 - Persist future-only genuine TeslaMate MQTT parking transitions for plug and

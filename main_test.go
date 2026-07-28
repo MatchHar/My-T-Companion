@@ -25,6 +25,22 @@ func TestAPIVersionMatchesReleaseVersion(t *testing.T) {
 	}
 }
 
+func TestInstallerIncludesParkingEventMonitor(t *testing.T) {
+	installer, err := os.ReadFile("install.sh")
+	if err != nil {
+		t.Fatalf("read install.sh: %v", err)
+	}
+	text := string(installer)
+	for _, required := range []string{
+		`-f "$SOURCE_DIR/parking_event_monitor.go"`,
+		`install -m 0644 "$SOURCE_DIR/parking_event_monitor.go" "$INSTALL_DIR/parking_event_monitor.go"`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("installer is missing required parking monitor handling: %s", required)
+		}
+	}
+}
+
 func TestTokenEqual(t *testing.T) {
 	t.Parallel()
 	if !tokenEqual("correct-token", "correct-token") {

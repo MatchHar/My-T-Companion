@@ -20,7 +20,7 @@ import (
 const headerAPIVersion = "API-Version"
 
 var (
-	apiVersion        = "1.9.0"
+	apiVersion        = "1.9.1"
 	db                *sql.DB
 	apiToken          string
 	authProbeURL      string
