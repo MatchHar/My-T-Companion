@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.6.0 — 2026-07-28
+
+- Added privacy-minimal TeslaMate MQTT monitoring for genuine charging start,
+  update, and end events.
+- Added ActivityKit push-to-start support so My T can present a charging Live
+  Activity while the App is not open.
+- Added true battery percentage, rated-range gain, charging power, remaining
+  time, and completion-time updates at 45 seconds normally and 15 seconds at
+  50 kW or above.
+- Added an authenticated charging Live Activity delivery-status endpoint.
+- Continued to exclude VIN, location, routes, TeslaMate credentials, and kWh
+  from the charging push payload.
+
 ## 1.5.1
 
 - Upgrade Eclipse Paho MQTT to 1.5.1.

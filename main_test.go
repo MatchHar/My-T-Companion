@@ -121,6 +121,116 @@ func TestSoftwarePushPairingRejectsUntrustedRelay(t *testing.T) {
 	}
 }
 
+func TestChargingEventUsesOnlyRequiredTelemetryAndValidSignature(t *testing.T) {
+	t.Parallel()
+	const secret = "relay-secret"
+	var received chargingLiveActivityEvent
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		signature := hmac.New(sha256.New, []byte(secret))
+		_, _ = signature.Write(body)
+		want := "sha256=" + hex.EncodeToString(signature.Sum(nil))
+		if !hmac.Equal([]byte(r.Header.Get("X-My-T-Signature")), []byte(want)) {
+			t.Fatal("relay signature mismatch")
+		}
+		for _, prohibited := range []string{"vin", "latitude", "longitude", "address", "teslamate_token"} {
+			if strings.Contains(strings.ToLower(string(body)), prohibited) {
+				t.Fatalf("payload contains prohibited field %q", prohibited)
+			}
+		}
+		if err := json.Unmarshal(body, &received); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	power, startRange, currentRange := 10.8, 171.0, 254.0
+	addedRange := currentRange - startRange
+	remaining := 4200
+	eta := time.Date(2026, 7, 28, 23, 10, 0, 0, time.UTC).Unix()
+	monitor := &chargingNotificationMonitor{
+		relayURL:       server.URL,
+		relaySecret:    secret,
+		installationID: "installation-1",
+		httpClient:     server.Client(),
+	}
+	event := chargingLiveActivityEvent{
+		EventID:             "event-1",
+		InstallationID:      "installation-1",
+		CarID:               1,
+		VehicleName:         "MY CAR",
+		Type:                "charging_updated",
+		SessionID:           "charge-1234567890abcdef",
+		StartBatteryLevel:   35,
+		BatteryLevel:        52,
+		AddedBatteryPercent: 17,
+		TargetLevel:         80,
+		StartRatedRangeKM:   &startRange,
+		RatedRangeKM:        &currentRange,
+		AddedRangeKM:        &addedRange,
+		PowerKW:             &power,
+		RemainingSeconds:    &remaining,
+		EstimatedCompleteAt: &eta,
+		ObservedAt:          "2026-07-28T22:00:00Z",
+	}
+	if err := monitor.deliver(event); err != nil {
+		t.Fatal(err)
+	}
+	if received.SessionID != event.SessionID || received.BatteryLevel != 52 ||
+		received.AddedBatteryPercent != 17 ||
+		received.AddedRangeKM == nil || *received.AddedRangeKM != addedRange {
+		t.Fatalf("unexpected relay event: %+v", received)
+	}
+}
+
+func TestChargingSessionLifecycleUsesTrueBoundaryBattery(t *testing.T) {
+	t.Parallel()
+	monitor := &chargingNotificationMonitor{
+		installationID: strings.Repeat("a", 48),
+		pending:        map[int]*time.Timer{},
+		queue:          make(chan chargingLiveActivityEvent, 8),
+		store: chargingNotificationStore{
+			Cars:      map[int]carChargingState{},
+			Delivered: map[string]string{},
+		},
+		statePath: filepath.Join(t.TempDir(), "charging.json"),
+	}
+	at := time.Date(2026, 7, 28, 22, 0, 0, 0, time.UTC)
+	monitor.observe(1, "state", "charging", at)
+	if len(monitor.queue) != 0 {
+		t.Fatal("must wait for a genuine battery observation before starting")
+	}
+	monitor.observe(1, "charge_limit_soc", "80", at)
+	monitor.observe(1, "rated_battery_range_km", "171", at)
+	monitor.observe(1, "battery_level", "35", at.Add(time.Second))
+	start := <-monitor.queue
+	if start.Type != "charging_started" || start.StartBatteryLevel != 35 ||
+		start.BatteryLevel != 35 || start.TargetLevel != 80 {
+		t.Fatalf("unexpected start event: %+v", start)
+	}
+	monitor.mu.Lock()
+	state := monitor.store.Cars[1]
+	state.StartDelivered = true
+	monitor.store.Cars[1] = state
+	monitor.mu.Unlock()
+	monitor.observe(1, "battery_level", "36", at.Add(time.Minute))
+	update := <-monitor.queue
+	if update.Type != "charging_updated" || update.StartBatteryLevel != 35 ||
+		update.BatteryLevel != 36 || update.AddedBatteryPercent != 1 {
+		t.Fatalf("unexpected update event: %+v", update)
+	}
+	monitor.observe(1, "state", "online", at.Add(2*time.Minute))
+	end := <-monitor.queue
+	if end.Type != "charging_ended" || end.StartBatteryLevel != 35 ||
+		end.BatteryLevel != 36 {
+		t.Fatalf("unexpected end event: %+v", end)
+	}
+}
+
 func TestParsePageLimit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
