@@ -1,5 +1,6 @@
 # Place these matchers inside the API site's server block.
 @my_t_parking_states path_regexp my_t_parking_states ^/api/v1/cars/[0-9]+/states$
+@my_t_parking_events path_regexp my_t_parking_events ^/api/v1/cars/[0-9]+/parking-events$
 @my_t_current_drive path_regexp my_t_current_drive ^/api/v1/cars/[0-9]+/navigation/current-drive$
 @my_t_parking_capabilities path /api/v1/capabilities
 @my_t_software_push_status path /api/v1/notifications/software-update/status
@@ -7,6 +8,10 @@
 
 # Place these handles before the general TeslaMate API handle.
 handle @my_t_parking_states {
+	reverse_proxy 127.0.0.1:8083
+}
+
+handle @my_t_parking_events {
 	reverse_proxy 127.0.0.1:8083
 }
 

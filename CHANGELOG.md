@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.0
+
+- Persist future-only genuine TeslaMate MQTT parking transitions for plug and
+  charging, lock/Sentry/openings, climate, preconditioning, battery heating,
+  and charge-port state.
+- Treat each first retained MQTT value as a baseline so install and restart do
+  not fabricate history.
+- Add an authenticated date-range parking-event endpoint with 365-day default
+  retention and first-observed timestamp semantics.
+- Advertise feature-level charging, security, and climate event capabilities
+  so older and non-Companion My T installations remain unaffected.
+
 ## 1.8.0
 
 - Renamed the product and all pre-release technical identifiers to My T

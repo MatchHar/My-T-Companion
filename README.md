@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> Current release: `1.8.0`. Native vehicle software push, charging Live
+> Current release: `1.9.0`. Native vehicle software push, charging Live
 > Activities, and navigation Live Activities are optional and
 > remains disabled until a compatible My T build supplies a secure relay
 > pairing.
@@ -21,17 +21,20 @@ security, and troubleshooting, see the
 [My T documentation repository](https://github.com/MatchHar/My-T-App).
 For help with this component, see [SUPPORT.md](SUPPORT.md).
 
-This optional, standalone service adds complete TeslaMate vehicle-state history
-and reliable live-drive trajectories to My T. Parking monitoring and live
-navigation use the same container, authentication, installer, and update
-command. It reads the existing TeslaMate PostgreSQL database without changing
-TeslaMate or creating tables.
+This optional, standalone service adds complete TeslaMate vehicle-state history,
+future parking-event observation, and reliable live-drive trajectories to My T.
+Parking monitoring and live navigation use the same container, authentication,
+installer, and update command. It reads the existing TeslaMate PostgreSQL
+database without changing TeslaMate or creating tables.
 
-TeslaMate PostgreSQL remains the only source of truth. The monitor does not
-duplicate, delete, or rewrite vehicle history, so retention follows the user's
-TeslaMate database and backup policy. Open state intervals are calculated from
-the database on every request; clients should refresh an open parking session
-every 30 seconds.
+TeslaMate remains the source of truth. Database-backed history is never
+duplicated, deleted, or rewritten. Starting with 1.9.0, the companion also
+stores a small local event log for genuine MQTT transitions that TeslaMate does
+not preserve historically, such as a cable being connected before charging.
+The first retained value after install or restart is baseline-only and never
+becomes an event. Event timestamps mean “first observed by
+TeslaMate/Companion,” not a promised physical-action timestamp. The event log
+keeps 365 days by default and is stored in the existing companion data volume.
 
 Install this add-on **after TeslaMate is already deployed and working**. It is
 not a replacement for TeslaMate or TeslaMateAPI.
@@ -43,7 +46,7 @@ data stored on the user's own TeslaMate server. Standard TeslaMate and
 TeslaMateAPI endpoints remain sufficient for most trips, charging sessions,
 statistics, and current vehicle information.
 
-Two My T experiences need more precise server-side data:
+Three My T experiences need more precise server-side data:
 
 1. **Long-term My T Companion** needs the complete sequence of recorded
    `online`, `offline`, and `asleep` intervals, plus real battery/range samples
@@ -52,6 +55,9 @@ Two My T experiences need more precise server-side data:
 2. **Live navigation during an active drive** needs TeslaMate's immutable first
    GPS point and incremental trajectory points. The position visible when My T
    opens must never be presented as the true trip start.
+3. **Future parking events** need an always-running observer for plug/unplug,
+   charging, Sentry, lock/opening, and climate transitions. iOS cannot reliably
+   collect them while My T is suspended.
 
 This companion provides only those missing read-only capabilities. It keeps
 TeslaMate as the source of truth and lets My T automatically enable enhanced
@@ -66,6 +72,7 @@ views when `/api/v1/capabilities` is available.
 | Sleep and wake timeline | May be incomplete; My T does not estimate missing events | Full TeslaMate-recorded state sequence |
 | Parking battery/range change | Shown only when real observations already exist | Real transition-boundary observations within 30 minutes |
 | Charging while parked | Existing charging sessions remain visible | Charging can be placed alongside the state timeline |
+| Plug/security/climate events | No durable history while My T is closed | Future genuine MQTT transitions, with battery/range only when reported |
 | Active-drive map | Real current position and speed only when the true route start is unavailable | Immutable true start plus incremental real trajectory |
 
 The component is optional. My T detects it automatically; users do not add a
@@ -86,7 +93,7 @@ TeslaMate; it does not require or expose a second companion address.
 
 Port `8083` intentionally remains bound to `127.0.0.1` and must not be exposed
 directly to the LAN or Internet. For a direct-`8081` installation, first add a
-reverse proxy that sends the three companion routes to `127.0.0.1:8083` and all
+reverse proxy that sends the supplied companion routes to `127.0.0.1:8083` and all
 ordinary TeslaMateAPI routes to `127.0.0.1:8081`, then use that proxy address in
 My T. The supplied `Caddyfile.snippet` contains the required companion routes.
 
@@ -120,7 +127,7 @@ Vehicle → TeslaMate → PostgreSQL
 | --- | --- | --- |
 | A standalone Docker service and container | Yes | Runs the read-only companion API |
 | A loopback listener on `127.0.0.1:8083` | Yes | Keeps the service behind the existing protected reverse proxy |
-| Three reverse-proxy routes | Yes | Makes the capabilities, parking-state, and current-drive endpoints available through the My T base URL |
+| Companion reverse-proxy routes | Yes | Makes capability, parking-state/event, current-drive, and notification endpoints available through the My T base URL |
 | Installer configuration and recovery backups | Yes | Supports repeatable updates, rollback, and uninstall |
 | A new database or TeslaMate table | No | TeslaMate PostgreSQL remains the only source of truth |
 | A duplicate vehicle-history store | No | The companion queries data only when My T requests it |
@@ -229,7 +236,7 @@ GET /api/v1/notifications/software-update/status
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for complete changes and
-[RELEASE_NOTES_1.7.1.md](RELEASE_NOTES_1.8.0.md) for the current release.
+[RELEASE_NOTES_1.7.1.md](RELEASE_NOTES_1.9.0.md) for the current release.
 
 ## Who should install it
 
@@ -252,13 +259,13 @@ Installation uses a numbered GitHub Release rather than the mutable `main`
 branch. With GitHub CLI installed:
 
 ```sh
-version=1.8.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.9.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Without GitHub CLI:
 
 ```sh
-version=1.8.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.9.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Full success is reported only after both the local service and the unified My T
@@ -307,6 +314,7 @@ The installer stops with an actionable error instead of guessing.
 
 - `GET /api/v1/capabilities`
 - `GET /api/v1/cars/{car_id}/states?startDate=...&endDate=...`
+- `GET /api/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
 - `GET /api/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
 - `GET /api/healthz`
 
@@ -380,7 +388,7 @@ manifest, and backs up the existing installation before applying it:
 sudo /opt/my-t-companion/update.sh
 ```
 
-Use `sudo MY_T_VERSION=1.8.0 /opt/my-t-companion/update.sh` to select a
+Use `sudo MY_T_VERSION=1.9.0 /opt/my-t-companion/update.sh` to select a
 specific version.
 
 The service has no private database or migration. Updating it does not alter
@@ -396,7 +404,7 @@ sudo /opt/my-t-companion/uninstall.sh
 
 The command removes the standalone container and installer-owned Caddy routes,
 but preserves `/opt/my-t-companion` for recovery. Manually configured
-reverse proxies must have the three companion routes removed manually.
+custom reverse proxies must have the supplied companion routes removed manually.
 TeslaMate continues to operate normally because this add-on is independent.
 
 ## Supported environments

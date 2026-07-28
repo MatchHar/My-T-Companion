@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 目前正式版本：`1.8.0`。車輛軟體原生推送、充電鎖屏即時活動及導航即時活動均為選用功能，在相容的 My T 版本
+> 目前正式版本：`1.9.0`。車輛軟體原生推送、充電鎖屏即時活動及導航即時活動均為選用功能，在相容的 My T 版本
 > 提供安全配對前保持關閉。
 >
 > App Store 目前公開版本為 My T 3.10，尚未提供停車監控整合。提前安裝本元件
@@ -62,12 +62,14 @@ My T 的完整產品介紹、TeslaMateAPI 部署、連線安全及故障排查�
 [My T 公開文件倉庫](https://github.com/MatchHar/My-T-App)。
 
 My T Companion 是部署於 TeslaMate 伺服器的選用獨立元件，為 My T
-提供完整的車輛狀態歷史與可靠的即時行駛軌跡。長期停車監控與即時導航共用
-同一個容器、驗證方式、安裝指令及更新流程。
+提供完整的車輛狀態歷史、未來停車事件觀測及可靠的即時行駛軌跡。長期停車監控
+與即時導航共用同一個容器、驗證方式、安裝指令及更新流程。
 
-元件只讀取現有 TeslaMate PostgreSQL 資料庫，不修改 TeslaMate、不建立資料表，
-也不會複製、刪除或改寫車輛歷史。TeslaMate 資料庫始終是唯一資料來源，歷史
-保留時間取決於使用者自己的 TeslaMate 資料庫及備份策略。
+元件唯讀現有 TeslaMate PostgreSQL 資料庫，不修改 TeslaMate、不建立資料表，
+也不會複製、刪除或改寫資料庫歷史。從 1.9.0 開始，元件會在自己的資料卷保存
+TeslaMate 未長期保存的真實 MQTT 狀態變化，例如開始充電前已插槍。安裝或重新
+啟動後的第一個保留值只建立基線，不會產生假事件。事件時間代表「TeslaMate／
+Companion 首次觀測時間」，不冒充更精確的實體操作時間。事件預設保留 365 天。
 
 請在 **TeslaMate 已部署並正常運作之後** 安裝此元件。它不能取代 TeslaMate
 或 TeslaMateAPI。
@@ -76,13 +78,15 @@ My T Companion 是部署於 TeslaMate 伺服器的選用獨立元件，為 My T
 
 [My T](https://apps.apple.com/us/app/my-t/id6780299502) 是用於查看使用者自建
 TeslaMate 資料的 iPhone App。一般行程、充電、統計及目前車輛資訊繼續由標準
-TeslaMate/TeslaMateAPI 提供，此元件只補充兩個手機端無法可靠還原的情境：
+TeslaMate/TeslaMateAPI 提供，此元件只補充三個手機端無法可靠還原的情境：
 
 1. **長期停車監控**：需要完整的 `online`、`offline`、`asleep` 狀態順序，
    以及每次狀態切換前後的真實電量與續航。App 關閉期間發生的事件無法由手機
    事後重建。
 2. **正在行駛時的即時導航**：需要 TeslaMate 儲存的最早真實 GPS 點及後續
    增量軌跡。My T 開啟時看到的位置不能被當作真實行程起點。
+3. **未來停車事件**：插槍／拔槍、充電、哨兵、鎖車／開口及空調變化需要持續
+   運作的觀測服務；iOS 在 My T 被暫停後不能可靠保存這些事件。
 
 VPS Companion 只提供這些缺少的唯讀能力。TeslaMate 仍是唯一資料來源；
 My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
@@ -96,6 +100,7 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 | 休眠與喚醒流水 | 可能不完整，My T 不會估算缺失事件 | 顯示 TeslaMate 真實儲存的完整狀態順序 |
 | 停車電量與續航變化 | 僅在已有真實資料時顯示 | 顯示切換前後 30 分鐘內的真實邊界觀測 |
 | 停車途中充電 | 充電記錄正常可查 | 可與停車狀態流水結合顯示 |
+| 插槍、安全及空調事件 | My T 關閉後沒有持續歷史 | 保存部署後的真實 MQTT 變化；只顯示實際回報的電量與續航 |
 | 正在行駛地圖 | 沒有真實起點時只顯示車輛位置及速度 | 顯示不可變真實起點及增量真實軌跡 |
 
 此元件完全為選用。My T 會自動偵測；使用者不需要在 App 內新增伺服器、帳號或車輛連線。
@@ -145,7 +150,7 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 | --- | --- | --- |
 | 獨立 Docker 服務與容器 | 是 | 執行唯讀 Companion API |
 | `127.0.0.1:8083` 本機監聽連接埠 | 是 | 讓服務始終位於現有受保護的反向代理之後 |
-| 三條反向代理路由 | 是 | 透過 My T 原有伺服器位址提供能力偵測、停車狀態及目前行駛介面 |
+| Companion 反向代理路由 | 是 | 透過 My T 原有伺服器位址提供能力偵測、停車狀態／事件、目前行駛及通知介面 |
 | 安裝設定與復原備份 | 是 | 支援重複更新、回復及解除安裝 |
 | 新資料庫或 TeslaMate 資料表 | 否 | TeslaMate PostgreSQL 始終是唯一資料來源 |
 | 重複的車輛歷史儲存 | 否 | 僅在 My T 請求時查詢資料 |
@@ -170,7 +175,7 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 | 1.5.1 | 修補 MQTT 與 Go 網路依賴，不改變 API 或部署方式 |
 
 完整改動請查看 [CHANGELOG.md](CHANGELOG.md)，目前版本說明請查看
-[RELEASE_NOTES_1.8.0.md](RELEASE_NOTES_1.8.0.md)。
+[RELEASE_NOTES_1.9.0.md](RELEASE_NOTES_1.9.0.md)。
 
 ## 哪些使用者需要安裝
 
@@ -194,13 +199,13 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 安裝使用固定 GitHub Release，不直接執行會變動的 `main` 分支。已安裝 GitHub CLI 時：
 
 ```sh
-version=1.8.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.9.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 未安裝 GitHub CLI 時：
 
 ```sh
-version=1.8.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.9.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 只有本機服務和 My T 統一入口都驗證成功，安裝程式才報告完整成功。手動使用
@@ -234,6 +239,7 @@ Nginx、Traefik 或容器代理時，必須加入並驗證倉庫提供的路由�
 
 - `GET /api/v1/capabilities`
 - `GET /api/v1/cars/{car_id}/states?startDate=...&endDate=...`
+- `GET /api/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
 - `GET /api/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
 - `GET /api/healthz`
 
@@ -298,7 +304,7 @@ sudo /opt/my-t-companion/update.sh
 ```
 
 指定版本可執行：
-`sudo MY_T_VERSION=1.8.0 /opt/my-t-companion/update.sh`。
+`sudo MY_T_VERSION=1.9.0 /opt/my-t-companion/update.sh`。
 
 元件沒有獨立資料庫或資料遷移。更新不會改變 TeslaMate 歷史資料。
 

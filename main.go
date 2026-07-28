@@ -20,17 +20,19 @@ import (
 const headerAPIVersion = "API-Version"
 
 var (
-	apiVersion       = "1.8.0"
-	db               *sql.DB
-	apiToken         string
-	authProbeURL     string
-	authClient       *http.Client
-	location         *time.Location
-	carIDPath        = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
-	currentDrivePath = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
-	softwarePush     *softwareNotificationMonitor
-	chargingPush     *chargingNotificationMonitor
-	navigationPush   *navigationNotificationMonitor
+	apiVersion        = "1.9.0"
+	db                *sql.DB
+	apiToken          string
+	authProbeURL      string
+	authClient        *http.Client
+	location          *time.Location
+	carIDPath         = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
+	currentDrivePath  = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
+	parkingEventsPath = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
+	softwarePush      *softwareNotificationMonitor
+	chargingPush      *chargingNotificationMonitor
+	navigationPush    *navigationNotificationMonitor
+	parkingEvents     *parkingEventMonitor
 )
 
 type telemetrySample struct {
@@ -135,6 +137,9 @@ func main() {
 	navigationPush = newNavigationNotificationMonitorFromEnvironment()
 	navigationPush.start()
 	defer navigationPush.stop()
+	parkingEvents = newParkingEventMonitorFromEnvironment()
+	parkingEvents.start()
+	defer parkingEvents.stop()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", handlePing)
@@ -296,6 +301,10 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"navigation_live_activity_events",
 			"navigation_live_activity_push_to_start",
 			"navigation_live_activity_remote_updates",
+			"parking_observed_events",
+			"parking_charge_connection_events",
+			"parking_security_events",
+			"parking_climate_events",
 		},
 		"data_policy":                 "teslamate_read_only_observations",
 		"storage_mode":                "teslamate_source_of_truth",
@@ -336,6 +345,10 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 
 	if matches := currentDrivePath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
 		handleCurrentDrive(w, r, matches[1])
+		return
+	}
+	if matches := parkingEventsPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
+		handleParkingEvents(w, r, matches[1])
 		return
 	}
 
@@ -385,6 +398,46 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 			StorageMode:               "teslamate_source_of_truth",
 			Retention:                 "follows_teslamate_database",
 			RecommendedRefreshSeconds: 30,
+		},
+	})
+}
+
+func handleParkingEvents(w http.ResponseWriter, r *http.Request, carIDValue string) {
+	if !authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	carID, err := strconv.Atoi(carIDValue)
+	if err != nil || carID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid car id"})
+		return
+	}
+	startDate, err := parseDateParam(r.URL.Query().Get("startDate"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid startDate"})
+		return
+	}
+	endDate, err := parseDateParam(r.URL.Query().Get("endDate"))
+	if err != nil || !endDate.After(startDate) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid endDate"})
+		return
+	}
+	events := []parkingObservedEvent{}
+	retentionDays := defaultParkingEventRetentionDays
+	if parkingEvents != nil {
+		events = parkingEvents.events(carID, startDate, endDate)
+		retentionDays = parkingEvents.retentionDays
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"car":    carRef{CarID: carID},
+			"events": events,
+		},
+		"meta": map[string]any{
+			"generated_at":     time.Now().In(location).Format(time.RFC3339),
+			"storage_mode":     "companion_observed_mqtt",
+			"retention_days":   retentionDays,
+			"timestamp_policy": "teslamate_mqtt_first_observed",
 		},
 	})
 }

@@ -1,6 +1,6 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-companion
-    image: myt/companion:1.8.0
+    image: myt/companion:1.9.0
     restart: unless-stopped
     init: true
     read_only: true
@@ -27,6 +27,8 @@
       - PUSH_RELAY_SECRET=${PUSH_RELAY_SECRET:-}
       - PUSH_STATE_PATH=/data/software-notifications.json
       - NAVIGATION_PUSH_STATE_PATH=/data/navigation-live-activities.json
+      - PARKING_EVENT_STATE_PATH=/data/parking-events.json
+      - PARKING_EVENT_RETENTION_DAYS=${PARKING_EVENT_RETENTION_DAYS:-365}
     ports:
       - "127.0.0.1:8083:8080"
     volumes:

@@ -242,6 +242,106 @@ func TestChargingSessionLifecycleUsesTrueBoundaryBattery(t *testing.T) {
 	}
 }
 
+func TestParkingEventsIgnoreRetainedBaselineAndPersistRealTransitions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "parking-events.json")
+	monitor := &parkingEventMonitor{
+		statePath:     path,
+		retentionDays: 365,
+		store: parkingEventStore{
+			Cars:   map[int]parkingEventCarState{},
+			Events: []parkingObservedEvent{},
+		},
+	}
+	at := time.Date(2026, 7, 28, 22, 0, 0, 0, time.UTC)
+	monitor.observe(1, "battery_level", "35", at)
+	monitor.observe(1, "rated_battery_range_km", "171", at)
+	monitor.observe(1, "plugged_in", "false", at)
+	monitor.observe(1, "charging_state", "Disconnected", at)
+	if len(monitor.store.Events) != 0 {
+		t.Fatalf("retained baseline must not create events: %+v", monitor.store.Events)
+	}
+
+	monitor.observe(1, "plugged_in", "true", at.Add(time.Minute))
+	monitor.observe(1, "charging_state", "NoPower", at.Add(2*time.Minute))
+	monitor.observe(1, "charging_state", "Charging", at.Add(3*time.Minute))
+	monitor.observe(1, "battery_level", "36", at.Add(4*time.Minute))
+	monitor.observe(1, "charging_state", "Complete", at.Add(5*time.Minute))
+	monitor.observe(1, "plugged_in", "false", at.Add(6*time.Minute))
+
+	wantTypes := []string{
+		"plug_connected",
+		"charging_no_power",
+		"charging_started",
+		"charging_completed",
+		"plug_disconnected",
+	}
+	if len(monitor.store.Events) != len(wantTypes) {
+		t.Fatalf("got %d events, want %d: %+v", len(monitor.store.Events), len(wantTypes), monitor.store.Events)
+	}
+	for index, want := range wantTypes {
+		if got := monitor.store.Events[index].Type; got != want {
+			t.Fatalf("event %d type=%q, want %q", index, got, want)
+		}
+	}
+	if event := monitor.store.Events[2]; event.BatteryLevel == nil || *event.BatteryLevel != 35 ||
+		event.RatedRangeKM == nil || *event.RatedRangeKM != 171 ||
+		event.ObservationMode != "teslamate_mqtt_first_observed" {
+		t.Fatalf("unexpected boundary telemetry: %+v", event)
+	}
+
+	loaded := &parkingEventMonitor{
+		statePath: path,
+		store: parkingEventStore{
+			Cars:   map[int]parkingEventCarState{},
+			Events: []parkingObservedEvent{},
+		},
+	}
+	loaded.load()
+	if len(loaded.store.Events) != len(wantTypes) {
+		t.Fatalf("persisted events not restored: %+v", loaded.store.Events)
+	}
+}
+
+func TestParkingSecurityAndClimateTransitions(t *testing.T) {
+	monitor := &parkingEventMonitor{
+		statePath:     filepath.Join(t.TempDir(), "parking-events.json"),
+		retentionDays: 365,
+		store: parkingEventStore{
+			Cars:   map[int]parkingEventCarState{},
+			Events: []parkingObservedEvent{},
+		},
+	}
+	at := time.Date(2026, 7, 28, 22, 0, 0, 0, time.UTC)
+	fields := []string{
+		"locked", "sentry_mode", "doors_open", "windows_open",
+		"trunk_open", "frunk_open", "is_climate_on",
+		"is_preconditioning", "battery_heater",
+	}
+	for _, field := range fields {
+		monitor.observe(1, field, "false", at)
+		monitor.observe(1, field, "true", at.Add(time.Minute))
+	}
+	want := []string{
+		"vehicle_locked",
+		"sentry_enabled",
+		"doors_opened",
+		"windows_opened",
+		"trunk_opened",
+		"frunk_opened",
+		"climate_started",
+		"preconditioning_started",
+		"battery_heating_started",
+	}
+	if len(monitor.store.Events) != len(want) {
+		t.Fatalf("got events %+v", monitor.store.Events)
+	}
+	for index, eventType := range want {
+		if monitor.store.Events[index].Type != eventType {
+			t.Fatalf("event %d=%q, want %q", index, monitor.store.Events[index].Type, eventType)
+		}
+	}
+}
+
 func TestParsePageLimit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
