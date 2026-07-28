@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 目前正式版本：`1.6.0`。車輛軟體原生推送與充電鎖屏即時活動為選用功能，在相容的 My T 版本
+> 目前正式版本：`1.6.1`。車輛軟體原生推送與充電鎖屏即時活動為選用功能，在相容的 My T 版本
 > 提供安全配對前保持關閉。
 >
 > App Store 目前公開版本為 My T 3.10，尚未提供停車監控整合。提前安裝本元件
@@ -14,7 +14,7 @@
 
 ## 充電鎖屏即時活動
 
-1.6.0 讀取 TeslaMate MQTT 真實回報的充電狀態、電量百分比、額定續航、充電上限、
+1.6.1 讀取 TeslaMate MQTT 真實回報的充電狀態、電量百分比、額定續航、充電上限、
 功率與剩餘時間。相容的 My T 版本即使沒有開啟，也可以自動顯示並更新鎖屏／靈動島
 充電卡片。
 
@@ -156,7 +156,7 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 | 1.5.1 | 修補 MQTT 與 Go 網路依賴，不改變 API 或部署方式 |
 
 完整改動請查看 [CHANGELOG.md](CHANGELOG.md)，目前版本說明請查看
-[RELEASE_NOTES_1.6.0.md](RELEASE_NOTES_1.6.0.md)。
+[RELEASE_NOTES_1.6.1.md](RELEASE_NOTES_1.6.1.md)。
 
 ## 哪些使用者需要安裝
 
@@ -180,13 +180,13 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 安裝使用固定 GitHub Release，不直接執行會變動的 `main` 分支。已安裝 GitHub CLI 時：
 
 ```sh
-version=1.6.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.6.1; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 未安裝 GitHub CLI 時：
 
 ```sh
-version=1.6.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.6.1; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 只有本機服務和 My T 統一入口都驗證成功，安裝程式才報告完整成功。手動使用
@@ -235,7 +235,7 @@ Nginx、Traefik 或容器代理時，必須加入並驗證倉庫提供的路由�
 - 現有 TeslaMate API 已透過 HTTPS、VPN 或 Cloudflare Access 保護。
 - 連接埠 `8083` 必須綁定為 `127.0.0.1:8083`，不能直接開放到公網。
 
-1.6.0 預設安全措施：
+1.6.1 預設安全措施：
 
 - 容器以非 root 使用者 UID 10001 執行。
 - 根檔案系統唯讀。
@@ -284,7 +284,7 @@ sudo /opt/my-t-parking-monitor/update.sh
 ```
 
 指定版本可執行：
-`sudo MY_T_VERSION=1.6.0 /opt/my-t-parking-monitor/update.sh`。
+`sudo MY_T_VERSION=1.6.1 /opt/my-t-parking-monitor/update.sh`。
 
 元件沒有獨立資料庫或資料遷移。更新不會改變 TeslaMate 歷史資料。
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 — 2026-07-28
+## 1.6.1 — 2026-07-28
 
 - Added privacy-minimal TeslaMate MQTT monitoring for genuine charging start,
   update, and end events.

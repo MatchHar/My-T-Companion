@@ -58,7 +58,8 @@ require_command curl
 [[ -f "$TESLAMATE_DIR/.env" ]] || fail "TeslaMate .env not found."
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || fail "Invalid or missing VERSION file."
-[[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" && -f "$SOURCE_DIR/notification.go" ]] \
+[[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" &&
+   -f "$SOURCE_DIR/notification.go" && -f "$SOURCE_DIR/charging_notification.go" ]] \
   || fail "Run install.sh from a complete My-T-Parking-Monitor checkout."
 
 log "Checking the existing TeslaMate deployment"
@@ -154,6 +155,7 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   fi
   install -m 0644 "$SOURCE_DIR/main.go" "$INSTALL_DIR/main.go"
   install -m 0644 "$SOURCE_DIR/notification.go" "$INSTALL_DIR/notification.go"
+  install -m 0644 "$SOURCE_DIR/charging_notification.go" "$INSTALL_DIR/charging_notification.go"
   install -m 0644 "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
   install -m 0755 "$SOURCE_DIR/update.sh" "$INSTALL_DIR/update.sh"
