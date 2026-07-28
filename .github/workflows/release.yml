@@ -26,7 +26,7 @@ jobs:
             "$GITHUB_REF_NAME"
             dist/*
             --verify-tag
-            --title "My T VPS Companion ${version}"
+            --title "My T Companion ${version}"
           )
           if [[ -f "$notes_file" ]]; then
             release_args+=(--notes-file "$notes_file")
