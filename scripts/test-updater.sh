@@ -10,15 +10,15 @@ make_release() {
   local version="$1"
   local install_body="$2"
   local release_dir="$test_dir/release-$version"
-  local source_dir="$test_dir/source-$version/my-t-parking-monitor-$version"
-  local archive="my-t-parking-monitor-$version.tar.gz"
+  local source_dir="$test_dir/source-$version/my-t-companion-$version"
+  local archive="my-t-companion-$version.tar.gz"
   mkdir -p "$release_dir" "$source_dir"
   printf '%s\n' "$version" > "$source_dir/VERSION"
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' "$install_body" \
     > "$source_dir/install.sh"
   chmod +x "$source_dir/install.sh"
   tar -C "$test_dir/source-$version" -czf "$release_dir/$archive" \
-    "my-t-parking-monitor-$version"
+    "my-t-companion-$version"
   (
     cd "$release_dir"
     sha256sum "$archive" > "$archive.sha256"

@@ -1,4 +1,4 @@
-# My T Parking Monitor 1.6.0
+# My T Companion 1.6.0
 
 This feature release adds the VPS side of My T charging Live Activities.
 
@@ -33,7 +33,7 @@ the service does not estimate missing kilometers.
 ## Upgrade
 
 ```sh
-sudo MY_T_VERSION=1.6.0 /opt/my-t-parking-monitor/update.sh
+sudo MY_T_VERSION=1.6.0 /opt/my-t-companion/update.sh
 ```
 
 The updater creates a recoverable backup before replacing the installation.

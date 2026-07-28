@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/my-t-parking-monitor}"
-REPOSITORY="${MY_T_GITHUB_REPOSITORY:-MatchHar/My-T-Parking-Monitor}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/my-t-companion}"
+REPOSITORY="${MY_T_GITHUB_REPOSITORY:-MatchHar/My-T-Companion}"
 REQUESTED_VERSION="${MY_T_VERSION:-latest}"
 SOURCE_OVERRIDE="${MY_T_UPDATE_SOURCE_DIR:-}"
 RELEASE_BASE_OVERRIDE="${MY_T_RELEASE_BASE_URL:-}"
@@ -38,7 +38,7 @@ fi
 [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || fail "Invalid release version: $REQUESTED_VERSION"
 
-archive_name="my-t-parking-monitor-${REQUESTED_VERSION}.tar.gz"
+archive_name="my-t-companion-${REQUESTED_VERSION}.tar.gz"
 release_base="${RELEASE_BASE_OVERRIDE:-https://github.com/${REPOSITORY}/releases/download/v${REQUESTED_VERSION}}"
 work_dir="$(mktemp -d)"
 cleanup() { rm -rf "$work_dir"; }

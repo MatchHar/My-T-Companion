@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.0
+
+- Renamed the product and all pre-release technical identifiers to My T
+  Companion.
+- Moved the canonical repository and release download paths to
+  `MatchHar/My-T-Companion`.
+- Added complete trilingual descriptions of parking, navigation, Live Activity,
+  and software-notification capabilities.
+- Kept TeslaMate PostgreSQL access read-only and preserved all security
+  controls from 1.7.1.
+
 ## 1.7.1 — 2026-07-28
 
 - Retry push-to-start with the newest complete snapshot after a Live Activity

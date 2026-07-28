@@ -21,7 +21,7 @@ the current source version.
 
 Do not open a public issue containing credentials, server addresses, vehicle
 locations, VINs, or database extracts. Use this repository's
-[private vulnerability reporting](https://github.com/MatchHar/My-T-Parking-Monitor/security/advisories/new)
+[private vulnerability reporting](https://github.com/MatchHar/My-T-Companion/security/advisories/new)
 for security-sensitive reports. For non-sensitive support questions, use the
 public issue templates only after removing all production secrets and private
 vehicle data.

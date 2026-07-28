@@ -1,4 +1,4 @@
-# My T Parking Monitor 1.7.1
+# My T Companion 1.7.1
 
 This corrective release makes charging and destination-navigation Live
 Activities recover reliably when iOS supplies its push token after the
@@ -20,5 +20,5 @@ TeslaMate event has already started.
 ## Upgrade
 
 ```sh
-sudo MY_T_VERSION=1.7.1 /opt/my-t-parking-monitor/update.sh
+sudo MY_T_VERSION=1.7.1 /opt/my-t-companion/update.sh
 ```

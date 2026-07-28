@@ -275,7 +275,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service": "my-t-parking-monitor",
+		"service": "my-t-companion",
 		"version": apiVersion,
 		"capabilities": []string{
 			"parking_state_history",

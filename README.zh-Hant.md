@@ -1,8 +1,8 @@
-# My T VPS Companion
+# My T Companion
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 目前正式版本：`1.7.1`。車輛軟體原生推送、充電鎖屏即時活動及導航即時活動均為選用功能，在相容的 My T 版本
+> 目前正式版本：`1.8.0`。車輛軟體原生推送、充電鎖屏即時活動及導航即時活動均為選用功能，在相容的 My T 版本
 > 提供安全配對前保持關閉。
 >
 > App Store 目前公開版本為 My T 3.10，尚未提供停車監控整合。提前安裝本元件
@@ -61,7 +61,7 @@ TeslaMate 行程驗證的進度。中繼不會接收座標、軌跡、VIN、Tesl
 My T 的完整產品介紹、TeslaMateAPI 部署、連線安全及故障排查，請查看
 [My T 公開文件倉庫](https://github.com/MatchHar/My-T-App)。
 
-My T VPS Companion 是部署於 TeslaMate 伺服器的選用獨立元件，為 My T
+My T Companion 是部署於 TeslaMate 伺服器的選用獨立元件，為 My T
 提供完整的車輛狀態歷史與可靠的即時行駛軌跡。長期停車監控與即時導航共用
 同一個容器、驗證方式、安裝指令及更新流程。
 
@@ -128,7 +128,7 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 車輛 → TeslaMate → PostgreSQL
                        │ Docker 內網唯讀連線
                        ▼
-               My T VPS Companion
+               My T Companion
                        │ 現有 HTTPS/API 驗證
                        ▼
                     My T App
@@ -170,7 +170,7 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 | 1.5.1 | 修補 MQTT 與 Go 網路依賴，不改變 API 或部署方式 |
 
 完整改動請查看 [CHANGELOG.md](CHANGELOG.md)，目前版本說明請查看
-[RELEASE_NOTES_1.7.1.md](RELEASE_NOTES_1.7.1.md)。
+[RELEASE_NOTES_1.8.0.md](RELEASE_NOTES_1.8.0.md)。
 
 ## 哪些使用者需要安裝
 
@@ -194,13 +194,13 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 安裝使用固定 GitHub Release，不直接執行會變動的 `main` 分支。已安裝 GitHub CLI 時：
 
 ```sh
-version=1.7.1; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.8.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 未安裝 GitHub CLI 時：
 
 ```sh
-version=1.7.1; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.8.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 只有本機服務和 My T 統一入口都驗證成功，安裝程式才報告完整成功。手動使用
@@ -294,11 +294,11 @@ curl -o /dev/null -w "%{http_code}\n" \
 可重複執行的安裝程式：
 
 ```sh
-sudo /opt/my-t-parking-monitor/update.sh
+sudo /opt/my-t-companion/update.sh
 ```
 
 指定版本可執行：
-`sudo MY_T_VERSION=1.7.1 /opt/my-t-parking-monitor/update.sh`。
+`sudo MY_T_VERSION=1.8.0 /opt/my-t-companion/update.sh`。
 
 元件沒有獨立資料庫或資料遷移。更新不會改變 TeslaMate 歷史資料。
 
@@ -307,11 +307,11 @@ sudo /opt/my-t-parking-monitor/update.sh
 由安裝程式管理的部署可執行：
 
 ```sh
-sudo /opt/my-t-parking-monitor/uninstall.sh
+sudo /opt/my-t-companion/uninstall.sh
 ```
 
 解除安裝程式會停止並移除獨立 Companion 容器，以及安裝程式建立的 Caddy 路由；
-`/opt/my-t-parking-monitor` 會保留以便復原。手動設定的反向代理路由需要手動刪除。
+`/opt/my-t-companion` 會保留以便復原。手動設定的反向代理路由需要手動刪除。
 解除安裝不影響 TeslaMate 主服務及其資料庫。
 
 ## 資料含義

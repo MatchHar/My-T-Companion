@@ -19,7 +19,7 @@ software-update notification behavior remain compatible with 1.5.0.
 Installer-managed deployments can run:
 
 ```sh
-sudo MY_T_VERSION=1.5.1 /opt/my-t-parking-monitor/update.sh
+sudo MY_T_VERSION=1.5.1 /opt/my-t-companion/update.sh
 ```
 
 The updater verifies the release checksum and keeps a recovery backup before

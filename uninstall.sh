@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/my-t-parking-monitor}"
-COMPOSE_PROJECT="${COMPOSE_PROJECT:-my-t-parking-monitor}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/my-t-companion}"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-my-t-companion}"
 CADDY_FILE="${CADDY_FILE:-/etc/caddy/Caddyfile}"
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then

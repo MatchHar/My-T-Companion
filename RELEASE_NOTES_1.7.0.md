@@ -1,4 +1,4 @@
-# My T Parking Monitor 1.7.0
+# My T Companion 1.7.0
 
 This release adds proactive destination-navigation Live Activities while
 preserving the companion's existing parking, drive-trajectory, charging, and
@@ -27,5 +27,5 @@ vehicle-software notification features.
 ## Upgrade
 
 ```sh
-sudo MY_T_VERSION=1.7.0 /opt/my-t-parking-monitor/update.sh
+sudo MY_T_VERSION=1.7.0 /opt/my-t-companion/update.sh
 ```

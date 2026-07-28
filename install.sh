@@ -2,12 +2,12 @@
 set -euo pipefail
 
 TESLAMATE_DIR="${TESLAMATE_DIR:-/opt/teslamate}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/my-t-parking-monitor}"
-COMPOSE_PROJECT="${COMPOSE_PROJECT:-my-t-parking-monitor}"
+INSTALL_DIR="${INSTALL_DIR:-/opt/my-t-companion}"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-my-t-companion}"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION_FILE="$SOURCE_DIR/VERSION"
 [[ -f "$VERSION_FILE" ]] || {
-  printf '[My T Parking Monitor] ERROR: VERSION file is missing.\n' >&2
+  printf '[My T Companion] ERROR: VERSION file is missing.\n' >&2
   exit 1
 }
 VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
@@ -22,11 +22,11 @@ PUSH_RELAY_URL="${PUSH_RELAY_URL:-}"
 PUSH_RELAY_SECRET="${PUSH_RELAY_SECRET:-}"
 
 log() {
-  printf '[My T Parking Monitor] %s\n' "$*"
+  printf '[My T Companion] %s\n' "$*"
 }
 
 fail() {
-  printf '[My T Parking Monitor] ERROR: %s\n' "$*" >&2
+  printf '[My T Companion] ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -60,7 +60,7 @@ require_command curl
   || fail "Invalid or missing VERSION file."
 [[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" &&
    -f "$SOURCE_DIR/notification.go" && -f "$SOURCE_DIR/charging_notification.go" && -f "$SOURCE_DIR/navigation_notification.go" ]] \
-  || fail "Run install.sh from a complete My-T-Parking-Monitor checkout."
+  || fail "Run install.sh from a complete My-T-Companion checkout."
 
 log "Checking the existing TeslaMate deployment"
 database_container="$(
@@ -182,9 +182,9 @@ chmod 0600 "$ENV_FILE"
 
 cat > "$COMPOSE_FILE" <<'YAML'
 services:
-  parking-monitor:
+  companion:
     build: .
-    image: myt/parking-monitor:${VERSION}
+    image: myt/companion:${VERSION}
     restart: unless-stopped
     init: true
     read_only: true
@@ -267,7 +267,7 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
     fi
 
-    backup="$CADDY_FILE.before-my-t-parking-monitor.$(date +%Y%m%d-%H%M%S)"
+    backup="$CADDY_FILE.before-my-t-companion.$(date +%Y%m%d-%H%M%S)"
     cp "$CADDY_FILE" "$backup"
     route_file="$(mktemp)"
     printf '\t# BEGIN MY T VPS COMPANION\n' > "$route_file"

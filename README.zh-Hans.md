@@ -1,8 +1,8 @@
-# My T VPS Companion
+# My T Companion
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 当前正式版本：`1.7.1`。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
+> 当前正式版本：`1.8.0`。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
 > 提供安全配对前保持关闭。
 >
 > App Store 当前公开版本为 My T 3.10，尚未提供停车监控接入。提前安装本组件
@@ -61,7 +61,7 @@ TeslaMate 行程验证的进度。中继不会接收坐标、轨迹、VIN、Tesl
 My T 的完整产品介绍、TeslaMateAPI 部署、连接安全与故障排查，请查看
 [My T 公开文档仓库](https://github.com/MatchHar/My-T-App)。
 
-My T VPS Companion 是部署在 TeslaMate 服务器上的可选独立组件，为 My T
+My T Companion 是部署在 TeslaMate 服务器上的可选独立组件，为 My T
 提供完整的车辆状态历史和可靠的实时行驶轨迹。长期停车监控与实时导航共用
 同一个容器、认证方式、安装命令和更新流程。
 
@@ -127,7 +127,7 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 车辆 → TeslaMate → PostgreSQL
                        │ Docker 内网只读连接
                        ▼
-               My T VPS Companion
+               My T Companion
                        │ 现有 HTTPS/API 认证
                        ▼
                     My T App
@@ -169,7 +169,7 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 | 1.5.1 | 修补 MQTT 与 Go 网络依赖，不改变 API 或部署方式 |
 
 完整改动请查看 [CHANGELOG.md](CHANGELOG.md)，当前版本说明请查看
-[RELEASE_NOTES_1.7.1.md](RELEASE_NOTES_1.7.1.md)。
+[RELEASE_NOTES_1.8.0.md](RELEASE_NOTES_1.8.0.md)。
 
 ## 哪些用户需要安装
 
@@ -193,13 +193,13 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 安装使用固定 GitHub Release，不直接执行会变化的 `main` 分支。已安装 GitHub CLI 时：
 
 ```sh
-version=1.7.1; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.8.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 未安装 GitHub CLI 时：
 
 ```sh
-version=1.7.1; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.8.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 只有本地服务和 My T 统一入口都验证成功，安装器才报告完整成功。手动使用
@@ -293,11 +293,11 @@ curl -o /dev/null -w "%{http_code}\n" \
 可重复执行的安装程序：
 
 ```sh
-sudo /opt/my-t-parking-monitor/update.sh
+sudo /opt/my-t-companion/update.sh
 ```
 
 指定版本可执行：
-`sudo MY_T_VERSION=1.7.1 /opt/my-t-parking-monitor/update.sh`。
+`sudo MY_T_VERSION=1.8.0 /opt/my-t-companion/update.sh`。
 
 组件没有独立数据库或数据迁移。更新不会改变 TeslaMate 历史数据。
 
@@ -306,11 +306,11 @@ sudo /opt/my-t-parking-monitor/update.sh
 安装器管理的部署可执行：
 
 ```sh
-sudo /opt/my-t-parking-monitor/uninstall.sh
+sudo /opt/my-t-companion/uninstall.sh
 ```
 
 卸载脚本会停止并移除独立 Companion 容器，以及安装器创建的 Caddy 路由；
-`/opt/my-t-parking-monitor` 会保留以便恢复。手动配置的反向代理路由需要手动删除。
+`/opt/my-t-companion` 会保留以便恢复。手动配置的反向代理路由需要手动删除。
 卸载不影响 TeslaMate 主服务及其数据库。
 
 ## 数据含义

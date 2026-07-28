@@ -1,7 +1,7 @@
 # My T VPS Companion 1.4.1
 
 This is the first public release of the optional read-only companion used by
-My T Parking Monitor and enhanced live navigation.
+My T Companion and enhanced live navigation.
 
 ## Highlights
 
@@ -34,13 +34,13 @@ mode and returns derived JSON only when requested.
 After installing an earlier release through the managed installer:
 
 ```sh
-sudo MY_T_VERSION=1.4.1 /opt/my-t-parking-monitor/update.sh
+sudo MY_T_VERSION=1.4.1 /opt/my-t-companion/update.sh
 ```
 
 The published GitHub Release must contain:
 
-- `my-t-parking-monitor-1.4.1.tar.gz`
-- `my-t-parking-monitor-1.4.1.tar.gz.sha256`
+- `my-t-companion-1.4.1.tar.gz`
+- `my-t-companion-1.4.1.tar.gz.sha256`
 
 The exact checksum shown by GitHub must match the downloaded manifest before
 installation.
@@ -51,7 +51,7 @@ The updater keeps a recovery backup of the prior installation. For a managed
 deployment, removal is available through:
 
 ```sh
-sudo /opt/my-t-parking-monitor/uninstall.sh
+sudo /opt/my-t-companion/uninstall.sh
 ```
 
 This removes the standalone container and installer-managed proxy routes while

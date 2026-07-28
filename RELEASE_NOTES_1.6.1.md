@@ -1,4 +1,4 @@
-# My T Parking Monitor 1.6.1
+# My T Companion 1.6.1
 
 This release includes the charging Live Activity feature from 1.6.0 and fixes
 the verified-release installer so the new charging monitor source is copied
@@ -22,5 +22,5 @@ into the installation directory before the container is built.
 ## Upgrade
 
 ```sh
-sudo MY_T_VERSION=1.6.1 /opt/my-t-parking-monitor/update.sh
+sudo MY_T_VERSION=1.6.1 /opt/my-t-companion/update.sh
 ```

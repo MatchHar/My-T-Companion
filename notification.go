@@ -85,7 +85,7 @@ func newSoftwareNotificationMonitorFromEnvironment() *softwareNotificationMonito
 		relayURL:       relayURL,
 		relaySecret:    relaySecret,
 		mqttBroker:     getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
-		mqttClientID:   getenv("MQTT_CLIENT_ID", "my-t-parking-monitor"),
+		mqttClientID:   getenv("MQTT_CLIENT_ID", "my-t-companion"),
 		mqttUsername:   strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
 		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
 		httpClient:     &http.Client{Timeout: 12 * time.Second},

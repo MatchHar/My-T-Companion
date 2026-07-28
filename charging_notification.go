@@ -99,7 +99,7 @@ func newChargingNotificationMonitorFromEnvironment() *chargingNotificationMonito
 		relayURL:       strings.TrimSpace(os.Getenv("PUSH_RELAY_URL")),
 		relaySecret:    strings.TrimSpace(os.Getenv("PUSH_RELAY_SECRET")),
 		mqttBroker:     getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
-		mqttClientID:   getenv("MQTT_CLIENT_ID", "my-t-parking-monitor") + "-charging",
+		mqttClientID:   getenv("MQTT_CLIENT_ID", "my-t-companion") + "-charging",
 		mqttUsername:   strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
 		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
 		httpClient:     &http.Client{Timeout: 12 * time.Second},
