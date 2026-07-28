@@ -8,11 +8,22 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestAPIVersionMatchesReleaseVersion(t *testing.T) {
+	releaseVersion, err := os.ReadFile("VERSION")
+	if err != nil {
+		t.Fatalf("read VERSION: %v", err)
+	}
+	if got, want := apiVersion, strings.TrimSpace(string(releaseVersion)); got != want {
+		t.Fatalf("apiVersion %q does not match VERSION %q", got, want)
+	}
+}
 
 func TestTokenEqual(t *testing.T) {
 	t.Parallel()
