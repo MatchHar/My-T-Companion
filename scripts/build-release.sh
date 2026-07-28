@@ -11,7 +11,7 @@ trap 'rm -rf "$stage_dir"' EXIT
 mkdir -p "$output_dir" "$stage_dir/my-t-companion-${version}"
 git -C "$repo_dir" archive HEAD \
   | tar -x -C "$stage_dir/my-t-companion-${version}"
-tar -C "$stage_dir" -czf "$output_dir/$archive_name" \
+COPYFILE_DISABLE=1 tar -C "$stage_dir" -czf "$output_dir/$archive_name" \
   "my-t-companion-${version}"
 (
   cd "$output_dir"
