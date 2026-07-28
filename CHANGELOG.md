@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.0 — 2026-07-28
+
+- Added privacy-minimal TeslaMate MQTT monitoring for genuine active
+  destination navigation.
+- Added remote navigation Live Activity push-to-start, update, and end events
+  for compatible My T builds.
+- Added remaining distance/time, arrival battery, and verified current-drive
+  progress without transmitting coordinates or trajectory through the relay.
+- Preserved the last valid destination while ending an activity and supported
+  destination changes during an active drive.
+- Added authenticated navigation delivery status while keeping navigation
+  optional and preserving the ordinary in-App destination card without VPS.
+
 ## 1.6.1 — 2026-07-28
 
 - Added privacy-minimal TeslaMate MQTT monitoring for genuine charging start,

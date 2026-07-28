@@ -1,6 +1,6 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-parking-monitor
-    image: myt/parking-monitor:1.6.1
+    image: myt/parking-monitor:1.7.0
     restart: unless-stopped
     init: true
     read_only: true
@@ -26,6 +26,7 @@
       - PUSH_RELAY_URL=${PUSH_RELAY_URL:-}
       - PUSH_RELAY_SECRET=${PUSH_RELAY_SECRET:-}
       - PUSH_STATE_PATH=/data/software-notifications.json
+      - NAVIGATION_PUSH_STATE_PATH=/data/navigation-live-activities.json
     ports:
       - "127.0.0.1:8083:8080"
     volumes:

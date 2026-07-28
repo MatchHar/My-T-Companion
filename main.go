@@ -20,7 +20,7 @@ import (
 const headerAPIVersion = "API-Version"
 
 var (
-	apiVersion       = "1.6.1"
+	apiVersion       = "1.7.0"
 	db               *sql.DB
 	apiToken         string
 	authProbeURL     string
@@ -30,6 +30,7 @@ var (
 	currentDrivePath = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
 	softwarePush     *softwareNotificationMonitor
 	chargingPush     *chargingNotificationMonitor
+	navigationPush   *navigationNotificationMonitor
 )
 
 type telemetrySample struct {
@@ -131,6 +132,9 @@ func main() {
 	chargingPush = newChargingNotificationMonitorFromEnvironment()
 	chargingPush.start()
 	defer chargingPush.stop()
+	navigationPush = newNavigationNotificationMonitorFromEnvironment()
+	navigationPush.start()
+	defer navigationPush.stop()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", handlePing)
@@ -139,6 +143,7 @@ func main() {
 	mux.HandleFunc("/api/v1/notifications/software-update/status", handleSoftwareNotificationStatus)
 	mux.HandleFunc("/api/v1/notifications/software-update/pair", handleSoftwareNotificationPair)
 	mux.HandleFunc("/api/v1/notifications/charging-live-activity/status", handleChargingNotificationStatus)
+	mux.HandleFunc("/api/v1/notifications/navigation-live-activity/status", handleNavigationNotificationStatus)
 	mux.HandleFunc("/", handleStates)
 
 	addr := ":8080"
@@ -184,6 +189,12 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if navigationPush != nil {
+		if err := navigationPush.configure(pairing); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid navigation pairing"})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"paired": true})
 }
 
@@ -201,6 +212,22 @@ func handleChargingNotificationStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, chargingPush.status())
+}
+
+func handleNavigationNotificationStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	if navigationPush == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Unavailable"})
+		return
+	}
+	writeJSON(w, http.StatusOK, navigationPush.status())
 }
 
 func runHealthcheck() {
@@ -266,6 +293,9 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"charging_live_activity_events",
 			"charging_live_activity_push_to_start",
 			"charging_live_activity_remote_updates",
+			"navigation_live_activity_events",
+			"navigation_live_activity_push_to_start",
+			"navigation_live_activity_remote_updates",
 		},
 		"data_policy":                 "teslamate_read_only_observations",
 		"storage_mode":                "teslamate_source_of_truth",
