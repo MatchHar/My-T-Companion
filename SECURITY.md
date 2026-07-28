@@ -20,10 +20,11 @@ the current source version.
 ## Reporting a vulnerability
 
 Do not open a public issue containing credentials, server addresses, vehicle
-locations, VINs, or database extracts. Use GitHub's private vulnerability
-reporting feature after the repository becomes public and the setting is
-enabled. Until then, contact the repository owner through GitHub without
-including production secrets or unredacted vehicle data.
+locations, VINs, or database extracts. Use this repository's
+[private vulnerability reporting](https://github.com/MatchHar/My-T-Parking-Monitor/security/advisories/new)
+for security-sensitive reports. For non-sensitive support questions, use the
+public issue templates only after removing all production secrets and private
+vehicle data.
 
 Include the companion version, TeslaMate version, reverse proxy type, and
 redacted reproduction steps. Never attach `.env` or raw production logs.

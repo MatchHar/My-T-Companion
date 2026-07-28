@@ -2,8 +2,9 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> Current source version: `1.5.0`. Native vehicle software push is optional
-> and remains disabled until My T supplies a secure relay pairing.
+> Current release: `1.5.0`. Native vehicle software push is optional and
+> remains disabled until a compatible My T build supplies a secure relay
+> pairing.
 >
 > The public App Store build is currently My T 3.10 and does not yet expose
 > Parking Monitor integration. Installing this companion early will not add
@@ -148,8 +149,9 @@ Version 1.5.0 observes TeslaMate's genuine MQTT `update_available`,
 `update_version`, and installed-version fields. It does not guess availability,
 contact Tesla, or wake the vehicle.
 
-Push is off by default. My T pairing will provide an installation ID, an HTTPS
-relay URL, and a per-installation secret. All three must be configured together.
+Push is off by default. A compatible My T build will provide an opaque
+installation ID, the official HTTPS relay URL, and a unique per-installation
+secret. All three must be configured together.
 Events are HMAC-SHA256 signed and deduplicated across container restarts.
 The App writes the pairing through the user's existing authenticated connection:
 
@@ -164,6 +166,13 @@ passwords, battery data, routes, or driving history. The APNs signing key is not
 part of this repository and must never be copied to a user's VPS. Pairing is
 automatic after the user enables notifications in My T; parking and live
 navigation continue to work normally if push remains disabled.
+
+The official relay is used because Apple Push Notification service does not
+accept notifications directly from an arbitrary user VPS without an App-owned
+APNs credential. It stores the APNs device token and an opaque installation
+identifier needed for delivery, and receives only the privacy-minimal
+software-update event documented above. Each VPS signs its own events; one
+installation cannot send notifications for another installation.
 
 Authenticated status:
 
@@ -192,16 +201,16 @@ it can only return observations TeslaMate actually stored.
 ## Verified release install
 
 Installation uses a numbered GitHub Release rather than the mutable `main`
-branch. During private testing, an authorized GitHub user can run:
+branch. With GitHub CLI installed:
 
 ```sh
-version=1.4.1; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.5.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
-After the project and release become public:
+Without GitHub CLI:
 
 ```sh
-version=1.4.1; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.5.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Full success is reported only after both the local service and the unified My T
@@ -323,7 +332,7 @@ manifest, and backs up the existing installation before applying it:
 sudo /opt/my-t-parking-monitor/update.sh
 ```
 
-Use `sudo MY_T_VERSION=1.4.1 /opt/my-t-parking-monitor/update.sh` to select a
+Use `sudo MY_T_VERSION=1.5.0 /opt/my-t-parking-monitor/update.sh` to select a
 specific version.
 
 The service has no private database or migration. Updating it does not alter
