@@ -283,7 +283,9 @@ func (m *chargingNotificationMonitor) observe(carID int, field, value string, ob
 	}
 
 	isCharging := state.VehicleState == "charging" || state.ChargingState == "charging"
-	if isCharging && !wasActive && state.BatteryLevel != nil {
+	// Retained MQTT topics can arrive in any order after subscribe. Do not
+	// push-start before both primary card values are present.
+	if isCharging && !wasActive && state.BatteryLevel != nil && state.RatedRangeKM != nil {
 		state.Active = true
 		state.StartBatteryLevel = *state.BatteryLevel
 		state.StartRatedRangeKM = cloneFloat(state.RatedRangeKM)
@@ -319,7 +321,17 @@ func (m *chargingNotificationMonitor) observe(carID int, field, value string, ob
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
 	if state.Active {
-		m.scheduleUpdateLocked(carID, observedAt)
+		if !state.StartDelivered {
+			lastQueued, _ := time.Parse(time.RFC3339, state.LastQueuedAt)
+			if lastQueued.IsZero() || observedAt.Sub(lastQueued) >= chargingUpdateMinimumInterval {
+				event := m.makeEventLocked(carID, &state, "charging_started", observedAt)
+				m.store.Cars[carID] = state
+				_ = m.saveLocked()
+				m.enqueue(event)
+			}
+		} else {
+			m.scheduleUpdateLocked(carID, observedAt)
+		}
 	}
 	m.mu.Unlock()
 }
@@ -433,7 +445,7 @@ func (m *chargingNotificationMonitor) deliveryWorker() {
 }
 
 func (m *chargingNotificationMonitor) deliverWithRetry(event chargingLiveActivityEvent) {
-	delays := []time.Duration{0, 5 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute}
+	delays := []time.Duration{0, 5 * time.Second, 30 * time.Second}
 	for attempt, delay := range delays {
 		if delay > 0 {
 			time.Sleep(delay)
@@ -450,8 +462,11 @@ func (m *chargingNotificationMonitor) deliverWithRetry(event chargingLiveActivit
 		state := m.store.Cars[event.CarID]
 		if event.Type == "charging_started" && state.SessionID == event.SessionID {
 			state.StartDelivered = true
+			state.LastQueuedAt = ""
 			m.store.Cars[event.CarID] = state
 			if state.Active {
+				// Push-to-start may have retried while newer MQTT readings
+				// arrived. Immediately send one complete latest snapshot.
 				m.scheduleUpdateLocked(event.CarID, time.Now().UTC())
 			}
 		}

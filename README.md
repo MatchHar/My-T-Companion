@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> Current release: `1.7.0`. Native vehicle software push, charging Live
+> Current release: `1.7.1`. Native vehicle software push, charging Live
 > Activities, and navigation Live Activities are optional and
 > remains disabled until a compatible My T build supplies a secure relay
 > pairing.
@@ -146,6 +146,7 @@ its own retention period; available history follows the TeslaMate database.
 | 1.5.1 | Patched MQTT and Go networking dependencies; no API or deployment changes |
 | 1.6.1 | Automatic charging Live Activities with true percentage/range, power, and completion updates |
 | 1.7.0 | Proactive destination-navigation Live Activities with verified drive progress |
+| 1.7.1 | Full-snapshot token recovery, immediate catch-up, and trailing navigation updates |
 
 ## Navigation Live Activities
 
@@ -228,7 +229,7 @@ GET /api/v1/notifications/software-update/status
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for complete changes and
-[RELEASE_NOTES_1.7.0.md](RELEASE_NOTES_1.7.0.md) for the current release.
+[RELEASE_NOTES_1.7.1.md](RELEASE_NOTES_1.7.1.md) for the current release.
 
 ## Who should install it
 
@@ -251,13 +252,13 @@ Installation uses a numbered GitHub Release rather than the mutable `main`
 branch. With GitHub CLI installed:
 
 ```sh
-version=1.7.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.7.1; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Parking-Monitor -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Without GitHub CLI:
 
 ```sh
-version=1.7.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.7.1; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Parking-Monitor/releases/download/v$version" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz" -o "$workdir/my-t-parking-monitor-$version.tar.gz" && curl -fL "$base/my-t-parking-monitor-$version.tar.gz.sha256" -o "$workdir/my-t-parking-monitor-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-parking-monitor-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-parking-monitor-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-parking-monitor-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Full success is reported only after both the local service and the unified My T
@@ -379,7 +380,7 @@ manifest, and backs up the existing installation before applying it:
 sudo /opt/my-t-parking-monitor/update.sh
 ```
 
-Use `sudo MY_T_VERSION=1.7.0 /opt/my-t-parking-monitor/update.sh` to select a
+Use `sudo MY_T_VERSION=1.7.1 /opt/my-t-parking-monitor/update.sh` to select a
 specific version.
 
 The service has no private database or migration. Updating it does not alter

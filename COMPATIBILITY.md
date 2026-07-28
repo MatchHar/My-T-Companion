@@ -1,7 +1,7 @@
 # Compatibility and release validation
 
 Version `1.5.0` added optional TeslaMate MQTT software-update observation and
-signed relay delivery. Version `1.7.0` adds destination-navigation Live Activity delivery and retains charging Live Activity delivery plus patched build dependencies
+signed relay delivery. Version `1.7.1` adds destination-navigation Live Activity delivery and retains charging Live Activity delivery plus patched build dependencies
 without changing APIs or deployment. Parking and navigation remain usable
 without pairing.
 

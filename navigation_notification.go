@@ -86,6 +86,7 @@ type navigationNotificationMonitor struct {
 	lastEventAt    *time.Time
 	lastError      string
 	queue          chan navigationLiveActivityEvent
+	pending        map[int]*time.Timer
 }
 
 func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMonitor {
@@ -99,6 +100,7 @@ func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMo
 		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
 		queue:          make(chan navigationLiveActivityEvent, 128),
+		pending:        map[int]*time.Timer{},
 		store: navigationNotificationStore{
 			Cars:      map[int]carNavigationState{},
 			Delivered: map[string]string{},
@@ -180,6 +182,12 @@ func (m *navigationNotificationMonitor) start() {
 }
 
 func (m *navigationNotificationMonitor) stop() {
+	m.mu.Lock()
+	for carID, timer := range m.pending {
+		timer.Stop()
+		delete(m.pending, carID)
+	}
+	m.mu.Unlock()
 	if m.client != nil && m.client.IsConnected() {
 		m.client.Disconnect(250)
 	}
@@ -295,6 +303,10 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	}
 	if !shouldBeActive && wasActive {
 		state.Active = false
+		if timer := m.pending[carID]; timer != nil {
+			timer.Stop()
+			delete(m.pending, carID)
+		}
 		event := m.makeEventLocked(carID, &state, "navigation_ended", observedAt)
 		if routeInvalid {
 			state.Destination = ""
@@ -310,18 +322,59 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	}
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
-	if state.Active && state.StartDelivered {
-		lastQueued, _ := time.Parse(time.RFC3339, state.LastQueuedAt)
-		if lastQueued.IsZero() || observedAt.Sub(lastQueued) >= navigationUpdateMinimumInterval {
-			event := m.makeEventLocked(carID, &state, "navigation_updated", observedAt)
-			m.store.Cars[carID] = state
-			_ = m.saveLocked()
-			m.mu.Unlock()
-			m.enqueue(event)
-			return
+	if state.Active {
+		if !state.StartDelivered {
+			lastQueued, _ := time.Parse(time.RFC3339, state.LastQueuedAt)
+			if lastQueued.IsZero() || observedAt.Sub(lastQueued) >= navigationUpdateMinimumInterval {
+				event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
+				m.store.Cars[carID] = state
+				_ = m.saveLocked()
+				m.mu.Unlock()
+				m.enqueue(event)
+				return
+			}
+		} else {
+			m.scheduleUpdateLocked(carID, observedAt)
 		}
 	}
 	m.mu.Unlock()
+}
+
+func (m *navigationNotificationMonitor) scheduleUpdateLocked(carID int, observedAt time.Time) {
+	state := m.store.Cars[carID]
+	if !state.Active || !state.StartDelivered || state.SessionID == "" {
+		return
+	}
+	lastQueued, _ := time.Parse(time.RFC3339, state.LastQueuedAt)
+	delay := navigationUpdateMinimumInterval - observedAt.Sub(lastQueued)
+	if lastQueued.IsZero() || delay <= 0 {
+		event := m.makeEventLocked(carID, &state, "navigation_updated", observedAt)
+		m.store.Cars[carID] = state
+		_ = m.saveLocked()
+		m.enqueue(event)
+		return
+	}
+	if _, exists := m.pending[carID]; exists {
+		return
+	}
+	m.pending[carID] = time.AfterFunc(delay, func() {
+		m.flushUpdate(carID)
+	})
+}
+
+func (m *navigationNotificationMonitor) flushUpdate(carID int) {
+	m.mu.Lock()
+	delete(m.pending, carID)
+	state := m.store.Cars[carID]
+	if !state.Active || !state.StartDelivered {
+		m.mu.Unlock()
+		return
+	}
+	event := m.makeEventLocked(carID, &state, "navigation_updated", time.Now().UTC())
+	m.store.Cars[carID] = state
+	_ = m.saveLocked()
+	m.mu.Unlock()
+	m.enqueue(event)
 }
 
 func (m *navigationNotificationMonitor) makeEventLocked(
@@ -410,7 +463,7 @@ func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEven
 
 func (m *navigationNotificationMonitor) deliveryWorker() {
 	for event := range m.queue {
-		delays := []time.Duration{0, 5 * time.Second, 30 * time.Second, 2 * time.Minute}
+		delays := []time.Duration{0, 5 * time.Second, 30 * time.Second}
 		for attempt, delay := range delays {
 			if delay > 0 {
 				time.Sleep(delay)
@@ -427,7 +480,11 @@ func (m *navigationNotificationMonitor) deliveryWorker() {
 			state := m.store.Cars[event.CarID]
 			if event.Type == "navigation_started" && state.SessionID == event.SessionID {
 				state.StartDelivered = true
+				state.LastQueuedAt = ""
 				m.store.Cars[event.CarID] = state
+				if state.Active {
+					m.scheduleUpdateLocked(event.CarID, time.Now().UTC())
+				}
 			}
 			now := time.Now().UTC()
 			m.lastEventAt = &now

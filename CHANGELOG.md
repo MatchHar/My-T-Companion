@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.7.1 — 2026-07-28
+
+- Retry push-to-start with the newest complete snapshot after a Live Activity
+  token becomes available instead of leaving an active session permanently
+  undelivered.
+- Require both current battery percentage and current rated range before
+  starting a charging Live Activity.
+- Immediately catch up with the latest complete charging/navigation snapshot
+  after push-to-start succeeds.
+- Add trailing coalesced navigation updates so the final change inside the
+  15-second window is not lost.
+- Shorten blocking start retries so later genuine MQTT readings can recover a
+  session after token registration.
+
 ## 1.7.0 — 2026-07-28
 
 - Added privacy-minimal TeslaMate MQTT monitoring for genuine active
