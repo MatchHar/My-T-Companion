@@ -1,6 +1,6 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-parking-monitor
-    image: myt/parking-monitor:1.5.0
+    image: myt/parking-monitor:1.5.1
     restart: unless-stopped
     init: true
     read_only: true

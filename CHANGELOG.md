@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.1
+
+- Upgrade Eclipse Paho MQTT to 1.5.1.
+- Upgrade `golang.org/x/net` to 0.55.0 to address published networking,
+  parser, and proxy security advisories.
+- Build with Go 1.25. No API, pairing, database, or deployment behavior
+  changes.
+
 ## 1.5.0
 
 - Subscribe to TeslaMate's genuine MQTT software-update fields.

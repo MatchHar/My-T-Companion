@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published release. Version 1.5.0 is
+Security fixes are provided for the latest published release. Version 1.5.1 is
 the current source version.
 
 ## Deployment requirements
