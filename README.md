@@ -3,13 +3,15 @@
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
 > Current release: `1.9.2`. Native vehicle software push, charging Live
-> Activities, and navigation Live Activities are optional and
-> remains disabled until a compatible My T build supplies a secure relay
-> pairing.
+> Activities, and navigation Live Activities are optional and remain disabled
+> until a compatible My T build supplies a secure relay pairing.
 >
-> The public App Store build is currently My T 3.10 and does not yet expose
-> My T Companion integration. Installing this companion early will not add
-> those screens. Wait for My T release notes that explicitly list support.
+> **App Store My T 3.10** does not expose Companion screens. **TestFlight /
+> pre-release My T 3.20+** supports this companion. Parking timeline, observed
+> events, and trajectories work when the App can reach `/api/v1/capabilities`;
+> push and Live Activities still need pairing. See the
+> [My T feature availability](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)
+> notes.
 
 **This companion is built specifically for the
 [My T iPhone app — download it from the App Store](https://apps.apple.com/us/app/my-t/id6780299502).**
@@ -22,7 +24,8 @@ security, and troubleshooting, see the
 For help with this component, see [SUPPORT.md](SUPPORT.md).
 
 This optional, standalone service adds complete TeslaMate vehicle-state history,
-future parking-event observation, and reliable live-drive trajectories to My T.
+retained parking-event observation (plug, charging, security, climate), and
+reliable live-drive trajectories to My T.
 Parking monitoring and live navigation use the same container, authentication,
 installer, and update command. It reads the existing TeslaMate PostgreSQL
 database without changing TeslaMate or creating tables.
@@ -55,9 +58,10 @@ Three My T experiences need more precise server-side data:
 2. **Live navigation during an active drive** needs TeslaMate's immutable first
    GPS point and incremental trajectory points. The position visible when My T
    opens must never be presented as the true trip start.
-3. **Future parking events** need an always-running observer for plug/unplug,
-   charging, Sentry, lock/opening, and climate transitions. iOS cannot reliably
-   collect them while My T is suspended.
+3. **Parking events** (plug/unplug, charging, Sentry, lock/doors, climate)
+   need an always-running observer. iOS cannot reliably collect them while My T
+   is suspended. Companion 1.9.2+ retains genuine MQTT transitions that
+   TeslaMate does not keep as history.
 
 This companion provides only those missing read-only capabilities. It keeps
 TeslaMate as the source of truth and lets My T automatically enable enhanced
@@ -72,7 +76,7 @@ views when `/api/v1/capabilities` is available.
 | Sleep and wake timeline | May be incomplete; My T does not estimate missing events | Full TeslaMate-recorded state sequence |
 | Parking battery/range change | Shown only when real observations already exist | Real transition-boundary observations within 30 minutes |
 | Charging while parked | Existing charging sessions remain visible | Charging can be placed alongside the state timeline |
-| Plug/security/climate events | No durable history while My T is closed | Future genuine MQTT transitions, with battery/range only when reported |
+| Plug/security/climate events | No durable history while My T is closed | Retained genuine MQTT transitions (365-day log), with battery/range only when reported |
 | Active-drive map | Real current position and speed only when the true route start is unavailable | Immutable true start plus incremental real trajectory |
 
 The component is optional. My T detects it automatically; users do not add a

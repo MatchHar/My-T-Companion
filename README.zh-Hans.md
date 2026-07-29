@@ -5,8 +5,10 @@
 > 当前正式版本：`1.9.2`。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
 > 提供安全配对前保持关闭。
 >
-> App Store 当前公开版本为 My T 3.10，尚未提供停车监控接入。提前安装本组件
-> 不会显示相关页面；请等待 My T 版本说明明确列出支持后再用于日常使用。
+> **App Store My T 3.10** 不提供 Companion 相关界面。**TestFlight / 预发布 My T 3.20+**
+> 已支持本组件：停车流水、观测事件与轨迹在可访问 `/api/v1/capabilities` 时可用；
+> 推送与实时活动仍需完成配对。详见
+> [My T 功能可用性](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)。
 
 **本组件专为
 [My T iPhone App 开发，可在 App Store 下载](https://apps.apple.com/us/app/my-t/id6780299502)。**
@@ -62,8 +64,9 @@ My T 的完整产品介绍、TeslaMateAPI 部署、连接安全与故障排查�
 [My T 公开文档仓库](https://github.com/MatchHar/My-T-App)。
 
 My T Companion 是部署在 TeslaMate 服务器上的可选独立组件，为 My T
-提供完整的车辆状态历史、未来停车事件观测和可靠的实时行驶轨迹。长期停车监控
-与实时导航共用同一个容器、认证方式、安装命令和更新流程。
+提供完整的车辆状态历史、已保留的停车 MQTT 事件观测（插枪、充电、安防、空调等）
+和可靠的实时行驶轨迹。长期停车监控与实时导航共用同一个容器、认证方式、安装命令
+和更新流程。
 
 组件只读现有 TeslaMate PostgreSQL 数据库，不修改 TeslaMate、不创建数据表，
 也不会复制、删除或改写数据库历史。从 1.9.2 开始，组件会在自己的数据卷保存
@@ -85,8 +88,9 @@ TeslaMate/TeslaMateAPI 提供，本组件只补充三个手机端无法可靠还
    事后重建。
 2. **正在行驶时的实时导航**：需要 TeslaMate 保存的最早真实 GPS 点和后续
    增量轨迹。My T 打开时看到的位置不能冒充真实行程起点。
-3. **未来停车事件**：插枪／拔枪、充电、哨兵、锁车／开口及空调变化需要持续
-   运行的观测服务；iOS 在 My T 被挂起后不能可靠保存这些事件。
+3. **停车事件**（插枪／拔枪、充电、哨兵、锁车／门、空调）：需要持续运行的
+   观测服务；iOS 在 My T 被挂起后不能可靠保存这些事件。Companion 1.9.2+ 会
+   保留 TeslaMate 未作为历史保存的真实 MQTT 变化。
 
 VPS Companion 只提供这些缺失的只读能力。TeslaMate 仍是唯一数据来源；
 My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
