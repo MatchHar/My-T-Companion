@@ -387,15 +387,19 @@ The first response should report `OK`. The second should include
 
 ### Update
 
-The installed updater downloads a numbered release, verifies its SHA-256
-manifest, and backs up the existing installation before applying it:
+The permanent command below follows GitHub's **latest stable Release** (drafts
+and prereleases are excluded), downloads that numbered archive, verifies its
+SHA-256 manifest, and backs up the existing installation before applying it:
 
 ```sh
 sudo /opt/my-t-companion/update.sh
 ```
 
-Use `sudo MY_T_VERSION=1.10.0 /opt/my-t-companion/update.sh` to select a
-specific version.
+My T may instead show a version-pinned command such as
+`sudo MY_T_VERSION=1.10.0 /opt/my-t-companion/update.sh`. That is intentional:
+the App pins the newest Companion version verified with that App build, while
+the permanent command is for administrators who explicitly want the newest
+stable server release.
 
 The service has no private SQL database or migration. Its bounded local state
 volume keeps parking observations and push-delivery state; updating it does

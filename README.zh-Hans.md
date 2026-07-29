@@ -301,15 +301,17 @@ curl -o /dev/null -w "%{http_code}\n" \
 
 ## 更新
 
-已安装的更新程序会下载最新固定版本、校验 SHA-256、备份现有安装，再运行
-可重复执行的安装程序：
+以下永久命令会跟随 GitHub 的**最新稳定 Release**（不包含草稿和预发布版），
+下载对应的固定版本、校验 SHA-256、备份现有安装，再运行可重复执行的安装程序：
 
 ```sh
 sudo /opt/my-t-companion/update.sh
 ```
 
-指定版本可执行：
-`sudo MY_T_VERSION=1.10.0 /opt/my-t-companion/update.sh`。
+My T 也可能显示类似
+`sudo MY_T_VERSION=1.10.0 /opt/my-t-companion/update.sh`
+的指定版本命令。这是有意设计：App 固定到该 App 版本已验证兼容的最新
+Companion；永久命令则供明确希望跟随服务器最新稳定版的管理员使用。
 
 组件没有独立数据库或数据迁移。更新不会改变 TeslaMate 历史数据。
 
