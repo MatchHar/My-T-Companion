@@ -159,11 +159,21 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   install -m 0644 "$SOURCE_DIR/charging_notification.go" "$INSTALL_DIR/charging_notification.go"
   install -m 0644 "$SOURCE_DIR/navigation_notification.go" "$INSTALL_DIR/navigation_notification.go"
   install -m 0644 "$SOURCE_DIR/parking_event_monitor.go" "$INSTALL_DIR/parking_event_monitor.go"
+  install -m 0644 "$SOURCE_DIR/storage_policy.go" "$INSTALL_DIR/storage_policy.go"
   install -m 0644 "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
   install -m 0755 "$SOURCE_DIR/update.sh" "$INSTALL_DIR/update.sh"
   if [[ -f "$SOURCE_DIR/uninstall.sh" ]]; then
     install -m 0755 "$SOURCE_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+  fi
+  if [[ -f "$SOURCE_DIR/backup.sh" ]]; then
+    install -m 0755 "$SOURCE_DIR/backup.sh" "$INSTALL_DIR/backup.sh"
+  fi
+  if [[ -f "$SOURCE_DIR/restore.sh" ]]; then
+    install -m 0755 "$SOURCE_DIR/restore.sh" "$INSTALL_DIR/restore.sh"
+  fi
+  if [[ -f "$SOURCE_DIR/storage-status.sh" ]]; then
+    install -m 0755 "$SOURCE_DIR/storage-status.sh" "$INSTALL_DIR/storage-status.sh"
   fi
 else
   log "Running from the installed directory; service source files are already current"
@@ -214,7 +224,8 @@ services:
       PUSH_RELAY_SECRET: ${PUSH_RELAY_SECRET:-}
       PUSH_STATE_PATH: /data/software-notifications.json
       PARKING_EVENT_STATE_PATH: /data/parking-events.json
-      PARKING_EVENT_RETENTION_DAYS: ${PARKING_EVENT_RETENTION_DAYS:-365}
+      PARKING_EVENT_RETENTION_DAYS: ${PARKING_EVENT_RETENTION_DAYS:-0}
+      PARKING_EVENT_MAX_EVENTS: ${PARKING_EVENT_MAX_EVENTS:-50000}
     ports:
       - "127.0.0.1:8083:8080"
     volumes:

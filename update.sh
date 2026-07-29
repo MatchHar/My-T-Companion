@@ -83,3 +83,14 @@ if ! INSTALL_DIR="$INSTALL_DIR" "$work_dir/source/install.sh"; then
 fi
 
 printf '[My T VPS Companion] Updated successfully to %s\n' "$REQUESTED_VERSION"
+
+# Retain only the three newest source/configuration rollback copies. Durable
+# parking data lives in the named volume and is handled by backup.sh.
+mapfile -t old_backups < <(
+  find "$(dirname "$INSTALL_DIR")" -maxdepth 1 -type d \
+    -name "$(basename "$INSTALL_DIR").before-*" -printf '%T@ %p\n' |
+    sort -rn | tail -n +4 | cut -d' ' -f2-
+)
+for old_backup in "${old_backups[@]}"; do
+  rm -rf -- "$old_backup"
+done

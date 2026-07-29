@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> Current release: `1.9.3`. Native vehicle software push, charging Live
+> Current release: `1.10.0`. Native vehicle software push, charging Live
 > Activities, and navigation Live Activities are optional and remain disabled
 > until a compatible My T build supplies a secure relay pairing.
 >
@@ -37,7 +37,9 @@ not preserve historically, such as a cable being connected before charging.
 The first retained value after install or restart is baseline-only and never
 becomes an event. Event timestamps mean “first observed by
 TeslaMate/Companion,” not a promised physical-action timestamp. The event log
-keeps 365 days by default and is stored in the existing companion data volume.
+is kept long-term by default, with a 50,000-event capacity guard, in the
+existing companion data volume. Temporary navigation and push-delivery state
+expires independently. See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
 
 Install this add-on **after TeslaMate is already deployed and working**. It is
 not a replacement for TeslaMate or TeslaMateAPI.
@@ -76,7 +78,7 @@ views when `/api/v1/capabilities` is available.
 | Sleep and wake timeline | May be incomplete; My T does not estimate missing events | Full TeslaMate-recorded state sequence |
 | Parking battery/range change | Shown only when real observations already exist | Real transition-boundary observations within 30 minutes |
 | Charging while parked | Existing charging sessions remain visible | Charging can be placed alongside the state timeline |
-| Plug/security/climate events | No durable history while My T is closed | Retained genuine MQTT transitions (365-day log), with battery/range only when reported |
+| Plug/security/climate events | No durable history while My T is closed | Long-term genuine MQTT transitions, with battery/range only when reported |
 | Active-drive map | Real current position and speed only when the true route start is unavailable | Immutable true start plus incremental real trajectory |
 
 The component is optional. My T detects it automatically; users do not add a
@@ -240,7 +242,7 @@ GET /api/v1/notifications/software-update/status
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for complete changes and
-[RELEASE_NOTES_1.9.3.md](RELEASE_NOTES_1.9.3.md) for the current release.
+[RELEASE_NOTES_1.10.0.md](RELEASE_NOTES_1.10.0.md) for the current release.
 
 ## Who should install it
 
@@ -263,13 +265,13 @@ Installation uses a numbered GitHub Release rather than the mutable `main`
 branch. With GitHub CLI installed:
 
 ```sh
-version=1.9.3; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.10.0; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Without GitHub CLI:
 
 ```sh
-version=1.9.3; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.10.0; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Full success is reported only after both the local service and the unified My T
@@ -392,11 +394,12 @@ manifest, and backs up the existing installation before applying it:
 sudo /opt/my-t-companion/update.sh
 ```
 
-Use `sudo MY_T_VERSION=1.9.3 /opt/my-t-companion/update.sh` to select a
+Use `sudo MY_T_VERSION=1.10.0 /opt/my-t-companion/update.sh` to select a
 specific version.
 
-The service has no private database or migration. Updating it does not alter
-TeslaMate data.
+The service has no private SQL database or migration. Its bounded local state
+volume keeps parking observations and push-delivery state; updating it does
+not alter TeslaMate data.
 
 ### Remove or roll back
 
@@ -454,8 +457,9 @@ commands, wake a vehicle, or replace the official TeslaMate deployment.
 
 ### Does it change or copy my TeslaMate history?
 
-No. Queries run in PostgreSQL read-only transaction mode. The component has no
-database, migrations, or background collector of its own.
+No. Queries run in PostgreSQL read-only transaction mode. Companion has no SQL
+database or migrations. Its background MQTT observer writes only the bounded
+local event state described in [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
 
 ### Can it recover old wake events?
 

@@ -577,10 +577,23 @@ func (m *chargingNotificationMonitor) load() {
 		if stored.Delivered != nil {
 			m.store.Delivered = stored.Delivered
 		}
+		now := time.Now().UTC()
+		pruneTimestampMap(m.store.Delivered, now, chargingDeliveredRetention, chargingDeliveredMaximum)
+		for carID, state := range m.store.Cars {
+			if state.Active && timestampIsOlderThan(state.LastQueuedAt, now, chargingTransientMaximumAge) {
+				state.Active = false
+				state.SessionID = ""
+				state.SessionStartedAt = ""
+				state.StartDelivered = false
+				state.LastQueuedAt = ""
+				m.store.Cars[carID] = state
+			}
+		}
 	}
 }
 
 func (m *chargingNotificationMonitor) saveLocked() error {
+	pruneTimestampMap(m.store.Delivered, time.Now().UTC(), chargingDeliveredRetention, chargingDeliveredMaximum)
 	if err := os.MkdirAll(filepath.Dir(m.statePath), 0700); err != nil {
 		return err
 	}

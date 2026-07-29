@@ -34,6 +34,10 @@ func TestInstallerIncludesParkingEventMonitor(t *testing.T) {
 	for _, required := range []string{
 		`-f "$SOURCE_DIR/parking_event_monitor.go"`,
 		`install -m 0644 "$SOURCE_DIR/parking_event_monitor.go" "$INSTALL_DIR/parking_event_monitor.go"`,
+		`install -m 0644 "$SOURCE_DIR/storage_policy.go" "$INSTALL_DIR/storage_policy.go"`,
+		`install -m 0755 "$SOURCE_DIR/backup.sh" "$INSTALL_DIR/backup.sh"`,
+		`install -m 0755 "$SOURCE_DIR/restore.sh" "$INSTALL_DIR/restore.sh"`,
+		`install -m 0755 "$SOURCE_DIR/storage-status.sh" "$INSTALL_DIR/storage-status.sh"`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("installer is missing required parking monitor handling: %s", required)
@@ -475,5 +479,41 @@ func TestCapabilitiesRequiresAuthentication(t *testing.T) {
 	handleCapabilities(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("got status %d, want 200", recorder.Code)
+	}
+}
+
+func TestParkingEventsDefaultToLongTermRetentionAndCapacityLimit(t *testing.T) {
+	t.Setenv("PARKING_EVENT_RETENTION_DAYS", "")
+	t.Setenv("PARKING_EVENT_MAX_EVENTS", "1000")
+	monitor := newParkingEventMonitorFromEnvironment()
+	now := time.Now().UTC()
+	for index := 0; index < 1005; index++ {
+		monitor.store.Events = append(monitor.store.Events, parkingObservedEvent{
+			ID:         strings.Repeat("x", index+1),
+			ObservedAt: now.AddDate(-10, 0, 0).Add(time.Duration(index) * time.Second).Format(time.RFC3339Nano),
+		})
+	}
+	monitor.pruneLocked(now)
+	if got := len(monitor.store.Events); got != 1000 {
+		t.Fatalf("got %d events, want 1000", got)
+	}
+	wantOldest := now.AddDate(-10, 0, 0).Add(5 * time.Second).Format(time.RFC3339Nano)
+	if got := monitor.store.Events[0].ObservedAt; got != wantOldest {
+		t.Fatalf("oldest retained event = %q, want %q", got, wantOldest)
+	}
+}
+
+func TestPruneTimestampMapByAgeAndCapacity(t *testing.T) {
+	now := time.Now().UTC()
+	delivered := map[string]string{
+		"expired": now.Add(-8 * 24 * time.Hour).Format(time.RFC3339Nano),
+		"oldest":  now.Add(-3 * time.Hour).Format(time.RFC3339Nano),
+		"middle":  now.Add(-2 * time.Hour).Format(time.RFC3339Nano),
+		"newest":  now.Add(-time.Hour).Format(time.RFC3339Nano),
+		"invalid": "not-a-timestamp",
+	}
+	pruneTimestampMap(delivered, now, 7*24*time.Hour, 2)
+	if len(delivered) != 2 || delivered["middle"] == "" || delivered["newest"] == "" {
+		t.Fatalf("unexpected retained entries: %+v", delivered)
 	}
 }

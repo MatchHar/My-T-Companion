@@ -14,7 +14,10 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-const defaultParkingEventRetentionDays = 365
+const (
+	defaultParkingEventRetentionDays = 0
+	defaultParkingEventMaximum       = 50000
+)
 
 type parkingObservedEvent struct {
 	ID              string   `json:"id"`
@@ -45,6 +48,7 @@ type parkingEventMonitor struct {
 	mu            sync.RWMutex
 	statePath     string
 	retentionDays int
+	maximumEvents int
 	mqttBroker    string
 	mqttClientID  string
 	mqttUsername  string
@@ -58,12 +62,18 @@ type parkingEventMonitor struct {
 func newParkingEventMonitorFromEnvironment() *parkingEventMonitor {
 	retention := defaultParkingEventRetentionDays
 	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("PARKING_EVENT_RETENTION_DAYS"))); err == nil &&
-		parsed >= 30 && parsed <= 3650 {
+		(parsed == 0 || (parsed >= 30 && parsed <= 3650)) {
 		retention = parsed
+	}
+	maximum := defaultParkingEventMaximum
+	if parsed, err := strconv.Atoi(strings.TrimSpace(os.Getenv("PARKING_EVENT_MAX_EVENTS"))); err == nil &&
+		parsed >= 1000 && parsed <= 500000 {
+		maximum = parsed
 	}
 	monitor := &parkingEventMonitor{
 		statePath:     getenv("PARKING_EVENT_STATE_PATH", "/data/parking-events.json"),
 		retentionDays: retention,
+		maximumEvents: maximum,
 		mqttBroker:    getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
 		mqttClientID:  getenv("MQTT_CLIENT_ID", "my-t-companion") + "-parking-events",
 		mqttUsername:  strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
@@ -303,13 +313,19 @@ func (m *parkingEventMonitor) events(carID int, startDate, endDate time.Time) []
 }
 
 func (m *parkingEventMonitor) pruneLocked(now time.Time) {
-	cutoff := now.AddDate(0, 0, -m.retentionDays)
+	maximumEvents := m.maximumEvents
+	if maximumEvents <= 0 {
+		maximumEvents = defaultParkingEventMaximum
+	}
 	kept := m.store.Events[:0]
 	for _, event := range m.store.Events {
 		at, err := time.Parse(time.RFC3339Nano, event.ObservedAt)
-		if err == nil && !at.Before(cutoff) {
+		if err == nil && (m.retentionDays == 0 || !at.Before(now.AddDate(0, 0, -m.retentionDays))) {
 			kept = append(kept, event)
 		}
+	}
+	if len(kept) > maximumEvents {
+		kept = kept[len(kept)-maximumEvents:]
 	}
 	m.store.Events = kept
 }
@@ -327,6 +343,7 @@ func (m *parkingEventMonitor) load() {
 		if stored.Events != nil {
 			m.store.Events = stored.Events
 		}
+		m.pruneLocked(time.Now().UTC())
 	}
 }
 

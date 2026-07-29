@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.0
+
+- Keep genuine parking observations long-term by default, bounded to the newest
+  50,000 events instead of deleting them after 365 days.
+- Bound temporary navigation, charging, and notification delivery state by age
+  and entry count.
+- Add durable-state backup, verified restore, and storage-status commands for
+  clean VPS migration without changing TeslaMate PostgreSQL.
+
 ## 1.9.3
 
 - Make repeated App pairing idempotent so existing software, charging, and

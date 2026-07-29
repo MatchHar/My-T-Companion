@@ -449,10 +449,12 @@ func (m *softwareNotificationMonitor) load() {
 		if stored.Delivered != nil {
 			m.store.Delivered = stored.Delivered
 		}
+		pruneTimestampMap(m.store.Delivered, time.Now().UTC(), softwareDeliveredRetention, softwareDeliveredMaximum)
 	}
 }
 
 func (m *softwareNotificationMonitor) saveLocked() error {
+	pruneTimestampMap(m.store.Delivered, time.Now().UTC(), softwareDeliveredRetention, softwareDeliveredMaximum)
 	if err := os.MkdirAll(filepath.Dir(m.statePath), 0700); err != nil {
 		return err
 	}
