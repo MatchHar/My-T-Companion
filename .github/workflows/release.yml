@@ -30,6 +30,10 @@ jobs:
           )
           if [[ -f "$notes_file" ]]; then
             release_args+=(--notes-file "$notes_file")
+            for localized_notes in "RELEASE_NOTES_${version}".*.md; do
+              [[ -f "$localized_notes" ]] || continue
+              release_args+=("$localized_notes")
+            done
           else
             release_args+=(--generate-notes)
           fi
