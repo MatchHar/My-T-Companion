@@ -189,6 +189,9 @@ services:
     image: myt/companion:${VERSION}
     restart: unless-stopped
     init: true
+    cpus: 1.0
+    mem_limit: 256m
+    pids_limit: 128
     read_only: true
     cap_drop:
       - ALL
@@ -222,6 +225,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - teslamate
 

@@ -153,6 +153,61 @@ func TestSoftwarePushPairingRejectsUntrustedRelay(t *testing.T) {
 	}
 }
 
+func TestRepeatedPairingDoesNotRestartMQTTMonitorsOrWorkers(t *testing.T) {
+	pairing := softwarePushPairing{
+		InstallationID: strings.Repeat("a", 48),
+		RelayURL:       officialSoftwarePushRelayURL,
+		RelaySecret:    strings.Repeat("b", 64),
+	}
+	statePath := filepath.Join(t.TempDir(), "software.json")
+	software := &softwareNotificationMonitor{
+		statePath:      statePath,
+		installationID: pairing.InstallationID,
+		relayURL:       pairing.RelayURL,
+		relaySecret:    pairing.RelaySecret,
+		enabled:        true,
+		started:        true,
+	}
+	charging := &chargingNotificationMonitor{
+		installationID: pairing.InstallationID,
+		relayURL:       pairing.RelayURL,
+		relaySecret:    pairing.RelaySecret,
+		enabled:        true,
+		started:        true,
+		workerStarted:  true,
+	}
+	navigation := &navigationNotificationMonitor{
+		installationID: pairing.InstallationID,
+		relayURL:       pairing.RelayURL,
+		relaySecret:    pairing.RelaySecret,
+		enabled:        true,
+		started:        true,
+		workerStarted:  true,
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := software.configure(pairing); err != nil {
+			t.Fatalf("software repeated pairing %d: %v", attempt, err)
+		}
+		if err := charging.configure(pairing); err != nil {
+			t.Fatalf("charging repeated pairing %d: %v", attempt, err)
+		}
+		if err := navigation.configure(pairing); err != nil {
+			t.Fatalf("navigation repeated pairing %d: %v", attempt, err)
+		}
+	}
+
+	if !software.started || !charging.started || !navigation.started {
+		t.Fatal("repeated pairing must not reset a running MQTT monitor")
+	}
+	if !charging.workerStarted || !navigation.workerStarted {
+		t.Fatal("repeated pairing must preserve the single delivery worker")
+	}
+	if _, err := os.Stat(software.pairingPath()); err != nil {
+		t.Fatalf("repeated pairing must still persist pairing state: %v", err)
+	}
+}
+
 func TestChargingEventUsesOnlyRequiredTelemetryAndValidSignature(t *testing.T) {
 	t.Parallel()
 	const secret = "relay-secret"

@@ -88,6 +88,7 @@ type chargingNotificationMonitor struct {
 	lastEventAt    *time.Time
 	lastError      string
 	started        bool
+	workerStarted  bool
 	pending        map[int]*time.Timer
 	queue          chan chargingLiveActivityEvent
 }
@@ -123,13 +124,20 @@ func (m *chargingNotificationMonitor) start() {
 		return
 	}
 	m.started = true
+	enabled := m.enabled
+	startWorker := enabled && !m.workerStarted
+	if startWorker {
+		m.workerStarted = true
+	}
 	m.mu.Unlock()
-	if !m.enabled {
+	if !enabled {
 		log.Printf("[info] charging Live Activity push disabled; relay pairing is not configured")
 		return
 	}
 
-	go m.deliveryWorker()
+	if startWorker {
+		go m.deliveryWorker()
+	}
 	options := mqtt.NewClientOptions().
 		AddBroker(m.mqttBroker).
 		SetClientID(m.mqttClientID).
@@ -177,8 +185,11 @@ func (m *chargingNotificationMonitor) start() {
 		m.lastError = err.Error()
 		m.mu.Unlock()
 	})
-	m.client = mqtt.NewClient(options)
-	token := m.client.Connect()
+	client := mqtt.NewClient(options)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+	token := client.Connect()
 	if !token.WaitTimeout(15 * time.Second) {
 		m.mu.Lock()
 		m.lastError = "MQTT charging connection timed out"
@@ -199,9 +210,13 @@ func (m *chargingNotificationMonitor) stop() {
 		timer.Stop()
 		delete(m.pending, carID)
 	}
+	client := m.client
+	m.client = nil
+	m.connected = false
+	m.started = false
 	m.mu.Unlock()
-	if m.client != nil && m.client.IsConnected() {
-		m.client.Disconnect(250)
+	if client != nil && client.IsConnected() {
+		client.Disconnect(250)
 	}
 }
 
@@ -220,12 +235,25 @@ func (m *chargingNotificationMonitor) configure(pairing softwarePushPairing) err
 		return fmt.Errorf("untrusted relay URL")
 	}
 	m.mu.Lock()
+	samePairing := m.installationID == pairing.InstallationID &&
+		m.relayURL == pairing.RelayURL &&
+		m.relaySecret == pairing.RelaySecret
 	m.installationID = pairing.InstallationID
 	m.relayURL = pairing.RelayURL
 	m.relaySecret = pairing.RelaySecret
 	m.enabled = true
+	if samePairing && m.started {
+		m.mu.Unlock()
+		return nil
+	}
+	oldClient := m.client
+	m.client = nil
+	m.connected = false
 	m.started = false
 	m.mu.Unlock()
+	if oldClient != nil && oldClient.IsConnected() {
+		oldClient.Disconnect(250)
+	}
 	m.start()
 	return nil
 }
@@ -516,16 +544,16 @@ func (m *chargingNotificationMonitor) status() map[string]any {
 		}
 	}
 	result := map[string]any{
-		"enabled":                m.enabled,
-		"mqtt_connected":         m.connected,
-		"delivery_mode":          "activitykit_push_to_start",
-		"privacy_mode":           "charging_telemetry_only_no_vin_location_or_credentials",
-		"tracked_cars":           len(m.store.Cars),
-		"active_sessions":        active,
-		"delivered_events":       len(m.store.Delivered),
-		"minimum_update_seconds":      int(chargingUpdateMinimumInterval.Seconds()),
-		"fast_charge_update_seconds":  int(fastChargingUpdateMinimumInterval.Seconds()),
-		"fast_charge_threshold_kw":    fastChargingPowerThresholdKW,
+		"enabled":                    m.enabled,
+		"mqtt_connected":             m.connected,
+		"delivery_mode":              "activitykit_push_to_start",
+		"privacy_mode":               "charging_telemetry_only_no_vin_location_or_credentials",
+		"tracked_cars":               len(m.store.Cars),
+		"active_sessions":            active,
+		"delivered_events":           len(m.store.Delivered),
+		"minimum_update_seconds":     int(chargingUpdateMinimumInterval.Seconds()),
+		"fast_charge_update_seconds": int(fastChargingUpdateMinimumInterval.Seconds()),
+		"fast_charge_threshold_kw":   fastChargingPowerThresholdKW,
 	}
 	if m.lastEventAt != nil {
 		result["last_delivered_at"] = m.lastEventAt.Format(time.RFC3339)

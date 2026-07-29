@@ -1,8 +1,11 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-companion
-    image: myt/companion:1.9.2
+    image: myt/companion:1.9.3
     restart: unless-stopped
     init: true
+    cpus: 1.0
+    mem_limit: 256m
+    pids_limit: 128
     read_only: true
     cap_drop:
       - ALL
@@ -39,6 +42,11 @@
       timeout: 5s
       retries: 3
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   my-t-notification-state:

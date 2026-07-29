@@ -23,21 +23,21 @@ import (
 const navigationUpdateMinimumInterval = 15 * time.Second
 
 type navigationLiveActivityEvent struct {
-	EventID              string   `json:"event_id"`
-	InstallationID       string   `json:"installation_id"`
-	CarID                int      `json:"car_id"`
-	VehicleName          string   `json:"vehicle_name,omitempty"`
-	Type                 string   `json:"type"`
-	SessionID            string   `json:"session_id"`
-	Destination          string   `json:"destination"`
-	RemainingDistanceKM  *float64 `json:"remaining_distance_km,omitempty"`
-	RemainingMinutes     *int     `json:"remaining_minutes,omitempty"`
-	EstimatedArrivalAt   *int64   `json:"estimated_arrival_at,omitempty"`
-	ArrivalBatteryLevel  *int     `json:"arrival_battery_level,omitempty"`
-	DrivenDistanceKM     *float64 `json:"driven_distance_km,omitempty"`
-	TotalDistanceKM      *float64 `json:"total_distance_km,omitempty"`
-	HasVerifiedTrajectory bool    `json:"has_verified_trajectory"`
-	ObservedAt           string   `json:"observed_at"`
+	EventID               string   `json:"event_id"`
+	InstallationID        string   `json:"installation_id"`
+	CarID                 int      `json:"car_id"`
+	VehicleName           string   `json:"vehicle_name,omitempty"`
+	Type                  string   `json:"type"`
+	SessionID             string   `json:"session_id"`
+	Destination           string   `json:"destination"`
+	RemainingDistanceKM   *float64 `json:"remaining_distance_km,omitempty"`
+	RemainingMinutes      *int     `json:"remaining_minutes,omitempty"`
+	EstimatedArrivalAt    *int64   `json:"estimated_arrival_at,omitempty"`
+	ArrivalBatteryLevel   *int     `json:"arrival_battery_level,omitempty"`
+	DrivenDistanceKM      *float64 `json:"driven_distance_km,omitempty"`
+	TotalDistanceKM       *float64 `json:"total_distance_km,omitempty"`
+	HasVerifiedTrajectory bool     `json:"has_verified_trajectory"`
+	ObservedAt            string   `json:"observed_at"`
 }
 
 type activeRouteMQTT struct {
@@ -83,6 +83,7 @@ type navigationNotificationMonitor struct {
 	enabled        bool
 	connected      bool
 	started        bool
+	workerStarted  bool
 	lastEventAt    *time.Time
 	lastError      string
 	queue          chan navigationLiveActivityEvent
@@ -120,12 +121,18 @@ func (m *navigationNotificationMonitor) start() {
 	}
 	m.started = true
 	enabled := m.enabled
+	startWorker := enabled && !m.workerStarted
+	if startWorker {
+		m.workerStarted = true
+	}
 	m.mu.Unlock()
 	if !enabled {
 		log.Printf("[info] navigation Live Activity push disabled; relay pairing is not configured")
 		return
 	}
-	go m.deliveryWorker()
+	if startWorker {
+		go m.deliveryWorker()
+	}
 	options := mqtt.NewClientOptions().
 		AddBroker(m.mqttBroker).
 		SetClientID("my-t-parking-navigation").
@@ -166,9 +173,12 @@ func (m *navigationNotificationMonitor) start() {
 		m.lastError = err.Error()
 		m.mu.Unlock()
 	})
-	m.client = mqtt.NewClient(options)
-	token := m.client.Connect()
-	if !token.WaitTimeout(15*time.Second) {
+	client := mqtt.NewClient(options)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+	token := client.Connect()
+	if !token.WaitTimeout(15 * time.Second) {
 		m.mu.Lock()
 		m.lastError = "MQTT navigation connection timed out"
 		m.mu.Unlock()
@@ -187,9 +197,13 @@ func (m *navigationNotificationMonitor) stop() {
 		timer.Stop()
 		delete(m.pending, carID)
 	}
+	client := m.client
+	m.client = nil
+	m.connected = false
+	m.started = false
 	m.mu.Unlock()
-	if m.client != nil && m.client.IsConnected() {
-		m.client.Disconnect(250)
+	if client != nil && client.IsConnected() {
+		client.Disconnect(250)
 	}
 }
 
@@ -208,12 +222,25 @@ func (m *navigationNotificationMonitor) configure(pairing softwarePushPairing) e
 		return fmt.Errorf("untrusted relay URL")
 	}
 	m.mu.Lock()
+	samePairing := m.installationID == pairing.InstallationID &&
+		m.relayURL == pairing.RelayURL &&
+		m.relaySecret == pairing.RelaySecret
 	m.installationID = pairing.InstallationID
 	m.relayURL = pairing.RelayURL
 	m.relaySecret = pairing.RelaySecret
 	m.enabled = true
+	if samePairing && m.started {
+		m.mu.Unlock()
+		return nil
+	}
+	oldClient := m.client
+	m.client = nil
+	m.connected = false
 	m.started = false
 	m.mu.Unlock()
+	if oldClient != nil && oldClient.IsConnected() {
+		oldClient.Disconnect(250)
+	}
 	m.start()
 	return nil
 }

@@ -108,8 +108,9 @@ func (m *softwareNotificationMonitor) start() {
 		return
 	}
 	m.started = true
+	enabled := m.enabled
 	m.mu.Unlock()
-	if !m.enabled {
+	if !enabled {
 		log.Printf("[info] vehicle software push disabled; relay pairing is not configured")
 		return
 	}
@@ -161,8 +162,11 @@ func (m *softwareNotificationMonitor) start() {
 		log.Printf("[error] TeslaMate MQTT subscribe: %v", err)
 	})
 
-	m.client = mqtt.NewClient(options)
-	token := m.client.Connect()
+	client := mqtt.NewClient(options)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+	token := client.Connect()
 	if !token.WaitTimeout(15 * time.Second) {
 		m.mu.Lock()
 		m.lastError = "MQTT initial connection timed out"
@@ -193,6 +197,9 @@ func (m *softwareNotificationMonitor) configure(pairing softwarePushPairing) err
 		return fmt.Errorf("untrusted relay URL")
 	}
 	m.mu.Lock()
+	samePairing := m.installationID == pairing.InstallationID &&
+		m.relayURL == pairing.RelayURL &&
+		m.relaySecret == pairing.RelaySecret
 	m.installationID = pairing.InstallationID
 	m.relayURL = pairing.RelayURL
 	m.relaySecret = pairing.RelaySecret
@@ -212,8 +219,18 @@ func (m *softwareNotificationMonitor) configure(pairing softwarePushPairing) err
 		m.mu.Unlock()
 		return err
 	}
+	if samePairing && m.started {
+		m.mu.Unlock()
+		return nil
+	}
+	oldClient := m.client
+	m.client = nil
+	m.connected = false
 	m.started = false
 	m.mu.Unlock()
+	if oldClient != nil && oldClient.IsConnected() {
+		oldClient.Disconnect(250)
+	}
 	m.start()
 	return nil
 }
@@ -239,8 +256,14 @@ func (m *softwareNotificationMonitor) pairingPath() string {
 }
 
 func (m *softwareNotificationMonitor) stop() {
-	if m.client != nil && m.client.IsConnected() {
-		m.client.Disconnect(250)
+	m.mu.Lock()
+	client := m.client
+	m.client = nil
+	m.connected = false
+	m.started = false
+	m.mu.Unlock()
+	if client != nil && client.IsConnected() {
+		client.Disconnect(250)
 	}
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.3
+
+- Make repeated App pairing idempotent so existing software, charging, and
+  navigation MQTT clients are not recreated with duplicate client IDs.
+- Disconnect an existing MQTT client before applying genuinely changed pairing
+  credentials, and keep a single charging/navigation delivery worker.
+- Add a repeated-pairing regression test covering all three push monitors.
+- Bound the Companion container to 1 CPU, 256 MB memory, and 128 processes.
+- Rotate Docker JSON logs at 10 MB with three retained files.
+
 ## 1.9.2
 
 - Fix the Caddy upgrade path so the new parking-event route is written only
