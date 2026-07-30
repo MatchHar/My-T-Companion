@@ -20,7 +20,8 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-const navigationUpdateMinimumInterval = 15 * time.Second
+// Keep remote Live Activity content reasonably fresh without hammering APNs.
+const navigationUpdateMinimumInterval = 10 * time.Second
 
 type navigationLiveActivityEvent struct {
 	EventID               string   `json:"event_id"`
