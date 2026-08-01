@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.4
+
+- Persist navigation push sessions and expose `GET /api/v1/cars/{id}/navigation/push-history` (`navigation_push_history`).
+- Attach real trip timing on navigation end events (`trip_started_at`, `trip_ended_at`, `duration_minutes`) for authentic Live Activity end frames.
+- Includes 1.10.3 history API work and 1.10.2 domain/unpair hardening.
+
 ## 1.10.2
 
 - Added localized App compatibility metadata to `/api/v1/capabilities` so My T can safely recommend or require an App update only when the corresponding App Store version is available.
