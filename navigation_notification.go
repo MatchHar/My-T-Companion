@@ -22,6 +22,7 @@ import (
 
 // Keep remote Live Activity content reasonably fresh without hammering APNs.
 const navigationUpdateMinimumInterval = 10 * time.Second
+const navigationPushHistoryLimit = 200
 
 type navigationLiveActivityEvent struct {
 	EventID               string   `json:"event_id"`
@@ -70,10 +71,41 @@ type navigationNotificationStore struct {
 	Delivered map[string]string          `json:"delivered"`
 }
 
+// navigationPushHistorySession is the App-readable source of truth for
+// destination/name/distance/time that Companion already trusts for push.
+type navigationPushHistorySession struct {
+	SessionID               string   `json:"session_id"`
+	CarID                   int      `json:"car_id"`
+	VehicleName             string   `json:"vehicle_name,omitempty"`
+	Destination             string   `json:"destination"`
+	StartedAt               string   `json:"started_at"`
+	EndedAt                 string   `json:"ended_at,omitempty"`
+	EndReason               string   `json:"end_reason,omitempty"`
+	StartRemainingDistanceKM *float64 `json:"start_remaining_distance_km,omitempty"`
+	StartRemainingMinutes   *int     `json:"start_remaining_minutes,omitempty"`
+	StartEstimatedArrivalAt *int64   `json:"start_estimated_arrival_at,omitempty"`
+	EndRemainingDistanceKM  *float64 `json:"end_remaining_distance_km,omitempty"`
+	EndRemainingMinutes     *int     `json:"end_remaining_minutes,omitempty"`
+	LastRemainingDistanceKM *float64 `json:"last_remaining_distance_km,omitempty"`
+	LastRemainingMinutes    *int     `json:"last_remaining_minutes,omitempty"`
+	LastEstimatedArrivalAt  *int64   `json:"last_estimated_arrival_at,omitempty"`
+	DrivenDistanceKM        *float64 `json:"driven_distance_km,omitempty"`
+	TotalDistanceKM         *float64 `json:"total_distance_km,omitempty"`
+	LastEventType           string   `json:"last_event_type"`
+	LastDeliveryStatus      string   `json:"last_delivery_status,omitempty"`
+	UpdatedAt               string   `json:"updated_at"`
+}
+
+type navigationPushHistoryStore struct {
+	Sessions []navigationPushHistorySession `json:"sessions"`
+}
+
 type navigationNotificationMonitor struct {
 	mu             sync.Mutex
 	store          navigationNotificationStore
+	history        navigationPushHistoryStore
 	statePath      string
+	historyPath    string
 	installationID string
 	relayURL       string
 	relaySecret    string
@@ -94,8 +126,10 @@ type navigationNotificationMonitor struct {
 }
 
 func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMonitor {
+	statePath := getenv("NAVIGATION_PUSH_STATE_PATH", "/data/navigation-live-activities.json")
 	monitor := &navigationNotificationMonitor{
-		statePath:      getenv("NAVIGATION_PUSH_STATE_PATH", "/data/navigation-live-activities.json"),
+		statePath:      statePath,
+		historyPath:    filepath.Join(filepath.Dir(statePath), "navigation-push-history.json"),
 		installationID: strings.TrimSpace(os.Getenv("PUSH_INSTALLATION_ID")),
 		relayURL:       strings.TrimSpace(os.Getenv("PUSH_RELAY_URL")),
 		relaySecret:    strings.TrimSpace(os.Getenv("PUSH_RELAY_SECRET")),
@@ -110,7 +144,9 @@ func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMo
 			Cars:      map[int]carNavigationState{},
 			Delivered: map[string]string{},
 		},
+		history: navigationPushHistoryStore{Sessions: []navigationPushHistorySession{}},
 	}
+	monitor.loadHistory()
 	monitor.loadPairing()
 	monitor.enabled = monitor.installationID != "" && monitor.relayURL != "" && monitor.relaySecret != ""
 	monitor.load()
@@ -507,6 +543,7 @@ func currentDriveDistances(carID int) (int64, *float64, bool) {
 }
 
 func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEvent) {
+	m.recordHistoryEvent(event, "queued")
 	if event.Type == "navigation_ended" && m.priorityQueue != nil {
 		select {
 		case m.priorityQueue <- event:
@@ -532,6 +569,7 @@ func (m *navigationNotificationMonitor) deliveryWorker(events <-chan navigationL
 			if err := m.deliver(event); err != nil {
 				m.mu.Lock()
 				m.lastError = err.Error()
+				m.recordHistoryEventLocked(event, "failed")
 				m.mu.Unlock()
 				log.Printf("[warn] navigation relay event=%s attempt=%d: %v", event.EventID, attempt+1, err)
 				continue
@@ -550,6 +588,7 @@ func (m *navigationNotificationMonitor) deliveryWorker(events <-chan navigationL
 			now := time.Now().UTC()
 			m.lastEventAt = &now
 			m.lastError = ""
+			m.recordHistoryEventLocked(event, "delivered")
 			_ = m.saveLocked()
 			m.mu.Unlock()
 			break
@@ -679,6 +718,161 @@ func (m *navigationNotificationMonitor) saveLocked() error {
 func navigationSessionID(installationID string, carID int, driveID int64, startedAt time.Time) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:%d", installationID, carID, driveID, startedAt.Unix())))
 	return "navigation-" + hex.EncodeToString(sum[:16])
+}
+
+func (m *navigationNotificationMonitor) recordHistoryEvent(event navigationLiveActivityEvent, delivery string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordHistoryEventLocked(event, delivery)
+}
+
+func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigationLiveActivityEvent, delivery string) {
+	if strings.TrimSpace(event.SessionID) == "" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	idx := -1
+	for i := range m.history.Sessions {
+		if m.history.Sessions[i].SessionID == event.SessionID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		session := navigationPushHistorySession{
+			SessionID:   event.SessionID,
+			CarID:       event.CarID,
+			VehicleName: event.VehicleName,
+			Destination: event.Destination,
+			StartedAt:   event.ObservedAt,
+			LastEventType: event.Type,
+			LastDeliveryStatus: delivery,
+			UpdatedAt:   now,
+		}
+		if event.Type == "navigation_started" || event.Type == "navigation_updated" {
+			session.StartRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
+			session.StartRemainingMinutes = cloneInt(event.RemainingMinutes)
+			session.StartEstimatedArrivalAt = cloneInt64(event.EstimatedArrivalAt)
+		}
+		session.LastRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
+		session.LastRemainingMinutes = cloneInt(event.RemainingMinutes)
+		session.LastEstimatedArrivalAt = cloneInt64(event.EstimatedArrivalAt)
+		session.DrivenDistanceKM = cloneFloat(event.DrivenDistanceKM)
+		session.TotalDistanceKM = cloneFloat(event.TotalDistanceKM)
+		if event.Type == "navigation_ended" {
+			session.EndedAt = event.ObservedAt
+			session.EndReason = navigationEndReason(event)
+			session.EndRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
+			session.EndRemainingMinutes = cloneInt(event.RemainingMinutes)
+		}
+		m.history.Sessions = append([]navigationPushHistorySession{session}, m.history.Sessions...)
+	} else {
+		session := m.history.Sessions[idx]
+		if event.VehicleName != "" {
+			session.VehicleName = event.VehicleName
+		}
+		if event.Destination != "" {
+			session.Destination = event.Destination
+		}
+		if session.StartedAt == "" {
+			session.StartedAt = event.ObservedAt
+		}
+		if session.StartRemainingDistanceKM == nil && event.RemainingDistanceKM != nil {
+			session.StartRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
+		}
+		if session.StartRemainingMinutes == nil && event.RemainingMinutes != nil {
+			session.StartRemainingMinutes = cloneInt(event.RemainingMinutes)
+		}
+		if session.StartEstimatedArrivalAt == nil && event.EstimatedArrivalAt != nil {
+			session.StartEstimatedArrivalAt = cloneInt64(event.EstimatedArrivalAt)
+		}
+		session.LastRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
+		session.LastRemainingMinutes = cloneInt(event.RemainingMinutes)
+		session.LastEstimatedArrivalAt = cloneInt64(event.EstimatedArrivalAt)
+		if event.DrivenDistanceKM != nil {
+			session.DrivenDistanceKM = cloneFloat(event.DrivenDistanceKM)
+		}
+		if event.TotalDistanceKM != nil {
+			session.TotalDistanceKM = cloneFloat(event.TotalDistanceKM)
+		}
+		session.LastEventType = event.Type
+		session.LastDeliveryStatus = delivery
+		session.UpdatedAt = now
+		if event.Type == "navigation_ended" {
+			session.EndedAt = event.ObservedAt
+			session.EndReason = navigationEndReason(event)
+			session.EndRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
+			session.EndRemainingMinutes = cloneInt(event.RemainingMinutes)
+		}
+		m.history.Sessions[idx] = session
+	}
+	if len(m.history.Sessions) > navigationPushHistoryLimit {
+		m.history.Sessions = m.history.Sessions[:navigationPushHistoryLimit]
+	}
+	_ = m.saveHistoryLocked()
+}
+
+func navigationEndReason(event navigationLiveActivityEvent) string {
+	if event.RemainingDistanceKM != nil && *event.RemainingDistanceKM <= 0.35 {
+		return "arrived"
+	}
+	if event.RemainingMinutes != nil && *event.RemainingMinutes <= 2 {
+		return "arrived"
+	}
+	return "navigation_ended"
+}
+
+func (m *navigationNotificationMonitor) historyForCar(carID int, limit int) []navigationPushHistorySession {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 || limit > navigationPushHistoryLimit {
+		limit = 50
+	}
+	out := make([]navigationPushHistorySession, 0, limit)
+	for _, session := range m.history.Sessions {
+		if carID > 0 && session.CarID != carID {
+			continue
+		}
+		out = append(out, session)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (m *navigationNotificationMonitor) loadHistory() {
+	data, err := os.ReadFile(m.historyPath)
+	if err != nil {
+		return
+	}
+	var stored navigationPushHistoryStore
+	if json.Unmarshal(data, &stored) == nil && stored.Sessions != nil {
+		m.history.Sessions = stored.Sessions
+	}
+}
+
+func (m *navigationNotificationMonitor) saveHistoryLocked() error {
+	if err := os.MkdirAll(filepath.Dir(m.historyPath), 0700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(m.history)
+	if err != nil {
+		return err
+	}
+	temp := m.historyPath + ".tmp"
+	if err := os.WriteFile(temp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(temp, m.historyPath)
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneInt(value *int) *int {

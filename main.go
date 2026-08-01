@@ -20,15 +20,16 @@ import (
 const headerAPIVersion = "API-Version"
 
 var (
-	apiVersion        = "1.10.2"
+	apiVersion        = "1.10.3"
 	db                *sql.DB
 	apiToken          string
 	authProbeURL      string
 	authClient        *http.Client
 	location          *time.Location
-	carIDPath         = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
-	currentDrivePath  = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
-	parkingEventsPath = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
+	carIDPath              = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
+	currentDrivePath       = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
+	navigationHistoryPath  = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/push-history$`)
+	parkingEventsPath      = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
 	softwarePush      *softwareNotificationMonitor
 	chargingPush      *chargingNotificationMonitor
 	navigationPush    *navigationNotificationMonitor
@@ -253,6 +254,37 @@ func handleNavigationNotificationStatus(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, navigationPush.status())
 }
 
+func handleNavigationPushHistory(w http.ResponseWriter, r *http.Request, carIDValue string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	if navigationPush == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Unavailable"})
+		return
+	}
+	carID, err := strconv.Atoi(carIDValue)
+	if err != nil || carID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid car id"})
+		return
+	}
+	limit := 50
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	sessions := navigationPush.historyForCar(carID, limit)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions": sessions,
+		"count":    len(sessions),
+	})
+}
+
 func runHealthcheck() {
 	client := &http.Client{Timeout: 3 * time.Second}
 	response, err := client.Get("http://127.0.0.1:8080/api/healthz")
@@ -328,6 +360,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"navigation_live_activity_events",
 			"navigation_live_activity_push_to_start",
 			"navigation_live_activity_remote_updates",
+			"navigation_push_history",
 			"parking_observed_events",
 			"parking_charge_connection_events",
 			"parking_security_events",
@@ -372,6 +405,10 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 
 	if matches := currentDrivePath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
 		handleCurrentDrive(w, r, matches[1])
+		return
+	}
+	if matches := navigationHistoryPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
+		handleNavigationPushHistory(w, r, matches[1])
 		return
 	}
 	if matches := parkingEventsPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
