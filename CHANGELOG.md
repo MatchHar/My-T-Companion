@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.6
+
+- Mid-drive destination change ends the previous navigation session as `redirected` and starts a new session for the new destination (closed loops for destination-trip UI).
+
 ## 1.10.4
 
 - Persist navigation push sessions and expose `GET /api/v1/cars/{id}/navigation/push-history` (`navigation_push_history`).

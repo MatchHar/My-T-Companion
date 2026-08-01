@@ -44,6 +44,8 @@ type navigationLiveActivityEvent struct {
 	TripEndedAt           *int64   `json:"trip_ended_at,omitempty"`
 	DurationMinutes       *int     `json:"duration_minutes,omitempty"`
 	ObservedAt            string   `json:"observed_at"`
+	// Optional history end_reason override (not sent to push relay).
+	endReasonOverride string
 }
 
 type activeRouteMQTT struct {
@@ -338,6 +340,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	state.LastObservedAt = observedAt.Format(time.RFC3339)
 	wasActive := state.Active
 	routeInvalid := false
+	previousDestination := state.Destination
 	switch field {
 	case "display_name":
 		state.DisplayName = normalizedMQTTValue(value)
@@ -377,6 +380,39 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	// legitimately publish the route label before distance/minutes; those
 	// optional values will populate in later updates.
 	shouldBeActive := navigationShouldBeActive(routeInvalid, state)
+
+	// Mid-drive destination change: close previous session as redirected, open a new one.
+	if wasActive && shouldBeActive && state.SessionID != "" &&
+		previousDestination != "" && state.Destination != "" &&
+		!navigationDestinationEqual(previousDestination, state.Destination) {
+		if timer := m.pending[carID]; timer != nil {
+			timer.Stop()
+			delete(m.pending, carID)
+		}
+		endState := state
+		endState.Destination = previousDestination
+		endState.Active = false
+		endEvent := m.makeEventLocked(carID, &endState, "navigation_ended", observedAt)
+		endEvent.Destination = previousDestination
+		endEvent.endReasonOverride = "redirected"
+
+		driveID, _, _ := currentDriveDistances(carID)
+		state.Active = true
+		state.DriveID = driveID
+		state.SessionID = navigationSessionID(m.installationID, carID, driveID, observedAt)
+		state.SessionStartedAt = observedAt.Format(time.RFC3339)
+		state.Sequence = 0
+		state.StartDelivered = false
+		state.LastQueuedAt = ""
+		startEvent := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
+		m.store.Cars[carID] = state
+		_ = m.saveLocked()
+		m.mu.Unlock()
+		m.enqueue(endEvent)
+		m.enqueue(startEvent)
+		return
+	}
+
 	if shouldBeActive && (!wasActive || state.SessionID == "") {
 		driveID, _, _ := currentDriveDistances(carID)
 		state.Active = true
@@ -849,6 +885,9 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 }
 
 func navigationEndReason(event navigationLiveActivityEvent) string {
+	if strings.TrimSpace(event.endReasonOverride) != "" {
+		return strings.TrimSpace(event.endReasonOverride)
+	}
 	if event.RemainingDistanceKM != nil && *event.RemainingDistanceKM <= 0.35 {
 		return "arrived"
 	}
@@ -856,6 +895,10 @@ func navigationEndReason(event navigationLiveActivityEvent) string {
 		return "arrived"
 	}
 	return "navigation_ended"
+}
+
+func navigationDestinationEqual(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 func (m *navigationNotificationMonitor) historyForCar(carID int, limit int) []navigationPushHistorySession {
