@@ -277,16 +277,18 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   missing_parking_events=true
   missing_capabilities=true
   missing_current_drive=true
+  missing_push_history=true
   missing_notification_status=true
   missing_notification_pair=true
   grep -qE 'cars/.*/states|parking_states|my_t_parking_states' "$CADDY_FILE" && missing_states=false
   grep -qE 'parking-events|my_t_parking_events' "$CADDY_FILE" && missing_parking_events=false
   grep -qE 'api/v1/capabilities|parking_capabilities|my_t_parking_capabilities' "$CADDY_FILE" && missing_capabilities=false
   grep -qE 'current-drive|my_t_current_drive' "$CADDY_FILE" && missing_current_drive=false
+  grep -qE 'push-history|my_t_push_history' "$CADDY_FILE" && missing_push_history=false
   grep -qE 'notifications/software-update/status|my_t_software_push_status' "$CADDY_FILE" && missing_notification_status=false
   grep -qE 'notifications/software-update/pair|my_t_software_push_pair' "$CADDY_FILE" && missing_notification_pair=false
 
-  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_notification_status" == true || "$missing_notification_pair" == true ]]; then
+  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notification_status" == true || "$missing_notification_pair" == true ]]; then
     route_anchor="$(grep -nE '^[[:space:]]*handle[[:space:]]+@(teslamate_api|api)' "$CADDY_FILE" | head -n 1 | cut -d: -f1 || true)"
     if [[ -z "$route_anchor" ]]; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
@@ -317,6 +319,15 @@ CADDY
       cat >> "$route_file" <<'CADDY'
 	@my_t_current_drive path_regexp my_t_current_drive ^/api/v1/cars/[0-9]+/navigation/current-drive$
 	handle @my_t_current_drive {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+CADDY
+    fi
+    if [[ "$missing_push_history" == true ]]; then
+      cat >> "$route_file" <<'CADDY'
+	@my_t_push_history path_regexp my_t_push_history ^/api/v1/cars/[0-9]+/navigation/push-history$
+	handle @my_t_push_history {
 		reverse_proxy 127.0.0.1:8083
 	}
 
