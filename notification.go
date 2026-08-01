@@ -21,14 +21,17 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-// Official product push hostname (preferred). Legacy path remains trusted so
-// already-paired installations keep working until they re-pair.
-const officialSoftwarePushRelayURL = "https://my-t-push.samman.top/v1/events"
-const legacySoftwarePushRelayURL = "https://teslamate-api.samman.top/my-t-push/v1/events"
+// Official Cloudflare-hosted product push host (primary).
+const officialSoftwarePushRelayURL = "https://push.my-tesla.app/v1/events"
+
+// Legacy hosts remain trusted so already-paired installations keep working
+// until the App re-pairs after an upgrade.
+const legacySoftwarePushRelayURLVPS = "https://my-t-push.samman.top/v1/events"
+const legacySoftwarePushRelayURLAPI = "https://teslamate-api.samman.top/my-t-push/v1/events"
 
 func isTrustedSoftwarePushRelayURL(raw string) bool {
 	switch strings.TrimSpace(raw) {
-	case officialSoftwarePushRelayURL, legacySoftwarePushRelayURL:
+	case officialSoftwarePushRelayURL, legacySoftwarePushRelayURLVPS, legacySoftwarePushRelayURLAPI:
 		return true
 	default:
 		return false
