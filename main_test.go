@@ -146,14 +146,22 @@ func TestSoftwareNotificationStatePersistence(t *testing.T) {
 }
 
 func TestSoftwarePushPairingRejectsUntrustedRelay(t *testing.T) {
-	monitor := &softwareNotificationMonitor{}
-	err := monitor.configure(softwarePushPairing{
-		InstallationID: strings.Repeat("a", 48),
-		RelayURL:       "https://example.invalid/events",
-		RelaySecret:    strings.Repeat("b", 64),
-	})
-	if err == nil {
-		t.Fatal("expected untrusted relay URL to be rejected")
+	for _, relayURL := range []string{
+		"https://example.invalid/events",
+		"https://my-t-push.samman.top/v1/events",
+		"https://teslamate-api.samman.top/my-t-push/v1/events",
+	} {
+		monitor := &softwareNotificationMonitor{
+			statePath: filepath.Join(t.TempDir(), "software-notifications.json"),
+		}
+		err := monitor.configure(softwarePushPairing{
+			InstallationID: strings.Repeat("a", 48),
+			RelayURL:       relayURL,
+			RelaySecret:    strings.Repeat("b", 64),
+		})
+		if err == nil {
+			t.Fatalf("expected untrusted relay URL %q to be rejected", relayURL)
+		}
 	}
 }
 
@@ -209,6 +217,34 @@ func TestRepeatedPairingDoesNotRestartMQTTMonitorsOrWorkers(t *testing.T) {
 	}
 	if _, err := os.Stat(software.pairingPath()); err != nil {
 		t.Fatalf("repeated pairing must still persist pairing state: %v", err)
+	}
+}
+
+func TestDisablePairingClearsPersistentAndRuntimeState(t *testing.T) {
+	pairing := softwarePushPairing{
+		InstallationID: strings.Repeat("a", 48),
+		RelayURL:       officialSoftwarePushRelayURL,
+		RelaySecret:    strings.Repeat("b", 64),
+	}
+	software := &softwareNotificationMonitor{
+		statePath:      filepath.Join(t.TempDir(), "software.json"),
+		installationID: pairing.InstallationID,
+		relayURL:       pairing.RelayURL,
+		relaySecret:    pairing.RelaySecret,
+		enabled:        true,
+	}
+	data, _ := json.Marshal(pairing)
+	if err := os.WriteFile(software.pairingPath(), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := software.disable(); err != nil {
+		t.Fatal(err)
+	}
+	if software.enabled || software.installationID != "" || software.relayURL != "" || software.relaySecret != "" {
+		t.Fatal("software pairing remained enabled after disable")
+	}
+	if _, err := os.Stat(software.pairingPath()); !os.IsNotExist(err) {
+		t.Fatalf("pairing file still exists after disable: %v", err)
 	}
 }
 
@@ -512,6 +548,18 @@ func TestCapabilitiesRequiresAuthentication(t *testing.T) {
 	handleCapabilities(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("got status %d, want 200", recorder.Code)
+	}
+	var payload struct {
+		AppCompatibility struct {
+			MinimumVersion     string `json:"minimum_version"`
+			RecommendedVersion string `json:"recommended_version"`
+		} `json:"app_compatibility"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode capabilities: %v", err)
+	}
+	if payload.AppCompatibility.MinimumVersion != "3.10" || payload.AppCompatibility.RecommendedVersion != "3.30" {
+		t.Fatalf("unexpected app compatibility: %+v", payload.AppCompatibility)
 	}
 }
 

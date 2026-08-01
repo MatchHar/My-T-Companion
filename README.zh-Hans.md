@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 当前正式版本：`1.10.1`。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
+> 当前正式版本：`1.10.2`。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
 > 提供安全配对前保持关闭。
 >
 > **App Store My T 3.10** 不提供 Companion 相关界面。**TestFlight / 预发布 My T 3.20+**
@@ -65,7 +65,7 @@ My T 的完整产品介绍、TeslaMateAPI 部署、连接安全与故障排查�
 
 My T Companion 是部署在 TeslaMate 服务器上的可选独立组件，为 My T
 提供完整的车辆状态历史、已保留的停车 MQTT 事件观测（插枪、充电、安防、空调等）
-和可靠的实时行驶轨迹。长期停车监控与实时导航共用同一个容器、认证方式、安装命令
+和可靠的实时行驶轨迹。停车增强与实时导航共用同一个容器、认证方式、安装命令
 和更新流程。
 
 组件只读现有 TeslaMate PostgreSQL 数据库，不修改 TeslaMate、不创建数据表，
@@ -85,7 +85,7 @@ TeslaMate 未长期保存的真实 MQTT 状态变化，例如开始充电前已�
 TeslaMate 数据的 iPhone App。普通行程、充电、统计和当前车辆信息继续由标准
 TeslaMate/TeslaMateAPI 提供，本组件只补充三个手机端无法可靠还原的场景：
 
-1. **长期停车监控**：需要完整的 `online`、`offline`、`asleep` 状态顺序，
+1. **停车增强**：需要完整的 `online`、`offline`、`asleep` 状态顺序，
    以及每次状态切换前后的真实电量和续航。App 关闭期间发生的事件无法由手机
    事后重建。
 2. **正在行驶时的实时导航**：需要 TeslaMate 保存的最早真实 GPS 点和后续
@@ -180,7 +180,7 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 | 1.5.1 | 修补 MQTT 与 Go 网络依赖，不改变 API 或部署方式 |
 
 完整改动请查看 [CHANGELOG.md](CHANGELOG.md)，当前版本说明请查看
-[RELEASE_NOTES_1.10.1.md](RELEASE_NOTES_1.10.1.md)。
+[RELEASE_NOTES_1.10.2.md](RELEASE_NOTES_1.10.2.md)。
 
 ## 哪些用户需要安装
 
@@ -204,13 +204,13 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 安装使用固定 GitHub Release，不直接执行会变化的 `main` 分支。已安装 GitHub CLI 时：
 
 ```sh
-version=1.10.1; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.10.2; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 未安装 GitHub CLI 时：
 
 ```sh
-version=1.10.1; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.10.2; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 只有本地服务和 My T 统一入口都验证成功，安装器才报告完整成功。手动使用
@@ -309,7 +309,7 @@ sudo /opt/my-t-companion/update.sh
 ```
 
 My T 也可能显示类似
-`sudo MY_T_VERSION=1.10.1 /opt/my-t-companion/update.sh`
+`sudo MY_T_VERSION=1.10.2 /opt/my-t-companion/update.sh`
 的指定版本命令。这是有意设计：App 固定到该 App 版本已验证兼容的最新
 Companion；永久命令则供明确希望跟随服务器最新稳定版的管理员使用。
 

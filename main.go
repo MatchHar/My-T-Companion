@@ -20,7 +20,7 @@ import (
 const headerAPIVersion = "API-Version"
 
 var (
-	apiVersion        = "1.10.1"
+	apiVersion        = "1.10.2"
 	db                *sql.DB
 	apiToken          string
 	authProbeURL      string
@@ -167,12 +167,30 @@ func main() {
 }
 
 func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if !authorized(r) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	if r.Method == http.MethodDelete {
+		if softwarePush == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Unavailable"})
+			return
+		}
+		if err := softwarePush.disable(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Unpair failed"})
+			return
+		}
+		if chargingPush != nil {
+			chargingPush.disable()
+		}
+		if navigationPush != nil {
+			navigationPush.disable()
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"paired": false})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
@@ -282,6 +300,15 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": "my-t-companion",
 		"version": apiVersion,
+		"app_compatibility": map[string]any{
+			"minimum_version":     "3.10",
+			"recommended_version": "3.30",
+			"release_notes": map[string]string{
+				"zh_hans": "新增 App 与扩展服务双向版本检查，并改进扩展功能的安全降级。",
+				"zh_hant": "新增 App 與擴充服務雙向版本檢查，並改善擴充功能的安全降級。",
+				"en":      "Adds two-way App and Companion compatibility checks with safer feature fallback.",
+			},
+		},
 		"capabilities": []string{
 			"parking_state_history",
 			"state_boundary_battery",

@@ -258,6 +258,17 @@ func (m *chargingNotificationMonitor) configure(pairing softwarePushPairing) err
 	return nil
 }
 
+func (m *chargingNotificationMonitor) disable() {
+	m.stop()
+	m.mu.Lock()
+	m.enabled = false
+	m.installationID = ""
+	m.relayURL = ""
+	m.relaySecret = ""
+	m.lastError = ""
+	m.mu.Unlock()
+}
+
 func (m *chargingNotificationMonitor) loadPairing() {
 	path := filepath.Join(filepath.Dir(getenv("PUSH_STATE_PATH", "/data/software-notifications.json")), "software-push-pairing.json")
 	data, err := os.ReadFile(path)

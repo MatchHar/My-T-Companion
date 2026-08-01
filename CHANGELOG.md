@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.10.2
+
+- Added localized App compatibility metadata to `/api/v1/capabilities` so My T can safely recommend or require an App update only when the corresponding App Store version is available.
+- Made `https://push.my-tesla.app/v1/events` the only trusted push relay endpoint and removed both former relay addresses from the allowlist.
+
 ## 1.10.1
 
 - Start destination-navigation Live Activities as soon as a genuine driving

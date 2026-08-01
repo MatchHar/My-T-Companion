@@ -24,18 +24,24 @@ import (
 // Official Cloudflare-hosted product push host (primary).
 const officialSoftwarePushRelayURL = "https://push.my-tesla.app/v1/events"
 
-// Legacy hosts remain trusted so already-paired installations keep working
-// until the App re-pairs after an upgrade.
-const legacySoftwarePushRelayURLVPS = "https://my-t-push.samman.top/v1/events"
-const legacySoftwarePushRelayURLAPI = "https://teslamate-api.samman.top/my-t-push/v1/events"
-
 func isTrustedSoftwarePushRelayURL(raw string) bool {
-	switch strings.TrimSpace(raw) {
-	case officialSoftwarePushRelayURL, legacySoftwarePushRelayURLVPS, legacySoftwarePushRelayURLAPI:
-		return true
-	default:
-		return false
+	return strings.TrimSpace(raw) == officialSoftwarePushRelayURL
+}
+
+func (m *softwareNotificationMonitor) disable() error {
+	m.stop()
+	m.mu.Lock()
+	m.enabled = false
+	m.installationID = ""
+	m.relayURL = ""
+	m.relaySecret = ""
+	m.lastError = ""
+	m.mu.Unlock()
+	err := os.Remove(m.pairingPath())
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
+	return nil
 }
 
 type softwareNotificationEvent struct {
