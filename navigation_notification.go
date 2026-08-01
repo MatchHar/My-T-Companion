@@ -32,6 +32,7 @@ type navigationLiveActivityEvent struct {
 	Type                  string   `json:"type"`
 	SessionID             string   `json:"session_id"`
 	Destination           string   `json:"destination"`
+	StartName             string   `json:"start_name,omitempty"`
 	RemainingDistanceKM   *float64 `json:"remaining_distance_km,omitempty"`
 	RemainingMinutes      *int     `json:"remaining_minutes,omitempty"`
 	EstimatedArrivalAt    *int64   `json:"estimated_arrival_at,omitempty"`
@@ -59,7 +60,11 @@ type activeRouteMQTT struct {
 type carNavigationState struct {
 	DisplayName         string   `json:"display_name,omitempty"`
 	VehicleState        string   `json:"vehicle_state,omitempty"`
+	// Last known TeslaMate geofence name (MQTT), used as trip start label.
+	Geofence            string   `json:"geofence,omitempty"`
 	Destination         string   `json:"destination,omitempty"`
+	// Frozen label for where the navigation session began (geofence or drive start).
+	StartName           string   `json:"start_name,omitempty"`
 	RemainingDistanceKM *float64 `json:"remaining_distance_km,omitempty"`
 	RemainingMinutes    *int     `json:"remaining_minutes,omitempty"`
 	ArrivalBatteryLevel *int     `json:"arrival_battery_level,omitempty"`
@@ -85,6 +90,7 @@ type navigationPushHistorySession struct {
 	SessionID               string   `json:"session_id"`
 	CarID                   int      `json:"car_id"`
 	VehicleName             string   `json:"vehicle_name,omitempty"`
+	StartName               string   `json:"start_name,omitempty"`
 	Destination             string   `json:"destination"`
 	StartedAt               string   `json:"started_at"`
 	EndedAt                 string   `json:"ended_at,omitempty"`
@@ -207,6 +213,7 @@ func (m *navigationNotificationMonitor) start() {
 		token := client.SubscribeMultiple(map[string]byte{
 			"teslamate/cars/+/display_name": 1,
 			"teslamate/cars/+/state":        1,
+			"teslamate/cars/+/geofence":     1,
 			"teslamate/cars/+/active_route": 1,
 		}, m.handleMQTTMessage)
 		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
@@ -346,6 +353,8 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.DisplayName = normalizedMQTTValue(value)
 	case "state":
 		state.VehicleState = strings.ToLower(normalizedMQTTValue(value))
+	case "geofence":
+		state.Geofence = normalizedMQTTValue(value)
 	case "active_route":
 		var route activeRouteMQTT
 		if json.Unmarshal([]byte(value), &route) != nil || route.Error != nil ||
@@ -404,6 +413,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
+		state.StartName = resolveNavigationStartName(carID, state.Geofence)
 		startEvent := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
@@ -422,6 +432,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
+		state.StartName = resolveNavigationStartName(carID, state.Geofence)
 		event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
@@ -560,6 +571,7 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		Type:                  eventType,
 		SessionID:             state.SessionID,
 		Destination:           state.Destination,
+		StartName:             state.StartName,
 		RemainingDistanceKM:   cloneFloat(state.RemainingDistanceKM),
 		RemainingMinutes:      cloneInt(state.RemainingMinutes),
 		EstimatedArrivalAt:    eta,
@@ -572,6 +584,34 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		DurationMinutes:       durationMin,
 		ObservedAt:            observedAt.Format(time.RFC3339),
 	}
+}
+
+// resolveNavigationStartName prefers live geofence, then open-drive start geofence/address.
+func resolveNavigationStartName(carID int, liveGeofence string) string {
+	if name := strings.TrimSpace(liveGeofence); name != "" {
+		return name
+	}
+	if db == nil {
+		return ""
+	}
+	var label string
+	err := db.QueryRow(`
+		SELECT COALESCE(
+			NULLIF(TRIM(g.name), ''),
+			NULLIF(TRIM(a.name), ''),
+			NULLIF(TRIM(a.display_name), ''),
+			''
+		)
+		FROM drives d
+		LEFT JOIN geofences g ON g.id = d.start_geofence_id
+		LEFT JOIN addresses a ON a.id = d.start_address_id
+		WHERE d.car_id = $1 AND d.end_date IS NULL
+		ORDER BY d.start_date DESC, d.id DESC
+		LIMIT 1`, carID).Scan(&label)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(label)
 }
 
 func currentDriveDistances(carID int) (int64, *float64, bool) {
@@ -815,6 +855,7 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 			SessionID:   event.SessionID,
 			CarID:       event.CarID,
 			VehicleName: event.VehicleName,
+			StartName:   strings.TrimSpace(event.StartName),
 			Destination: event.Destination,
 			StartedAt:   event.ObservedAt,
 			LastEventType: event.Type,
@@ -842,6 +883,10 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		session := m.history.Sessions[idx]
 		if event.VehicleName != "" {
 			session.VehicleName = event.VehicleName
+		}
+		// Freeze start name on first value; never overwrite with later empties.
+		if session.StartName == "" && strings.TrimSpace(event.StartName) != "" {
+			session.StartName = strings.TrimSpace(event.StartName)
 		}
 		if event.Destination != "" {
 			session.Destination = event.Destination

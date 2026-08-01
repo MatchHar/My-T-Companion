@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.7
+
+- Record `start_name` on navigation push history (live geofence or open-drive start label) for App start → destination trip titles.
+
 ## 1.10.6
 
 - Mid-drive destination change ends the previous navigation session as `redirected` and starts a new session for the new destination (closed loops for destination-trip UI).
