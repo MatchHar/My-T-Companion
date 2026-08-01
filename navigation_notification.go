@@ -447,7 +447,8 @@ func (m *navigationNotificationMonitor) scheduleUpdateLocked(carID int, observed
 		event := m.makeEventLocked(carID, &state, "navigation_updated", observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
-		m.enqueue(event)
+		// Caller already holds m.mu — must not re-enter enqueue/recordHistoryEvent.
+		m.enqueueAlreadyLocked(event)
 		return
 	}
 	if _, exists := m.pending[carID]; exists {
@@ -469,8 +470,8 @@ func (m *navigationNotificationMonitor) flushUpdate(carID int) {
 	event := m.makeEventLocked(carID, &state, "navigation_updated", time.Now().UTC())
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
+	m.enqueueAlreadyLocked(event)
 	m.mu.Unlock()
-	m.enqueue(event)
 }
 
 func (m *navigationNotificationMonitor) makeEventLocked(
@@ -571,7 +572,14 @@ func currentDriveDistances(carID int) (int64, *float64, bool) {
 }
 
 func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEvent) {
-	m.recordHistoryEvent(event, "queued")
+	m.mu.Lock()
+	m.enqueueAlreadyLocked(event)
+	m.mu.Unlock()
+}
+
+// enqueueAlreadyLocked records history and enqueues delivery. Caller must hold m.mu.
+func (m *navigationNotificationMonitor) enqueueAlreadyLocked(event navigationLiveActivityEvent) {
+	m.recordHistoryEventLocked(event, "queued")
 	if event.Type == "navigation_ended" && m.priorityQueue != nil {
 		select {
 		case m.priorityQueue <- event:
