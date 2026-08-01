@@ -39,6 +39,10 @@ type navigationLiveActivityEvent struct {
 	DrivenDistanceKM      *float64 `json:"driven_distance_km,omitempty"`
 	TotalDistanceKM       *float64 `json:"total_distance_km,omitempty"`
 	HasVerifiedTrajectory bool     `json:"has_verified_trajectory"`
+	// Trip timing for 100% real end-frame (unix seconds + RFC3339).
+	TripStartedAt         *int64   `json:"trip_started_at,omitempty"`
+	TripEndedAt           *int64   `json:"trip_ended_at,omitempty"`
+	DurationMinutes       *int     `json:"duration_minutes,omitempty"`
 	ObservedAt            string   `json:"observed_at"`
 }
 
@@ -59,6 +63,8 @@ type carNavigationState struct {
 	ArrivalBatteryLevel *int     `json:"arrival_battery_level,omitempty"`
 	Active              bool     `json:"active"`
 	SessionID           string   `json:"session_id,omitempty"`
+	// RFC3339 when this navigation session became active (real trip start for end-frame).
+	SessionStartedAt    string   `json:"session_started_at,omitempty"`
 	DriveID             int64    `json:"drive_id,omitempty"`
 	Sequence            int      `json:"sequence"`
 	StartDelivered      bool     `json:"start_delivered"`
@@ -376,6 +382,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.Active = true
 		state.DriveID = driveID
 		state.SessionID = navigationSessionID(m.installationID, carID, driveID, observedAt)
+		state.SessionStartedAt = observedAt.Format(time.RFC3339)
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
@@ -488,6 +495,24 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		value := observedAt.Add(time.Duration(*state.RemainingMinutes) * time.Minute).Unix()
 		eta = &value
 	}
+	var tripStartedUnix *int64
+	var tripEndedUnix *int64
+	var durationMin *int
+	if state.SessionStartedAt != "" {
+		if startedAt, err := time.Parse(time.RFC3339, state.SessionStartedAt); err == nil {
+			v := startedAt.Unix()
+			tripStartedUnix = &v
+			if eventType == "navigation_ended" {
+				endV := observedAt.Unix()
+				tripEndedUnix = &endV
+				mins := int(observedAt.Sub(startedAt).Minutes() + 0.5)
+				if mins < 0 {
+					mins = 0
+				}
+				durationMin = &mins
+			}
+		}
+	}
 	idInput := fmt.Sprintf("%s:%s:%s:%d", m.installationID, state.SessionID, eventType, state.Sequence)
 	idHash := sha256.Sum256([]byte(idInput))
 	return navigationLiveActivityEvent{
@@ -505,6 +530,9 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		DrivenDistanceKM:      driven,
 		TotalDistanceKM:       total,
 		HasVerifiedTrajectory: verified,
+		TripStartedAt:         tripStartedUnix,
+		TripEndedAt:           tripEndedUnix,
+		DurationMinutes:       durationMin,
 		ObservedAt:            observedAt.Format(time.RFC3339),
 	}
 }
