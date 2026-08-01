@@ -3,6 +3,10 @@
 ## 1.10.7
 
 - Record `start_name` on navigation push history (live geofence or open-drive start label) for App start → destination trip titles.
+- Align English, Simplified Chinese, and Traditional Chinese documentation with
+  My T 3.32 and the public My-T-App availability/setup repository.
+- Correct current install/update examples, security support version, manual
+  Compose image tag, and CI image naming to Companion 1.10.7.
 
 ## 1.10.6
 

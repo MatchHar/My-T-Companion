@@ -2,12 +2,13 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 目前正式版本：`1.10.4`。車輛軟體原生推送、充電鎖屏即時活動及導航即時活動均為選用功能，在相容的 My T 版本
+> 目前正式版本：`1.10.7`。車輛軟體原生推送、充電鎖屏即時活動及導航即時活動均為選用功能，在相容的 My T 版本
 > 提供安全配對前保持關閉。
 >
-> **App Store My T 3.10** 不提供 Companion 相關介面。**TestFlight / 預發布 My T 3.20+**
-> 已支援本元件：停車流水、觀測事件與軌跡在可存取 `/api/v1/capabilities` 時可用；
-> 推播與即時動態仍需完成配對。詳見
+> **My T 3.32** 已於 2026 年 8 月 1 日提交 Apple，目前等待審查；審查通過前，
+> App Store 可下載版本仍可能是舊版。TestFlight／預發布 My T 3.32 已支援本元件。
+> 停車流水、觀測事件、軌跡及目的地行程記錄在可存取 `/api/v1/capabilities` 時
+> 可用；推播及即時動態仍需完成配對。詳見
 > [My T 功能可用性](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)。
 
 **本元件專為
@@ -179,9 +180,17 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 | 1.4.1 | 校驗版更新、回復備份、統一入口驗證及更完整的內網/代理說明 |
 | 1.5.0 | 原生軟體更新推送、持久去重、簽署中繼及 App 自動安全配對 |
 | 1.5.1 | 修補 MQTT 與 Go 網路依賴，不改變 API 或部署方式 |
+| 1.9.3 | 長期容量受控的停車事件、重複配對穩定性、日誌輪替與資源限制 |
+| 1.10.0 | 備份／還原流程及有界暫時推播狀態 |
+| 1.10.2 | App 相容性資訊、正式推播網域與安全解除配對 |
+| 1.10.4 | 帶真實行程時間的目的地導航工作階段歷史 |
+| 1.10.5 | 推播歷史路由與死鎖修正 |
+| 1.10.6 | 行駛中更改目的地時拆分為完整獨立工作階段 |
+| 1.10.7 | 記錄真實起點名稱，用於「起點 → 目的地」標題 |
 
 完整改動請查看 [CHANGELOG.md](CHANGELOG.md)，目前版本說明請查看
-[RELEASE_NOTES_1.10.4.md](RELEASE_NOTES_1.10.4.md)。
+[RELEASE_NOTES_1.10.7.zh-Hant.md](RELEASE_NOTES_1.10.7.zh-Hant.md) 或
+[v1.10.7 GitHub Release](https://github.com/MatchHar/My-T-Companion/releases/tag/v1.10.7)。
 
 ## 哪些使用者需要安裝
 
@@ -205,13 +214,13 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 安裝使用固定 GitHub Release，不直接執行會變動的 `main` 分支。已安裝 GitHub CLI 時：
 
 ```sh
-version=1.10.4; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.10.7; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 未安裝 GitHub CLI 時：
 
 ```sh
-version=1.10.4; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version=1.10.7; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 只有本機服務和 My T 統一入口都驗證成功，安裝程式才報告完整成功。手動使用
@@ -310,7 +319,7 @@ sudo /opt/my-t-companion/update.sh
 ```
 
 My T 亦可能顯示類似
-`sudo MY_T_VERSION=1.10.4 /opt/my-t-companion/update.sh`
+`sudo MY_T_VERSION=1.10.7 /opt/my-t-companion/update.sh`
 的指定版本指令。這是刻意設計：App 固定至該 App 版本已驗證相容的最新
 Companion；永久指令則供明確希望跟隨伺服器最新穩定版的管理員使用。
 

@@ -20,7 +20,7 @@ jobs:
       - run: go vet ./...
       - run: bash -n install.sh update.sh uninstall.sh backup.sh restore.sh storage-status.sh scripts/build-release.sh scripts/test-updater.sh
       - run: sudo scripts/test-updater.sh
-      - run: docker build --tag myt/parking-monitor:ci .
+      - run: docker build --tag myt/companion:ci .
 
   release-archive:
     runs-on: ubuntu-24.04
