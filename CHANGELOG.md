@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.1
+
+- Start destination-navigation Live Activities as soon as a genuine driving
+  state and destination are present; distance and ETA may arrive afterward.
+- Preserve active navigation sessions across service restarts and end orphaned
+  Lock Screen activities when fresh TeslaMate state does not confirm them.
+- Deliver navigation end events on an independent worker so ordinary update
+  retries cannot delay trip closure.
+
 ## 1.10.0
 
 - Keep genuine parking observations long-term by default, bounded to the newest

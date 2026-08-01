@@ -62,6 +62,7 @@ type carNavigationState struct {
 	Sequence            int      `json:"sequence"`
 	StartDelivered      bool     `json:"start_delivered"`
 	LastQueuedAt        string   `json:"last_queued_at,omitempty"`
+	LastObservedAt      string   `json:"last_observed_at,omitempty"`
 }
 
 type navigationNotificationStore struct {
@@ -88,6 +89,7 @@ type navigationNotificationMonitor struct {
 	lastEventAt    *time.Time
 	lastError      string
 	queue          chan navigationLiveActivityEvent
+	priorityQueue  chan navigationLiveActivityEvent
 	pending        map[int]*time.Timer
 }
 
@@ -102,6 +104,7 @@ func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMo
 		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
 		httpClient:     &http.Client{Timeout: 15 * time.Second},
 		queue:          make(chan navigationLiveActivityEvent, 128),
+		priorityQueue:  make(chan navigationLiveActivityEvent, 16),
 		pending:        map[int]*time.Timer{},
 		store: navigationNotificationStore{
 			Cars:      map[int]carNavigationState{},
@@ -132,7 +135,11 @@ func (m *navigationNotificationMonitor) start() {
 		return
 	}
 	if startWorker {
-		go m.deliveryWorker()
+		// Terminal events use a dedicated worker so a slow/retrying ordinary
+		// update can never keep a finished trip alive on the Lock Screen.
+		go m.deliveryWorker(m.queue)
+		go m.deliveryWorker(m.priorityQueue)
+		go m.reconcileRestoredSessions(time.Now().UTC())
 	}
 	options := mqtt.NewClientOptions().
 		AddBroker(m.mqttBroker).
@@ -275,6 +282,7 @@ func (m *navigationNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message
 func (m *navigationNotificationMonitor) observe(carID int, field, value string, observedAt time.Time) {
 	m.mu.Lock()
 	state := m.store.Cars[carID]
+	state.LastObservedAt = observedAt.Format(time.RFC3339)
 	wasActive := state.Active
 	routeInvalid := false
 	switch field {
@@ -312,8 +320,10 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		return
 	}
 
-	shouldBeActive := !routeInvalid && state.VehicleState == "driving" && state.Destination != "" &&
-		state.RemainingDistanceKM != nil && state.RemainingMinutes != nil
+	// Destination and confirmed driving are sufficient to start. TeslaMate can
+	// legitimately publish the route label before distance/minutes; those
+	// optional values will populate in later updates.
+	shouldBeActive := navigationShouldBeActive(routeInvalid, state)
 	if shouldBeActive && (!wasActive || state.SessionID == "") {
 		driveID, _, _ := currentDriveDistances(carID)
 		state.Active = true
@@ -366,6 +376,10 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		}
 	}
 	m.mu.Unlock()
+}
+
+func navigationShouldBeActive(routeInvalid bool, state carNavigationState) bool {
+	return !routeInvalid && state.VehicleState == "driving" && state.Destination != ""
 }
 
 func (m *navigationNotificationMonitor) scheduleUpdateLocked(carID int, observedAt time.Time) {
@@ -482,6 +496,14 @@ func currentDriveDistances(carID int) (int64, *float64, bool) {
 }
 
 func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEvent) {
+	if event.Type == "navigation_ended" && m.priorityQueue != nil {
+		select {
+		case m.priorityQueue <- event:
+		default:
+			log.Printf("[error] navigation priority queue is full; event=%s", event.EventID)
+		}
+		return
+	}
 	select {
 	case m.queue <- event:
 	default:
@@ -489,8 +511,8 @@ func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEven
 	}
 }
 
-func (m *navigationNotificationMonitor) deliveryWorker() {
-	for event := range m.queue {
+func (m *navigationNotificationMonitor) deliveryWorker(events <-chan navigationLiveActivityEvent) {
+	for event := range events {
 		delays := []time.Duration{0, 5 * time.Second, 30 * time.Second}
 		for attempt, delay := range delays {
 			if delay > 0 {
@@ -521,6 +543,35 @@ func (m *navigationNotificationMonitor) deliveryWorker() {
 			m.mu.Unlock()
 			break
 		}
+	}
+}
+
+func (m *navigationNotificationMonitor) reconcileRestoredSessions(startedAt time.Time) {
+	timer := time.NewTimer(45 * time.Second)
+	defer timer.Stop()
+	<-timer.C
+
+	var endings []navigationLiveActivityEvent
+	m.mu.Lock()
+	for carID, state := range m.store.Cars {
+		if !state.Active || state.SessionID == "" {
+			continue
+		}
+		observedAt, _ := time.Parse(time.RFC3339, state.LastObservedAt)
+		if observedAt.After(startedAt) {
+			continue
+		}
+		// No fresh retained MQTT state arrived after restart. End the orphan
+		// rather than silently deleting it and leaving the Lock Screen stuck.
+		state.Active = false
+		event := m.makeEventLocked(carID, &state, "navigation_ended", time.Now().UTC())
+		m.store.Cars[carID] = state
+		endings = append(endings, event)
+	}
+	_ = m.saveLocked()
+	m.mu.Unlock()
+	for _, event := range endings {
+		m.enqueue(event)
 	}
 }
 
@@ -593,16 +644,8 @@ func (m *navigationNotificationMonitor) load() {
 		}
 		now := time.Now().UTC()
 		pruneTimestampMap(m.store.Delivered, now, navigationDeliveredRetention, navigationDeliveredMaximum)
-		for carID, state := range m.store.Cars {
-			if state.Active && timestampIsOlderThan(state.LastQueuedAt, now, navigationTransientMaximumAge) {
-				state.Active = false
-				state.SessionID = ""
-				state.DriveID = 0
-				state.StartDelivered = false
-				state.LastQueuedAt = ""
-				m.store.Cars[carID] = state
-			}
-		}
+		// Active sessions are reconciled after MQTT reconnect. Never silently
+		// delete one here because that would strand its Live Activity.
 	}
 }
 

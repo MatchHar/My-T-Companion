@@ -212,6 +212,39 @@ func TestRepeatedPairingDoesNotRestartMQTTMonitorsOrWorkers(t *testing.T) {
 	}
 }
 
+func TestNavigationCanStartBeforeOptionalMetricsArrive(t *testing.T) {
+	state := carNavigationState{
+		VehicleState: "driving",
+		Destination:  "Central Park",
+	}
+	if !navigationShouldBeActive(false, state) {
+		t.Fatal("destination navigation should not wait for optional distance/minutes")
+	}
+	if navigationShouldBeActive(true, state) {
+		t.Fatal("invalid active_route must not remain active")
+	}
+}
+
+func TestNavigationEndUsesPriorityQueue(t *testing.T) {
+	monitor := &navigationNotificationMonitor{
+		queue:         make(chan navigationLiveActivityEvent, 1),
+		priorityQueue: make(chan navigationLiveActivityEvent, 1),
+	}
+	event := navigationLiveActivityEvent{
+		EventID: "end-1",
+		Type:    "navigation_ended",
+	}
+	monitor.enqueue(event)
+	select {
+	case received := <-monitor.priorityQueue:
+		if received.EventID != event.EventID {
+			t.Fatalf("unexpected priority event: %+v", received)
+		}
+	default:
+		t.Fatal("navigation end was not queued with priority")
+	}
+}
+
 func TestChargingEventUsesOnlyRequiredTelemetryAndValidSignature(t *testing.T) {
 	t.Parallel()
 	const secret = "relay-secret"
