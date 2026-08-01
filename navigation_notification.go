@@ -226,7 +226,7 @@ func (m *navigationNotificationMonitor) configure(pairing softwarePushPairing) e
 	if err != nil || len(secret) != 32 {
 		return fmt.Errorf("invalid relay secret")
 	}
-	if pairing.RelayURL != officialSoftwarePushRelayURL {
+	if !isTrustedSoftwarePushRelayURL(pairing.RelayURL) {
 		return fmt.Errorf("untrusted relay URL")
 	}
 	m.mu.Lock()

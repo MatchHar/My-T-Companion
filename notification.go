@@ -21,7 +21,19 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-const officialSoftwarePushRelayURL = "https://teslamate-api.samman.top/my-t-push/v1/events"
+// Official product push hostname (preferred). Legacy path remains trusted so
+// already-paired installations keep working until they re-pair.
+const officialSoftwarePushRelayURL = "https://my-t-push.samman.top/v1/events"
+const legacySoftwarePushRelayURL = "https://teslamate-api.samman.top/my-t-push/v1/events"
+
+func isTrustedSoftwarePushRelayURL(raw string) bool {
+	switch strings.TrimSpace(raw) {
+	case officialSoftwarePushRelayURL, legacySoftwarePushRelayURL:
+		return true
+	default:
+		return false
+	}
+}
 
 type softwareNotificationEvent struct {
 	EventID        string `json:"event_id"`
@@ -193,7 +205,7 @@ func (m *softwareNotificationMonitor) configure(pairing softwarePushPairing) err
 		return fmt.Errorf("invalid relay secret")
 	}
 	relayURL, err := url.Parse(pairing.RelayURL)
-	if err != nil || relayURL.String() != officialSoftwarePushRelayURL {
+	if err != nil || !isTrustedSoftwarePushRelayURL(relayURL.String()) {
 		return fmt.Errorf("untrusted relay URL")
 	}
 	m.mu.Lock()
