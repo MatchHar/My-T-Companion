@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published release. Version 1.10.7 is
+Security fixes are provided for the latest published release. Version 1.10.8 is
 the current source version.
 
 ## Deployment requirements

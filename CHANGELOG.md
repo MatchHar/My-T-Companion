@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.8
+
+- Harden navigation `start_name` so destination-trip history reliably shows **from → to**:
+  sticky last geofence after leaving a fence, open-drive start address, first
+  reverse-geocoded position on the open drive, previous completed-drive end place,
+  and mid-session backfill when TeslaMate addresses land late.
+- Push payload and history continue to carry `start_name` on every navigation event.
+
 ## 1.10.7
 
 - Record `start_name` on navigation push history (live geofence or open-drive start label) for App start → destination trip titles.

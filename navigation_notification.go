@@ -62,6 +62,9 @@ type carNavigationState struct {
 	VehicleState        string   `json:"vehicle_state,omitempty"`
 	// Last known TeslaMate geofence name (MQTT), used as trip start label.
 	Geofence            string   `json:"geofence,omitempty"`
+	// Sticky non-empty geofence: MQTT clears the name after leaving a fence, but
+	// navigation often starts after exit — keep the last real place for start_name.
+	LastKnownGeofence   string   `json:"last_known_geofence,omitempty"`
 	Destination         string   `json:"destination,omitempty"`
 	// Frozen label for where the navigation session began (geofence or drive start).
 	StartName           string   `json:"start_name,omitempty"`
@@ -355,6 +358,9 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.VehicleState = strings.ToLower(normalizedMQTTValue(value))
 	case "geofence":
 		state.Geofence = normalizedMQTTValue(value)
+		if state.Geofence != "" {
+			state.LastKnownGeofence = state.Geofence
+		}
 	case "active_route":
 		var route activeRouteMQTT
 		if json.Unmarshal([]byte(value), &route) != nil || route.Error != nil ||
@@ -413,7 +419,8 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
-		state.StartName = resolveNavigationStartName(carID, state.Geofence)
+		// New session for the new destination — re-resolve start place for this leg.
+		state.StartName = resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence)
 		startEvent := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
@@ -432,7 +439,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
-		state.StartName = resolveNavigationStartName(carID, state.Geofence)
+		state.StartName = resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence)
 		event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
@@ -458,6 +465,13 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		m.mu.Unlock()
 		m.enqueue(event)
 		return
+	}
+	// TeslaMate may reverse-geocode the drive start only after the first points land.
+	// Keep trying until we freeze a non-empty start_name for push history / App titles.
+	if state.Active && strings.TrimSpace(state.StartName) == "" {
+		if filled := resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence); filled != "" {
+			state.StartName = filled
+		}
 	}
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
@@ -586,14 +600,29 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 	}
 }
 
-// resolveNavigationStartName prefers live geofence, then open-drive start geofence/address.
-func resolveNavigationStartName(carID int, liveGeofence string) string {
-	if name := strings.TrimSpace(liveGeofence); name != "" {
-		return name
+// resolveNavigationStartName prefers (1) live MQTT geofence, (2) sticky last
+// non-empty geofence, (3) open-drive start geofence/address, (4) first position
+// address on the open drive, (5) previous completed drive end place.
+// Empty string means unknown — App may still fall back to matching a TeslaMate drive.
+func resolveNavigationStartName(carID int, liveGeofence, lastKnownGeofence string) string {
+	for _, candidate := range []string{liveGeofence, lastKnownGeofence} {
+		if name := strings.TrimSpace(candidate); name != "" {
+			return name
+		}
 	}
 	if db == nil {
 		return ""
 	}
+	if label := queryOpenDriveStartLabel(carID); label != "" {
+		return label
+	}
+	if label := queryOpenDriveFirstPositionAddress(carID); label != "" {
+		return label
+	}
+	return queryLastCompletedDriveEndLabel(carID)
+}
+
+func queryOpenDriveStartLabel(carID int) string {
 	var label string
 	err := db.QueryRow(`
 		SELECT COALESCE(
@@ -614,7 +643,52 @@ func resolveNavigationStartName(carID int, liveGeofence string) string {
 	return strings.TrimSpace(label)
 }
 
+func queryOpenDriveFirstPositionAddress(carID int) string {
+	var label string
+	// Prefer the earliest position that already has a reverse-geocoded address.
+	err := db.QueryRow(`
+		SELECT COALESCE(
+			NULLIF(TRIM(a.name), ''),
+			NULLIF(TRIM(a.display_name), ''),
+			''
+		)
+		FROM drives d
+		JOIN positions p ON p.drive_id = d.id
+		JOIN addresses a ON a.id = p.address_id
+		WHERE d.car_id = $1 AND d.end_date IS NULL
+		ORDER BY p.date ASC NULLS LAST, p.id ASC
+		LIMIT 1`, carID).Scan(&label)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(label)
+}
+
+func queryLastCompletedDriveEndLabel(carID int) string {
+	var label string
+	err := db.QueryRow(`
+		SELECT COALESCE(
+			NULLIF(TRIM(g.name), ''),
+			NULLIF(TRIM(a.name), ''),
+			NULLIF(TRIM(a.display_name), ''),
+			''
+		)
+		FROM drives d
+		LEFT JOIN geofences g ON g.id = d.end_geofence_id
+		LEFT JOIN addresses a ON a.id = d.end_address_id
+		WHERE d.car_id = $1 AND d.end_date IS NOT NULL
+		ORDER BY d.end_date DESC, d.id DESC
+		LIMIT 1`, carID).Scan(&label)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(label)
+}
+
 func currentDriveDistances(carID int) (int64, *float64, bool) {
+	if db == nil {
+		return 0, nil, false
+	}
 	var driveID int64
 	var firstOdometer, latestOdometer float64
 	var count int
