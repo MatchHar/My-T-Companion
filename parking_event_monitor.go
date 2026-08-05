@@ -305,7 +305,9 @@ func (m *parkingEventMonitor) events(carID int, startDate, endDate time.Time) []
 			continue
 		}
 		at, err := time.Parse(time.RFC3339Nano, event.ObservedAt)
-		if err == nil && !at.Before(startDate) && at.Before(endDate) {
+		// Inclusive end: parking sessions often end exactly on a drive start /
+		// unplug observation; exclusive end dropped those boundary events.
+		if err == nil && !at.Before(startDate) && !at.After(endDate) {
 			result = append(result, event)
 		}
 	}
