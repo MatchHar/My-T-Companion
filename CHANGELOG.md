@@ -222,3 +222,6 @@
 ## 1.0.0
 
 - Initial private parking state-history implementation.
+
+## 1.10.9
+- install.sh: after process start, auto-wire Companion onto the same My T API URL (system Caddy, docker Caddyfile, or host edge on the API port). Verifies /api/v1/capabilities on that URL. Does not modify TeslaMateAPI.

@@ -404,31 +404,216 @@ printf '%s' "$capabilities" | grep -q '"current_drive_trajectory"' \
 printf '%s' "$capabilities" | grep -q '"vehicle_software_update_events"' \
   || fail "Software-update capability verification failed."
 
-if [[ "$proxy_ready" != true ]]; then
-  if [[ -z "$MY_T_BASE_URL" ]]; then
-    printf '\n'
-    log "Service installed locally, but setup is NOT complete."
-    log "Add the Caddy, Nginx, or Traefik routes, then rerun with:"
-    printf '  sudo MY_T_BASE_URL="https://your-api.example"'
-    printf ' MY_T_AUTH_HEADER="Authorization: Bearer REDACTED" "%s/install.sh"\n\n' "$INSTALL_DIR"
-    fail "My T cannot reach the Companion until the unified proxy is verified."
+# --- Wire Companion into the same URL My T already uses for TeslaMateAPI ---
+# Does NOT modify TeslaMateAPI software — only front reverse-proxy path rules
+# (system Caddy, docker Caddyfile in TESLAMATE_DIR, or host-edge on the API port).
+
+setup_docker_teslamate_caddy_routes() {
+  local caddyfile="$TESLAMATE_DIR/Caddyfile"
+  [[ -f "$caddyfile" ]] || return 1
+  grep -qE 'teslamateapi|/api/\*' "$caddyfile" 2>/dev/null || return 1
+  if grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null; then
+    log "TeslaMate docker Caddyfile already has Companion routes"
+    return 0
+  fi
+  local backup="$caddyfile.before-my-t-companion.$(date +%Y%m%d-%H%M%S)"
+  cp "$caddyfile" "$backup"
+  # Insert companion path rules before first reverse_proxy /api (HostBox / generic docker Caddy).
+  local insert
+  insert="$(mktemp)"
+  cat > "$insert" <<'CADDY'
+  # BEGIN MY T VPS COMPANION (docker edge → host loopback companion)
+  @my_t_capabilities path /api/v1/capabilities
+  handle @my_t_capabilities {
+    reverse_proxy host.docker.internal:8083
+  }
+  @my_t_parking path_regexp my_t_park ^/api/v1/cars/[0-9]+/(states|parking-events)$
+  handle @my_t_parking {
+    reverse_proxy host.docker.internal:8083
+  }
+  @my_t_nav path_regexp my_t_nav ^/api/v1/cars/[0-9]+/navigation/(current-drive|push-history)$
+  handle @my_t_nav {
+    reverse_proxy host.docker.internal:8083
+  }
+  @my_t_push path_regexp my_t_push ^/api/v1/notifications/
+  handle @my_t_push {
+    reverse_proxy host.docker.internal:8083
+  }
+  # END MY T VPS COMPANION
+
+CADDY
+  # Companion on 127.0.0.1 is invisible from docker Caddy; publish 8083 on all interfaces.
+  if grep -q '127.0.0.1:8083:8080' "$COMPOSE_FILE" 2>/dev/null; then
+    sed -i.bak 's/127\.0\.0\.1:8083:8080/8083:8080/g' "$COMPOSE_FILE"
+    rm -f "$COMPOSE_FILE.bak"
+    docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" --file "$COMPOSE_FILE" up -d
+  fi
+  awk -v insert="$insert" '
+    BEGIN { inserted=0 }
+    /reverse_proxy \/api/ && !inserted {
+      while ((getline line < insert) > 0) print line
+      close(insert)
+      inserted=1
+    }
+    { print }
+  ' "$caddyfile" > "$caddyfile.new"
+  mv "$caddyfile.new" "$caddyfile"
+  rm -f "$insert"
+  (cd "$TESLAMATE_DIR" && docker compose up -d caddy 2>/dev/null; docker compose restart caddy 2>/dev/null) || true
+  log "Patched $caddyfile (backup $backup); companion reachable via host.docker.internal:8083"
+  return 0
+}
+
+# Put a thin edge on the public API host port so My T keeps the same base_url.
+# TeslaMateAPI stays stock; only host port mapping moves to loopback + edge.
+setup_api_port_edge() {
+  local compose="$TESLAMATE_DIR/docker-compose.yml"
+  [[ -f "$compose" ]] || return 1
+
+  local host_port=""
+  # Prefer teslamateapi service port mapping (HostBox: "8081:8080", docs: "8080:8080")
+  host_port="$(
+    sed -n '/teslamateapi:/,/^  [a-zA-Z]/p' "$compose" 2>/dev/null \
+      | grep -E '[0-9.]+:[0-9]+:8080|[0-9]+:8080' | head -n 1 \
+      | sed -E 's/.*"([0-9.]+):([0-9]+):8080".*/\2/; t; s/.*"([0-9]+):8080".*/\1/; t; s/.*:([0-9]+):8080.*/\1/; t; s/.*[^0-9]([0-9]+):8080.*/\1/' \
+      || true
+  )"
+  host_port="$(printf '%s' "$host_port" | tr -cd '0-9')"
+  if [[ -z "$host_port" ]]; then
+    if grep -qE '8081:8080' "$compose"; then host_port=8081
+    elif grep -qE '[" ]8080:8080' "$compose"; then host_port=8080
+    else
+      log "Could not detect TeslaMateAPI host port in $compose"
+      return 1
+    fi
   fi
 
-  public_capabilities_url="${MY_T_BASE_URL%/}/api/v1/capabilities"
-  curl_args=(--fail --silent --show-error --output /dev/null)
-  if [[ -n "$MY_T_AUTH_HEADER" ]]; then
-    curl_args+=(-H "$MY_T_AUTH_HEADER")
+  local internal_port=18081
+  log "Configuring unified edge on public API port :$host_port (API loopback :$internal_port)"
+
+  local backup="$compose.before-my-t-companion.$(date +%Y%m%d-%H%M%S)"
+  cp "$compose" "$backup"
+
+  # Point published API mapping at loopback internal port so edge can own :host_port.
+  if grep -qE "127\.0\.0\.1:${internal_port}:8080|\"${internal_port}:8080\"" "$compose"; then
+    log "API already on loopback :$internal_port"
+  else
+    # Replace 8081:8080 or 0.0.0.0:8081:8080 style under file (best-effort)
+    sed -i.bak -E \
+      "s/\"?([0-9.]+:)?${host_port}:8080\"?/\"127.0.0.1:${internal_port}:8080\"/g" \
+      "$compose"
+    rm -f "$compose.bak"
   fi
-  if ! curl "${curl_args[@]}" "$public_capabilities_url"; then
-    fail "The unified My T endpoint could not be verified: $public_capabilities_url"
+
+  install -d -m 0755 "$INSTALL_DIR/edge"
+  cat > "$INSTALL_DIR/edge/Caddyfile" <<CADDY
+# Unified My T entry — same port as before. Stock TeslaMateAPI is not modified.
+:${host_port} {
+	@my_t_companion path_regexp my_t_companion ^/api/v1/(capabilities|cars/[0-9]+/states|cars/[0-9]+/parking-events|cars/[0-9]+/navigation/current-drive|cars/[0-9]+/navigation/push-history|notifications/.*)\$
+	handle @my_t_companion {
+		reverse_proxy 127.0.0.1:8083
+	}
+	handle {
+		reverse_proxy 127.0.0.1:${internal_port}
+	}
+}
+CADDY
+
+  cat > "$INSTALL_DIR/edge/docker-compose.yml" <<YAML
+services:
+  my-t-api-edge:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+YAML
+
+  (cd "$TESLAMATE_DIR" && docker compose up -d 2>&1 | tail -15) || true
+  docker compose --project-name my-t-api-edge --file "$INSTALL_DIR/edge/docker-compose.yml" up -d 2>&1 | tail -15 \
+    || fail "Failed to start API edge on :$host_port"
+
+  # Verify local edge (what phones hit as http://IP:host_port)
+  local ok=false
+  for _ in $(seq 1 15); do
+    if curl --fail --silent --show-error \
+      -H "Authorization: Bearer $api_token" \
+      "http://127.0.0.1:${host_port}/api/v1/capabilities" 2>/dev/null \
+      | grep -q 'my-t-companion\|parking_state_history'; then
+      ok=true
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$ok" != true ]]; then
+    fail "Edge on :$host_port did not serve Companion capabilities. Compose backup: $backup"
   fi
-  proxy_ready=true
-  log "Unified My T endpoint verified"
+
+  # Persist for HostBox / reinstall
+  {
+    printf 'MY_T_PUBLIC_API_PORT=%s\n' "$host_port"
+    printf 'MY_T_API_LOOPBACK_PORT=%s\n' "$internal_port"
+  } >> "$ENV_FILE"
+
+  log "Unified edge ready: My T base_url stays http://<host>:${host_port} (same as API before)"
+  printf -v MY_T_BASE_URL 'http://127.0.0.1:%s' "$host_port"
+  return 0
+}
+
+if [[ "$proxy_ready" != true ]]; then
+  if setup_docker_teslamate_caddy_routes; then
+    # Verify via docker host port 80 if present, else fall through to api-port edge
+    if curl --fail --silent --show-error \
+      -H "Authorization: Bearer $api_token" \
+      http://127.0.0.1/api/v1/capabilities 2>/dev/null \
+      | grep -q 'my-t-companion\|parking_state_history'; then
+      proxy_ready=true
+      MY_T_BASE_URL="${MY_T_BASE_URL:-http://127.0.0.1}"
+      log "Docker Caddy (:80) serves Companion on the public site"
+    else
+      log "Docker Caddy routes written; verifying via API port edge if needed"
+    fi
+  fi
 fi
 
-log "Installation complete (version $VERSION)"
+if [[ "$proxy_ready" != true ]]; then
+  if setup_api_port_edge; then
+    proxy_ready=true
+  fi
+fi
+
+if [[ "$proxy_ready" != true ]]; then
+  if [[ -n "$MY_T_BASE_URL" ]]; then
+    public_capabilities_url="${MY_T_BASE_URL%/}/api/v1/capabilities"
+    curl_args=(--fail --silent --show-error)
+    if [[ -n "$MY_T_AUTH_HEADER" ]]; then
+      curl_args+=(-H "$MY_T_AUTH_HEADER")
+    else
+      curl_args+=(-H "Authorization: Bearer $api_token")
+    fi
+    if curl "${curl_args[@]}" "$public_capabilities_url" 2>/dev/null \
+      | grep -q 'my-t-companion\|parking_state_history'; then
+      proxy_ready=true
+      log "Unified My T endpoint verified: $public_capabilities_url"
+    else
+      fail "MY_T_BASE_URL set but capabilities not reachable: $public_capabilities_url"
+    fi
+  fi
+fi
+
+if [[ "$proxy_ready" != true ]]; then
+  printf '\n'
+  log "Companion process is healthy on 127.0.0.1:8083, but phone My T needs the same URL as the API."
+  log "Automatic edge setup failed. Either:"
+  log "  1) Install/fix Caddy or Tunnel and add Caddyfile.snippet / nginx.snippet.conf"
+  log "  2) Rerun: sudo MY_T_BASE_URL=\"http://YOUR_IP:8081\" $INSTALL_DIR/install.sh"
+  fail "My T cannot use Companion until the API URL serves /api/v1/capabilities."
+fi
+
+log "Installation complete (version $VERSION) — Companion is reachable on the My T API URL"
 if [[ "$generated_token" == true ]]; then
   printf '\nUse this bearer token in the My T TeslaMate API connection:\n%s\n\n' "$api_token"
 else
-  log "The existing TeslaMate API authentication remains unchanged"
+  log "The existing TeslaMate API authentication remains unchanged (same token for Companion)"
 fi
+log "In My T: keep the same base_url and Token; pull to refresh — 扩展 should show as available."
