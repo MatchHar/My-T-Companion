@@ -46,6 +46,15 @@ expires independently. See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
 Install this add-on **after TeslaMate is already deployed and working**. It is
 not a replacement for TeslaMate or TeslaMateAPI.
 
+### Deploy options (HostBox or self-install)
+
+| Path | Who | What happens |
+| --- | --- | --- |
+| **[HostBox](https://github.com/MatchHar/HostBox)** (recommended for most phone users) | iOS deploy app | Installs TeslaMate + TeslaMateAPI + this companion, tries to wire a **unified entry** (edge on temporary IP, or Tunnel paths), MQTT `host.docker.internal`, and health checks. You still paste **one** base_url + Token into My T. |
+| **Self-install** (this repo) | You run Docker / `install.sh` | Follow the verified release install below, then ensure gateway routes (see ports table). Same My T connection rules. |
+
+HostBox is the **deploy layer**; My T is the car UI. Neither app replaces the other.
+
 ## Why My T needs this companion
 
 [My T](https://apps.apple.com/us/app/my-t/id6780299502) is an iPhone client for viewing

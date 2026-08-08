@@ -80,6 +80,15 @@ Companion 首次觀測時間」，不冒充更精確的實體操作時間。停�
 請在 **TeslaMate 已部署並正常運作之後** 安裝此元件。它不能取代 TeslaMate
 或 TeslaMateAPI。
 
+### 部署方式：HostBox 或自建
+
+| 路徑 | 對象 | 說明 |
+| --- | --- | --- |
+| **[HostBox](https://github.com/MatchHar/HostBox)**（多數手機使用者推薦） | iOS 部署 App | 安裝 TeslaMate + API + 本元件，盡量配置**統一入口**（臨時 IP 的 edge，或 Tunnel 路徑）、MQTT `host.docker.internal` 與健康檢查。完成後在 My T 只填**一個** base_url + Token。 |
+| **本倉庫自建** | 自己跑 Docker / `install.sh` | 依下方校驗版安裝，並配置閘道分流（見連接埠說明）。My T 連線規則相同。 |
+
+HostBox 是**部署層**；My T 是看車 App。二者不互相替代。
+
 ## 為什麼 My T 需要這個補充元件
 
 [My T](https://apps.apple.com/us/app/my-t/id6780299502) 是用於查看使用者自建
