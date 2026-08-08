@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "template_id": "myt-stack",
+  "revision": "2026.08.08.1",
+  "updated_at": "2026-08-08T14:00:00Z",
+  "min_app_version": "1.0.0",
+  "channel": "stable",
+  "title": "My T Server",
+  "notes_zh": "HostBox 部署卡版目录（公开）。改此文件即可让已安装 App 同步到新 pin，无需发新版 App。含 TeslaMate / API / Companion 扩展。",
+  "upstream": {
+    "teslamate": {
+      "github": "teslamate-org/teslamate",
+      "follow_latest_release": false,
+      "docker_image_prefix": "teslamate/teslamate"
+    },
+    "grafana": {
+      "docker_image_prefix": "teslamate/grafana",
+      "lockstep_with": "teslamate"
+    },
+    "teslamateapi": {
+      "github": "tobiasehlert/teslamateapi",
+      "follow_latest_release": false,
+      "docker_image_prefix": "tobiasehlert/teslamateapi"
+    },
+    "companion": {
+      "github": "MatchHar/My-T-Companion",
+      "follow_latest_release": false,
+      "docker_image_prefix": "myt/companion"
+    }
+  },
+  "images": {
+    "teslamate": "teslamate/teslamate:4.0.1",
+    "grafana": "teslamate/grafana:4.0.1",
+    "teslamateapi": "tobiasehlert/teslamateapi:1.25.0",
+    "companion": "myt/companion:1.10.12",
+    "postgres": "postgres:16-alpine",
+    "mosquitto": "host-system (not docker)",
+    "caddy": "caddy:2.8-alpine"
+  },
+  "ports": {
+    "teslamate_web": 4000,
+    "grafana": 3000,
+    "api_container": 8080,
+    "api_host": 8081,
+    "http": 80,
+    "https": 443
+  },
+  "paths": {
+    "install_dir": "/opt/teslamate",
+    "env_file": "/opt/teslamate/.env",
+    "compose_file": "/opt/teslamate/docker-compose.yml"
+  },
+  "setup": {
+    "token_entry_port_key": "teslamate_web",
+    "grafana_port_key": "grafana",
+    "myt_base_port_key": "api_host",
+    "grafana_default_user": "admin"
+  },
+  "hints_zh": {
+    "teslamate_web": "TeslaMate 网页（4000）：输入 Tesla 令牌。",
+    "grafana": "Grafana（3000）：图表；改密。",
+    "api": "TeslaMateAPI 主机 8081：My T base_url。",
+    "companion": "My T Companion：增强；版本卡在 images.companion。"
+  }
+}
