@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,21 +20,25 @@ import (
 
 const headerAPIVersion = "API-Version"
 
+//go:embed VERSION
+var embeddedVersion string
+
 var (
-	apiVersion        = "1.10.8"
-	db                *sql.DB
-	apiToken          string
-	authProbeURL      string
-	authClient        *http.Client
-	location          *time.Location
-	carIDPath              = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
-	currentDrivePath       = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
-	navigationHistoryPath  = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/push-history$`)
-	parkingEventsPath      = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
-	softwarePush      *softwareNotificationMonitor
-	chargingPush      *chargingNotificationMonitor
-	navigationPush    *navigationNotificationMonitor
-	parkingEvents     *parkingEventMonitor
+	// Always matches the VERSION file (enforced by TestAPIVersionMatchesReleaseVersion).
+	apiVersion = strings.TrimSpace(embeddedVersion)
+	db         *sql.DB
+	apiToken   string
+	authProbeURL string
+	authClient *http.Client
+	location   *time.Location
+	carIDPath             = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
+	currentDrivePath      = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
+	navigationHistoryPath = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/push-history$`)
+	parkingEventsPath     = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
+	softwarePush          *softwareNotificationMonitor
+	chargingPush          *chargingNotificationMonitor
+	navigationPush        *navigationNotificationMonitor
+	parkingEvents         *parkingEventMonitor
 )
 
 type telemetrySample struct {
@@ -329,7 +334,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"service": "my-t-companion",
 		"version": apiVersion,
 		"app_compatibility": map[string]any{
@@ -378,7 +383,13 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"charges",
 			"updates",
 		},
-	})
+	}
+	// Optional: HostBox / installer can set TESLAMATE_VERSION from the running image tag
+	// so My T can show TeslaMate version without scraping the LiveView HTML (:4000 / Access).
+	if tm := strings.TrimSpace(os.Getenv("TESLAMATE_VERSION")); tm != "" {
+		payload["teslamate_version"] = tm
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func handleSoftwareNotificationStatus(w http.ResponseWriter, r *http.Request) {

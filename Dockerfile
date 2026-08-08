@@ -3,6 +3,8 @@ WORKDIR /src
 COPY go.mod ./
 COPY go.sum ./
 RUN go mod download
+# VERSION is embedded into the binary (//go:embed) — keep in sync with release tags.
+COPY VERSION ./
 COPY *.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/states-api .
 

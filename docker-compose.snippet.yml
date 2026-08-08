@@ -1,6 +1,6 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-companion
-    image: myt/companion:1.10.8
+    image: myt/companion:1.10.10
     restart: unless-stopped
     init: true
     cpus: 1.0

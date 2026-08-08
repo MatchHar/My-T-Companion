@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.10
+
+- **Fix reported Companion version:** binary no longer hardcodes `1.10.8`. Version is
+  `//go:embed` from the `VERSION` file (Dockerfile copies `VERSION` into the build).
+  1.10.9 packages incorrectly still answered `capabilities.version=1.10.8`.
+- Capabilities may include `teslamate_version` from env `TESLAMATE_VERSION` (installer
+  fills this from the running TeslaMate container image tag) so My T can show TeslaMate
+  version without scraping LiveView HTML on HostBox IP/Tunnel/Access setups.
+
 ## 1.10.9
 
 - **Installer (P0):** no longer requires TeslaMate `.env`. Secrets are resolved from

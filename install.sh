@@ -292,8 +292,27 @@ fi
 timezone="$(
   resolve_secret TZ "" || printf 'UTC'
 )"
+
+# TeslaMate app version for My T (avoids HTML scrape of LiveView / :4000 / Access).
+teslamate_version="$(
+  resolve_secret TESLAMATE_VERSION "" || true
+)"
+if [[ -z "$teslamate_version" && -n "${TESLAMATE_CONTAINER:-}" ]]; then
+  tm_image="$(docker inspect "$TESLAMATE_CONTAINER" --format '{{.Config.Image}}' 2>/dev/null || true)"
+  if [[ -n "$tm_image" && "$tm_image" == *:* ]]; then
+    teslamate_version="${tm_image##*:}"
+    # Drop digests / latest noise for display
+    if [[ "$teslamate_version" == "latest" || "$teslamate_version" == sha256* ]]; then
+      teslamate_version=""
+    fi
+  fi
+fi
+
 log "Config source: .env is optional; used compose config / containers / env when present."
 log "DB host=${database_host} user=${database_user} name=${database_name}; MQTT=${mqtt_broker_url}"
+if [[ -n "$teslamate_version" ]]; then
+  log "Detected TeslaMate image tag for App version display: $teslamate_version"
+fi
 
 push_installation_id="${PUSH_INSTALLATION_ID:-$(read_env_value PUSH_INSTALLATION_ID "$ENV_FILE" || true)}"
 push_relay_url="${PUSH_RELAY_URL:-$(read_env_value PUSH_RELAY_URL "$ENV_FILE" || true)}"
@@ -383,6 +402,7 @@ umask 077
   printf 'AUTH_PROBE_URL=%s\n' "$auth_probe_url"
   printf 'TZ=%s\n' "$timezone"
   printf 'TESLAMATE_NETWORK=%s\n' "$database_network"
+  printf 'TESLAMATE_VERSION=%s\n' "$teslamate_version"
   printf 'PUSH_INSTALLATION_ID=%s\n' "$push_installation_id"
   printf 'PUSH_RELAY_URL=%s\n' "$push_relay_url"
   printf 'PUSH_RELAY_SECRET=%s\n' "$push_relay_secret"
@@ -421,6 +441,7 @@ services:
       AUTH_PROBE_URL: \${AUTH_PROBE_URL:-}
       TZ: \${TZ:-UTC}
       MQTT_BROKER_URL: "$(yaml_escape "$mqtt_broker_url")"
+      TESLAMATE_VERSION: \${TESLAMATE_VERSION:-}
       PUSH_INSTALLATION_ID: \${PUSH_INSTALLATION_ID:-}
       PUSH_RELAY_URL: \${PUSH_RELAY_URL:-}
       PUSH_RELAY_SECRET: \${PUSH_RELAY_SECRET:-}
