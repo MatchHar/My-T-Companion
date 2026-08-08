@@ -95,15 +95,24 @@ TeslaMate; it does not require or expose a second companion address.
 
 | LAN setup | Result |
 | --- | --- |
-| TeslaMateAPI and companion are routed through the same Caddy/Nginx/Traefik address | Supported |
-| My T connects directly to `http://LAN-IP:8081` with no reverse proxy | Basic TeslaMate features work, but the companion is not reachable |
+| TeslaMateAPI and companion are routed through the same Caddy/Nginx/Traefik **gateway** address | Supported |
+| My T connects to a **host-mapped TeslaMateAPI port** with **no** reverse proxy / gateway | Basic TeslaMate features work; companion is **not** reachable |
 | Access through a VPN, Tailscale, or another private network using one reverse-proxy address | Supported |
 
-Port `8083` intentionally remains bound to `127.0.0.1` and must not be exposed
-directly to the LAN or Internet. For a direct-`8081` installation, first add a
-reverse proxy that sends the supplied companion routes to `127.0.0.1:8083` and all
-ordinary TeslaMateAPI routes to `127.0.0.1:8081`, then use that proxy address in
-My T. The supplied `Caddyfile.snippet` contains the required companion routes.
+### Ports (do not confuse)
+
+| Port | Meaning |
+| --- | --- |
+| **8080** (container) | TeslaMateAPI **listens inside** the container; compose right-hand side is usually `:8080`. |
+| **Host map (example 8080 or 8081)** | Whatever you publish on the **host** for TeslaMateAPI (e.g. `8081:8080` or `8080:8080`). **HostBox defaults to host 8081.** Docs that say “8080” usually mean “the host port you chose,” not a magic constant. |
+| **8083** | Companion on the host, bound to **`127.0.0.1` only**. Never give My T a second base URL for 8083. |
+
+My T always uses **one base URL** (the gateway or unified entry). Port `8083` intentionally remains bound to `127.0.0.1` and must not be exposed
+directly to the LAN or Internet. If My T currently points at a bare host API port
+(e.g. `http://LAN-IP:8081` with no proxy), first add a reverse proxy / gateway that
+sends the companion routes to `127.0.0.1:8083` and ordinary TeslaMateAPI routes to
+the **internal** API address (often `127.0.0.1:<host-api-port>` or `127.0.0.1:18081` when the gateway took over the public host port). Then set My T to that **single** gateway URL.
+The supplied `Caddyfile.snippet` contains the required companion routes.
 
 The installer can update a recognized system Caddy configuration automatically.
 For Nginx, Traefik, containerized Caddy, or a custom LAN gateway, it deliberately
