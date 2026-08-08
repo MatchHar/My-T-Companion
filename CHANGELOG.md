@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.11
+
+- **MQTT discovery (P1):** detect docker mosquitto service **or** host `:1883`
+  (HostBox system broker) and set `host.docker.internal` + `extra_hosts` automatically.
+- Shared Docker network selection also considers MQTT container when present.
+- **`myt-doctor.sh`:** read-only diagnostics (healthz, capabilities, MQTT hosts, edge,
+  unified entry). Installed as `/opt/my-t-companion/myt-doctor.sh`.
+
 ## 1.10.10
 
 - **Fix reported Companion version:** binary no longer hardcodes `1.10.8`. Version is

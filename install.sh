@@ -232,14 +232,18 @@ API_CONTAINER="$(
 TESLAMATE_CONTAINER="$(
   find_compose_service_id teslamate || true
 )"
+MQTT_CONTAINER="$(
+  find_compose_service_id mosquitto mqtt eclipse-mosquitto broker || true
+)"
 
 COMPOSE_CONFIG_CACHE="$(
   cd "$TESLAMATE_DIR"
   docker compose config 2>/dev/null || true
 )"
 
+# Prefer a network shared with API / TeslaMate / MQTT when those containers exist.
 database_network="$(
-  pick_shared_network "$DATABASE_CONTAINER" "${API_CONTAINER:-} ${TESLAMATE_CONTAINER:-}" || true
+  pick_shared_network "$DATABASE_CONTAINER" "${API_CONTAINER:-} ${TESLAMATE_CONTAINER:-} ${MQTT_CONTAINER:-}" || true
 )"
 [[ -n "$database_network" ]] || fail "Unable to detect the TeslaMate Docker network."
 log "Using Docker network: $database_network"
@@ -269,15 +273,37 @@ fi
 mqtt_broker_url="$(
   resolve_secret MQTT_BROKER_URL "MQTT_URL" || true
 )"
+mqtt_needs_host_gateway=false
 if [[ -z "$mqtt_broker_url" ]]; then
   mqtt_host="$(resolve_secret MQTT_HOST "" || true)"
   mqtt_port="$(resolve_secret MQTT_PORT "" || printf '1883')"
   if [[ -n "$mqtt_host" ]]; then
     mqtt_broker_url="tcp://${mqtt_host}:${mqtt_port}"
+    # host-gateway / bare IP / localhost → Docker needs host.docker.internal mapping
+    if [[ "$mqtt_host" == "host.docker.internal" || "$mqtt_host" == "localhost" || "$mqtt_host" == "127.0.0.1" ]]; then
+      mqtt_needs_host_gateway=true
+      mqtt_broker_url="tcp://host.docker.internal:${mqtt_port}"
+    fi
+  elif [[ -n "$MQTT_CONTAINER" ]]; then
+    mqtt_svc="$(
+      docker inspect "$MQTT_CONTAINER" --format '{{index .Config.Labels "com.docker.compose.service"}}' 2>/dev/null || true
+    )"
+    [[ -n "$mqtt_svc" ]] || mqtt_svc="mosquitto"
+    mqtt_broker_url="tcp://${mqtt_svc}:1883"
+    log "MQTT: docker service '$mqtt_svc' on TeslaMate network"
+  elif ss -lntp 2>/dev/null | grep -qE ':1883\b' || netstat -lntp 2>/dev/null | grep -qE ':1883\b'; then
+    # HostBox and many VPS: system mosquitto, not a compose service
+    mqtt_broker_url="tcp://host.docker.internal:1883"
+    mqtt_needs_host_gateway=true
+    log "MQTT: host listener :1883 → host.docker.internal (system broker)"
   else
-    # Common TeslaMate defaults; HostBox later patches to host.docker.internal when needed.
     mqtt_broker_url="tcp://mosquitto:1883"
+    log "MQTT: default tcp://mosquitto:1883 (ensure broker is reachable on the stack network)"
   fi
+elif [[ "$mqtt_broker_url" == *host.docker.internal* || "$mqtt_broker_url" == *127.0.0.1* || "$mqtt_broker_url" == *localhost* ]]; then
+  mqtt_needs_host_gateway=true
+  mqtt_broker_url="${mqtt_broker_url//127.0.0.1/host.docker.internal}"
+  mqtt_broker_url="${mqtt_broker_url//localhost/host.docker.internal}"
 fi
 
 api_token="$(
@@ -387,8 +413,17 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   if [[ -f "$SOURCE_DIR/storage-status.sh" ]]; then
     install -m 0755 "$SOURCE_DIR/storage-status.sh" "$INSTALL_DIR/storage-status.sh"
   fi
+  if [[ -f "$SOURCE_DIR/scripts/myt-doctor.sh" ]]; then
+    install -m 0755 "$SOURCE_DIR/scripts/myt-doctor.sh" "$INSTALL_DIR/myt-doctor.sh"
+  fi
 else
   log "Running from the installed directory; service source files are already current"
+fi
+# Always refresh doctor when present in source (also on in-place reinstall).
+if [[ -f "$SOURCE_DIR/scripts/myt-doctor.sh" ]]; then
+  install -m 0755 "$SOURCE_DIR/scripts/myt-doctor.sh" "$INSTALL_DIR/myt-doctor.sh"
+elif [[ -f "$SOURCE_DIR/myt-doctor.sh" ]]; then
+  install -m 0755 "$SOURCE_DIR/myt-doctor.sh" "$INSTALL_DIR/myt-doctor.sh"
 fi
 
 umask 077
@@ -414,6 +449,16 @@ yaml_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+# When MQTT is on the host (HostBox system mosquitto), Docker needs host-gateway.
+extra_hosts_yaml=""
+if [[ "$mqtt_needs_host_gateway" == true ]]; then
+  extra_hosts_yaml="$(cat <<'EH'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+EH
+)"
+fi
+
 cat > "$COMPOSE_FILE" <<YAML
 services:
   companion:
@@ -431,7 +476,7 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    environment:
+${extra_hosts_yaml}    environment:
       DATABASE_USER: "$(yaml_escape "$database_user")"
       DATABASE_PASS: \${DATABASE_PASS}
       DATABASE_NAME: "$(yaml_escape "$database_name")"
