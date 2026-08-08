@@ -7,6 +7,8 @@
   be resolved.
 - Require an explicit database password and add race, vulnerability, secret,
   CodeQL, and release-provenance checks to CI.
+- Require patched Go 1.25.12 for builds after the vulnerability scan identified
+  reachable standard-library flaws in the original Go 1.25.0 toolchain.
 - Make the security policy version-independent and clarify the authentication
   probe boundary.
 
