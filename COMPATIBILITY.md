@@ -9,10 +9,15 @@ without pairing.
 
 - Linux host with Docker Engine and Docker Compose v2.
 - An existing, healthy TeslaMate Docker Compose deployment.
-- PostgreSQL service reachable as `database` on the detected TeslaMate network.
+- PostgreSQL reachable on the TeslaMate Docker network (default service name
+  `database`; installer also probes `db` / `postgres` and container labels).
+- `DATABASE_PASS` discoverable without requiring a TeslaMate `.env` file
+  (compose config, container env, shell export, or optional `.env`).
 - TeslaMate schema containing `cars`, `states`, `positions`, and `drives`.
 - Existing API authentication using Bearer token, Basic authentication,
   `X-API-Token`, or Cloudflare Access service-token headers.
+- Gateway routes covering parking, navigation, capabilities, and
+  `/api/v1/notifications/*` (Live Activity status included).
 
 ## Release test matrix
 

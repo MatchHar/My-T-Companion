@@ -362,38 +362,40 @@ available only on the loopback-bound service port.
 
 ### Prerequisites
 
-- A working Docker Compose TeslaMate installation.
-- The TeslaMate PostgreSQL service is named `database`. If yours uses a
-  different service name, change `DATABASE_HOST`.
-- The TeslaMate database password is available as `DATABASE_PASS`.
-- My T connects to the API with a bearer token. Set the same value as
-  `MY_T_API_TOKEN`; use a long random value and never commit it.
-- A reverse proxy already protects the TeslaMate API with HTTPS.
+- A working Docker Compose TeslaMate installation under
+  `TESLAMATE_DIR` (default `/opt/teslamate`).
+- Database password available as `DATABASE_PASS` (or `POSTGRES_PASSWORD`) from
+  **any** of: shell export, `docker compose config`, a running DB/API container,
+  or optional `$TESLAMATE_DIR/.env`. A `.env` file is **not** required.
+- Prefer service name `database` for Postgres; the installer also tries
+  `db` / `postgres` and can set `DATABASE_HOST` from discovery.
+- Same API bearer token as TeslaMateAPI (`API_TOKEN` / `MY_T_API_TOKEN`) when
+  My T uses Bearer auth.
+- Gateway routes so My T keeps **one** base_url (see `Caddyfile.snippet`).
 
-### Install after TeslaMate
+### Install after TeslaMate (recommended: `install.sh`)
 
-1. Copy this directory to `/opt/teslamate/my-t-companion`.
-2. Add these non-secret values to `/opt/teslamate/.env`:
+```sh
+# From a release extract or git checkout of this repo:
+sudo TESLAMATE_DIR=/opt/teslamate ./install.sh
+# Optional overrides when auto-discovery is incomplete:
+# sudo DATABASE_PASS=… API_TOKEN=… MQTT_BROKER_URL=tcp://mosquitto:1883 ./install.sh
+```
 
-   ```dotenv
-   # Reuse the existing DATABASE_PASS used by TeslaMate.
-   MY_T_API_TOKEN=replace-with-a-long-random-token
-   TZ=UTC
-   ```
+The installer builds the companion, joins the TeslaMate Docker network, and
+tries to wire a unified entry (system Caddy, docker Caddyfile, or API-port edge).
+Gateway snippets must include **all** Companion paths under
+`/api/v1/notifications/*` (software-update **and** Live Activity status), not
+only parking/navigation routes.
 
-3. Merge `docker-compose.snippet.yml` under `services:` in TeslaMate's
-   `docker-compose.override.yml`.
-4. Route `/api/v1/cars/{id}/states`,
-   `/api/v1/cars/{id}/navigation/current-drive`, and
-   `/api/v1/capabilities` to local port `8083`, before the general TeslaMate API
-   route. A ready-to-copy Caddy example is included in `Caddyfile.snippet`.
-5. Validate and start:
+### Manual Compose (optional)
 
-   ```sh
-   cd /opt/teslamate
-   docker compose config -q
-   docker compose up -d --build mycarmate-states-api
-   ```
+1. Copy this directory next to your TeslaMate stack (or use `/opt/my-t-companion`).
+2. Merge `docker-compose.snippet.yml` under `services:` if you prefer a hand-written
+   compose layout.
+3. Apply `Caddyfile.snippet` (or `nginx.snippet.conf`) **before** the general
+   TeslaMateAPI route.
+4. Start with `docker compose up -d --build`.
 
 Keep port `8083` bound to `127.0.0.1`. Do not expose it directly to the public
 Internet.

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.9
+
+- **Installer (P0):** no longer requires TeslaMate `.env`. Secrets are resolved from
+  shell env → `docker compose config` → running containers → optional `.env` → prior
+  companion install. Clear error if `DATABASE_PASS` is still missing.
+- Discover `DATABASE_USER` / `DATABASE_NAME` / `DATABASE_HOST` and `MQTT_BROKER_URL`
+  (or `MQTT_HOST`+`MQTT_PORT`) when present; write them into companion compose.
+- Prefer a Docker network shared with TeslaMate/API when choosing `TESLAMATE_NETWORK`.
+- **Gateway (P0):** `Caddyfile.snippet` / `nginx.snippet.conf` / system-Caddy install
+  route all `/api/v1/notifications/*` (software-update **and** charging/navigation
+  Live Activity status). LAN example routes aligned.
+
 ## 1.10.8
 
 - Harden navigation `start_name` so destination-trip history reliably shows **from → to**:

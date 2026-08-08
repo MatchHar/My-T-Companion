@@ -38,9 +38,158 @@ read_env_value() {
   local key="$1"
   local file="$2"
   local line
+  [[ -f "$file" ]] || return 1
   line="$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n 1 || true)"
   [[ -n "$line" ]] || return 1
   printf '%s' "${line#*=}" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+# Strip quotes from a KEY=value line value.
+strip_env_val() {
+  printf '%s' "$1" | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+# Read KEY from a running container's Config.Env.
+container_env() {
+  local container="$1"
+  local key="$2"
+  local line
+  [[ -n "$container" ]] || return 1
+  line="$(
+    docker inspect "$container" \
+      --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+      | grep -E "^${key}=" | tail -n 1 || true
+  )"
+  [[ -n "$line" ]] || return 1
+  strip_env_val "${line#*=}"
+}
+
+# Parse KEY from `docker compose config` YAML-ish environment blocks (best-effort).
+compose_config_env() {
+  local key="$1"
+  local cfg="$2"
+  local line
+  line="$(
+    printf '%s\n' "$cfg" \
+      | grep -E "^[[:space:]]+${key}:[[:space:]]" \
+      | head -n 1 \
+      | sed -E "s/^[[:space:]]+${key}:[[:space:]]*//" \
+      || true
+  )"
+  [[ -n "$line" ]] || return 1
+  strip_env_val "$line"
+}
+
+# Resolve config in order: existing shell env → compose config → container → .env → companion .env.
+resolve_secret() {
+  local key="$1"
+  local alt_keys="${2:-}"
+  local val=""
+  local k
+  local container
+
+  # 1) Already exported (HostBox / operator overrides)
+  for k in $key $alt_keys; do
+    val="$(eval "printf '%s' \"\${$k-}\"")"
+    if [[ -n "$val" ]]; then
+      printf '%s' "$val"
+      return 0
+    fi
+  done
+
+  # 2) docker compose config (interpolated compose + env_file)
+  if [[ -n "${COMPOSE_CONFIG_CACHE:-}" ]]; then
+    for k in $key $alt_keys; do
+      val="$(compose_config_env "$k" "$COMPOSE_CONFIG_CACHE" || true)"
+      if [[ -n "$val" && "$val" != "null" ]]; then
+        printf '%s' "$val"
+        return 0
+      fi
+    done
+  fi
+
+  # 3) Running containers (database / teslamateapi / teslamate)
+  for container in \
+    "${DATABASE_CONTAINER:-}" \
+    "${API_CONTAINER:-}" \
+    "${TESLAMATE_CONTAINER:-}"; do
+    [[ -n "$container" ]] || continue
+    for k in $key $alt_keys; do
+      val="$(container_env "$container" "$k" || true)"
+      if [[ -n "$val" ]]; then
+        printf '%s' "$val"
+        return 0
+      fi
+    done
+  done
+
+  # 4) TeslaMate .env (optional — many installs only use compose environment:)
+  if [[ -f "$TESLAMATE_DIR/.env" ]]; then
+    for k in $key $alt_keys; do
+      val="$(read_env_value "$k" "$TESLAMATE_DIR/.env" || true)"
+      if [[ -n "$val" ]]; then
+        printf '%s' "$val"
+        return 0
+      fi
+    done
+  fi
+
+  # 5) Prior companion install
+  if [[ -f "$ENV_FILE" ]]; then
+    for k in $key $alt_keys; do
+      val="$(read_env_value "$k" "$ENV_FILE" || true)"
+      if [[ -n "$val" ]]; then
+        printf '%s' "$val"
+        return 0
+      fi
+    done
+  fi
+
+  return 1
+}
+
+find_compose_service_id() {
+  local svc
+  (
+    cd "$TESLAMATE_DIR"
+    for svc in "$@"; do
+      id="$(docker compose ps -q "$svc" 2>/dev/null || true)"
+      if [[ -n "$id" ]]; then
+        printf '%s' "$id"
+        return 0
+      fi
+    done
+    return 1
+  )
+}
+
+# Prefer a Docker network shared with TeslaMate / API, not an unrelated side network.
+pick_shared_network() {
+  local db_id="$1"
+  local other_ids="$2"
+  local nets
+  local n
+  local oid
+  nets="$(
+    docker inspect "$db_id" \
+      --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' 2>/dev/null \
+      || true
+  )"
+  [[ -n "$nets" ]] || return 1
+  while IFS= read -r n; do
+    [[ -n "$n" ]] || continue
+    for oid in $other_ids; do
+      [[ -n "$oid" ]] || continue
+      if docker inspect "$oid" \
+        --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' 2>/dev/null \
+        | grep -qx "$n"; then
+        printf '%s' "$n"
+        return 0
+      fi
+    done
+  done <<< "$nets"
+  # Fallback: first network on the database container
+  printf '%s' "$(printf '%s\n' "$nets" | head -n 1)"
 }
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
@@ -54,8 +203,9 @@ require_command awk
 require_command curl
 
 [[ -d "$TESLAMATE_DIR" ]] || fail "TeslaMate directory not found: $TESLAMATE_DIR"
-[[ -f "$TESLAMATE_DIR/docker-compose.yml" ]] || fail "TeslaMate docker-compose.yml not found."
-[[ -f "$TESLAMATE_DIR/.env" ]] || fail "TeslaMate .env not found."
+[[ -f "$TESLAMATE_DIR/docker-compose.yml" || -f "$TESLAMATE_DIR/compose.yml" || -f "$TESLAMATE_DIR/compose.yaml" ]] \
+  || fail "TeslaMate docker-compose.yml (or compose.yml) not found in $TESLAMATE_DIR."
+# .env is optional: many deployments put secrets only in compose environment: blocks.
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || fail "Invalid or missing VERSION file."
 [[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" &&
@@ -64,32 +214,74 @@ require_command curl
   || fail "Run install.sh from a complete My-T-Companion checkout."
 
 log "Checking the existing TeslaMate deployment"
-database_container="$(
-  cd "$TESLAMATE_DIR"
-  docker compose ps -q database 2>/dev/null || true
+DATABASE_CONTAINER="$(
+  find_compose_service_id database db postgres teslamate-db teslamate_db || true
 )"
-[[ -n "$database_container" ]] || fail "TeslaMate database service is not running."
+if [[ -z "$DATABASE_CONTAINER" ]]; then
+  # Last resort: running postgres-like container
+  DATABASE_CONTAINER="$(
+    docker ps --format '{{.ID}} {{.Names}} {{.Image}}' 2>/dev/null \
+      | awk 'tolower($0) ~ /postgres|teslamate.*db|\/db$/ { print $1; exit }' || true
+  )"
+fi
+[[ -n "$DATABASE_CONTAINER" ]] || fail "TeslaMate database container is not running (tried service names: database, db, postgres, …)."
+
+API_CONTAINER="$(
+  find_compose_service_id teslamateapi api teslamate-api || true
+)"
+TESLAMATE_CONTAINER="$(
+  find_compose_service_id teslamate || true
+)"
+
+COMPOSE_CONFIG_CACHE="$(
+  cd "$TESLAMATE_DIR"
+  docker compose config 2>/dev/null || true
+)"
 
 database_network="$(
-  docker inspect "$database_container" \
-    --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
-    | head -n 1
+  pick_shared_network "$DATABASE_CONTAINER" "${API_CONTAINER:-} ${TESLAMATE_CONTAINER:-}" || true
 )"
 [[ -n "$database_network" ]] || fail "Unable to detect the TeslaMate Docker network."
+log "Using Docker network: $database_network"
 
 database_pass="$(
-  read_env_value DATABASE_PASS "$TESLAMATE_DIR/.env" \
-    || read_env_value TM_DB_PASS "$TESLAMATE_DIR/.env" \
-    || true
+  resolve_secret DATABASE_PASS "TM_DB_PASS POSTGRES_PASSWORD POSTGRES_PASS" || true
 )"
-[[ -n "$database_pass" ]] || fail "DATABASE_PASS was not found in TeslaMate .env."
+[[ -n "$database_pass" ]] || fail "DATABASE_PASS not found. Sources tried: shell env, docker compose config, running containers, $TESLAMATE_DIR/.env. Export DATABASE_PASS=… and re-run."
+
+database_user="$(
+  resolve_secret DATABASE_USER "POSTGRES_USER TM_DB_USER" || printf 'teslamate'
+)"
+database_name="$(
+  resolve_secret DATABASE_NAME "POSTGRES_DB TM_DB_NAME" || printf 'teslamate'
+)"
+database_host="$(
+  resolve_secret DATABASE_HOST "POSTGRES_HOST" || true
+)"
+if [[ -z "$database_host" ]]; then
+  # Prefer compose service name that answered for the DB container
+  database_host="$(
+    docker inspect "$DATABASE_CONTAINER" --format '{{index .Config.Labels "com.docker.compose.service"}}' 2>/dev/null || true
+  )"
+fi
+[[ -n "$database_host" ]] || database_host="database"
+
+mqtt_broker_url="$(
+  resolve_secret MQTT_BROKER_URL "MQTT_URL" || true
+)"
+if [[ -z "$mqtt_broker_url" ]]; then
+  mqtt_host="$(resolve_secret MQTT_HOST "" || true)"
+  mqtt_port="$(resolve_secret MQTT_PORT "" || printf '1883')"
+  if [[ -n "$mqtt_host" ]]; then
+    mqtt_broker_url="tcp://${mqtt_host}:${mqtt_port}"
+  else
+    # Common TeslaMate defaults; HostBox later patches to host.docker.internal when needed.
+    mqtt_broker_url="tcp://mosquitto:1883"
+  fi
+fi
 
 api_token="$(
-  read_env_value MY_T_API_TOKEN "$TESLAMATE_DIR/.env" \
-    || read_env_value TM_API_TOKEN "$TESLAMATE_DIR/.env" \
-    || read_env_value API_TOKEN "$TESLAMATE_DIR/.env" \
-    || read_env_value MY_T_API_TOKEN "$ENV_FILE" \
-    || true
+  resolve_secret MY_T_API_TOKEN "TM_API_TOKEN API_TOKEN" || true
 )"
 generated_token=false
 if [[ -z "$api_token" ]]; then
@@ -98,9 +290,10 @@ if [[ -z "$api_token" ]]; then
 fi
 
 timezone="$(
-  read_env_value TZ "$TESLAMATE_DIR/.env" \
-    || printf 'UTC'
+  resolve_secret TZ "" || printf 'UTC'
 )"
+log "Config source: .env is optional; used compose config / containers / env when present."
+log "DB host=${database_host} user=${database_user} name=${database_name}; MQTT=${mqtt_broker_url}"
 
 push_installation_id="${PUSH_INSTALLATION_ID:-$(read_env_value PUSH_INSTALLATION_ID "$ENV_FILE" || true)}"
 push_relay_url="${PUSH_RELAY_URL:-$(read_env_value PUSH_RELAY_URL "$ENV_FILE" || true)}"
@@ -133,7 +326,7 @@ if [[ -f "$CADDY_FILE" ]]; then
 fi
 
 if [[ "$generated_token" == true && -z "$auth_probe_url" ]]; then
-  fail "No reusable TeslaMate API authentication was detected. Set MY_T_API_TOKEN in the TeslaMate .env or provide MY_T_AUTH_PROBE_URL for the existing protected /api/ping endpoint."
+  fail "No reusable TeslaMate API authentication was detected. Export MY_T_API_TOKEN=… (or API_TOKEN), put it in compose environment, or set MY_T_AUTH_PROBE_URL for the protected /api/ping endpoint. A TeslaMate .env file is optional."
 fi
 
 if [[ -n "$auth_probe_url" ]]; then
@@ -182,6 +375,10 @@ fi
 umask 077
 {
   printf 'DATABASE_PASS=%s\n' "$database_pass"
+  printf 'DATABASE_USER=%s\n' "$database_user"
+  printf 'DATABASE_NAME=%s\n' "$database_name"
+  printf 'DATABASE_HOST=%s\n' "$database_host"
+  printf 'MQTT_BROKER_URL=%s\n' "$mqtt_broker_url"
   printf 'MY_T_API_TOKEN=%s\n' "$api_token"
   printf 'AUTH_PROBE_URL=%s\n' "$auth_probe_url"
   printf 'TZ=%s\n' "$timezone"
@@ -192,7 +389,12 @@ umask 077
 } > "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
-cat > "$COMPOSE_FILE" <<'YAML'
+# Escape values for YAML double-quoted strings
+yaml_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+cat > "$COMPOSE_FILE" <<YAML
 services:
   companion:
     build: .
@@ -210,22 +412,22 @@ services:
     tmpfs:
       - /tmp:size=16m,mode=1777
     environment:
-      DATABASE_USER: teslamate
-      DATABASE_PASS: ${DATABASE_PASS}
-      DATABASE_NAME: teslamate
-      DATABASE_HOST: database
+      DATABASE_USER: "$(yaml_escape "$database_user")"
+      DATABASE_PASS: \${DATABASE_PASS}
+      DATABASE_NAME: "$(yaml_escape "$database_name")"
+      DATABASE_HOST: "$(yaml_escape "$database_host")"
       PGOPTIONS: -c default_transaction_read_only=on
-      API_TOKEN: ${MY_T_API_TOKEN}
-      AUTH_PROBE_URL: ${AUTH_PROBE_URL:-}
-      TZ: ${TZ:-UTC}
-      MQTT_BROKER_URL: tcp://mosquitto:1883
-      PUSH_INSTALLATION_ID: ${PUSH_INSTALLATION_ID:-}
-      PUSH_RELAY_URL: ${PUSH_RELAY_URL:-}
-      PUSH_RELAY_SECRET: ${PUSH_RELAY_SECRET:-}
+      API_TOKEN: \${MY_T_API_TOKEN}
+      AUTH_PROBE_URL: \${AUTH_PROBE_URL:-}
+      TZ: \${TZ:-UTC}
+      MQTT_BROKER_URL: "$(yaml_escape "$mqtt_broker_url")"
+      PUSH_INSTALLATION_ID: \${PUSH_INSTALLATION_ID:-}
+      PUSH_RELAY_URL: \${PUSH_RELAY_URL:-}
+      PUSH_RELAY_SECRET: \${PUSH_RELAY_SECRET:-}
       PUSH_STATE_PATH: /data/software-notifications.json
       PARKING_EVENT_STATE_PATH: /data/parking-events.json
-      PARKING_EVENT_RETENTION_DAYS: ${PARKING_EVENT_RETENTION_DAYS:-0}
-      PARKING_EVENT_MAX_EVENTS: ${PARKING_EVENT_MAX_EVENTS:-50000}
+      PARKING_EVENT_RETENTION_DAYS: \${PARKING_EVENT_RETENTION_DAYS:-0}
+      PARKING_EVENT_MAX_EVENTS: \${PARKING_EVENT_MAX_EVENTS:-50000}
     ports:
       - "127.0.0.1:8083:8080"
     volumes:
@@ -250,10 +452,8 @@ volumes:
 networks:
   teslamate:
     external: true
-    name: ${TESLAMATE_NETWORK}
+    name: \${TESLAMATE_NETWORK}
 YAML
-sed -i.bak "s/\${VERSION}/$VERSION/g" "$COMPOSE_FILE"
-rm -f "$COMPOSE_FILE.bak"
 
 log "Building and starting the read-only monitor"
 docker compose \
@@ -278,17 +478,21 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   missing_capabilities=true
   missing_current_drive=true
   missing_push_history=true
-  missing_notification_status=true
-  missing_notification_pair=true
+  # Broad notifications/* covers software-update + Live Activity status routes
+  missing_notifications=true
   grep -qE 'cars/.*/states|parking_states|my_t_parking_states' "$CADDY_FILE" && missing_states=false
   grep -qE 'parking-events|my_t_parking_events' "$CADDY_FILE" && missing_parking_events=false
   grep -qE 'api/v1/capabilities|parking_capabilities|my_t_parking_capabilities' "$CADDY_FILE" && missing_capabilities=false
   grep -qE 'current-drive|my_t_current_drive' "$CADDY_FILE" && missing_current_drive=false
   grep -qE 'push-history|my_t_push_history' "$CADDY_FILE" && missing_push_history=false
-  grep -qE 'notifications/software-update/status|my_t_software_push_status' "$CADDY_FILE" && missing_notification_status=false
-  grep -qE 'notifications/software-update/pair|my_t_software_push_pair' "$CADDY_FILE" && missing_notification_pair=false
+  # Accept either broad notifications matcher or explicit software + live-activity paths
+  if grep -qE 'my_t_notifications|path_regexp.*notifications/|notifications/\.\*' "$CADDY_FILE" \
+    || { grep -qE 'software-update/(status|pair)|my_t_software_push' "$CADDY_FILE" \
+      && grep -qE 'live-activity|charging-live-activity|navigation-live-activity' "$CADDY_FILE"; }; then
+    missing_notifications=false
+  fi
 
-  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notification_status" == true || "$missing_notification_pair" == true ]]; then
+  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notifications" == true ]]; then
     route_anchor="$(grep -nE '^[[:space:]]*handle[[:space:]]+@(teslamate_api|api)' "$CADDY_FILE" | head -n 1 | cut -d: -f1 || true)"
     if [[ -z "$route_anchor" ]]; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
@@ -342,19 +546,10 @@ CADDY
 
 CADDY
     fi
-    if [[ "$missing_notification_status" == true ]]; then
+    if [[ "$missing_notifications" == true ]]; then
       cat >> "$route_file" <<'CADDY'
-	@my_t_software_push_status path /api/v1/notifications/software-update/status
-	handle @my_t_software_push_status {
-		reverse_proxy 127.0.0.1:8083
-	}
-
-CADDY
-    fi
-    if [[ "$missing_notification_pair" == true ]]; then
-      cat >> "$route_file" <<'CADDY'
-	@my_t_software_push_pair path /api/v1/notifications/software-update/pair
-	handle @my_t_software_push_pair {
+	@my_t_notifications path_regexp my_t_notifications ^/api/v1/notifications/
+	handle @my_t_notifications {
 		reverse_proxy 127.0.0.1:8083
 	}
 
