@@ -50,7 +50,7 @@ not a replacement for TeslaMate or TeslaMateAPI.
 
 | Path | Who | What happens |
 | --- | --- | --- |
-| **[HostBox](https://github.com/MatchHar/HostBox)** (recommended for most phone users) | iOS deploy app | Installs TeslaMate + TeslaMateAPI + this companion, tries to wire a **unified entry** (edge on temporary IP, or Tunnel paths), MQTT `host.docker.internal`, and health checks. You still paste **one** base_url + Token into My T. |
+| **[HostBox](https://my-tesla.app/hostbox/)** (recommended for most phone users) | iOS deploy app (TestFlight) | Installs TeslaMate + TeslaMateAPI + this companion, tries to wire a **unified entry** (edge on temporary IP, or Tunnel paths), MQTT `host.docker.internal`, and health checks. You still paste **one** base_url + Token into My T. |
 | **Self-install** (this repo) | You run Docker / `install.sh` | Follow the verified release install below, then ensure gateway routes (see ports table). Same My T connection rules. |
 
 HostBox is the **deploy layer**; My T is the car UI. Neither app replaces the other.

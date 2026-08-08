@@ -84,7 +84,7 @@ TeslaMate 未长期保存的真实 MQTT 状态变化，例如开始充电前已�
 
 | 路径 | 对象 | 说明 |
 | --- | --- | --- |
-| **[HostBox](https://github.com/MatchHar/HostBox)**（多数手机用户推荐） | iOS 部署 App | 安装 TeslaMate + API + 本组件，尽量配置**统一入口**（临时 IP 的 edge，或 Tunnel 路径）、MQTT `host.docker.internal` 与健康检查。完成后在 My T 只填**一个** base_url + Token。 |
+| **[HostBox](https://my-tesla.app/hostbox/)**（多数手机用户推荐） | iOS 部署 App（TestFlight） | 安装 TeslaMate + API + 本组件，尽量配置**统一入口**（临时 IP 的 edge，或 Tunnel 路径）、MQTT `host.docker.internal` 与健康检查。完成后在 My T 只填**一个** base_url + Token。 |
 | **本仓库自建** | 自己跑 Docker / `install.sh` | 按下方校验版安装，并配置网关分流（见端口说明）。My T 连接规则相同。 |
 
 HostBox 是**部署层**；My T 是看车 App。二者不互相替代。
