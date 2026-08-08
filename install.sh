@@ -450,16 +450,10 @@ yaml_escape() {
 }
 
 # When MQTT is on the host (HostBox system mosquitto), Docker needs host-gateway.
-extra_hosts_yaml=""
-if [[ "$mqtt_needs_host_gateway" == true ]]; then
-  extra_hosts_yaml="$(cat <<'EH'
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-EH
-)"
-fi
-
-cat > "$COMPOSE_FILE" <<YAML
+# Write compose carefully: extra_hosts must be its own YAML block ending with newline
+# before "environment:" (1.10.11 glued lines → go-yaml "did not find expected key").
+{
+  cat <<YAML
 services:
   companion:
     build: .
@@ -476,7 +470,15 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=16m,mode=1777
-${extra_hosts_yaml}    environment:
+YAML
+  if [[ "$mqtt_needs_host_gateway" == true ]]; then
+    cat <<'YAML'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+YAML
+  fi
+  cat <<YAML
+    environment:
       DATABASE_USER: "$(yaml_escape "$database_user")"
       DATABASE_PASS: \${DATABASE_PASS}
       DATABASE_NAME: "$(yaml_escape "$database_name")"
@@ -520,6 +522,7 @@ networks:
     external: true
     name: \${TESLAMATE_NETWORK}
 YAML
+} > "$COMPOSE_FILE"
 
 log "Building and starting the read-only monitor"
 docker compose \

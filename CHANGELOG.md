@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.12
+
+- **Fix install crash:** `docker-compose.yml` generation with `extra_hosts` no longer
+  glues the next key onto the same line (`go-yaml did not find expected key` at L18).
+  HostBox「安装增强」and `install.sh` failed on system-MQTT hosts (1.10.11 regression).
+
 ## 1.10.11
 
 - **MQTT discovery (P1):** detect docker mosquitto service **or** host `:1883`
