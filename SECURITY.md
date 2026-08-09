@@ -2,8 +2,10 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published release. Version 1.10.8 is
-the current source version.
+Security fixes are provided for the
+[latest published stable release](https://github.com/MatchHar/My-T-Companion/releases/latest).
+The source version is defined once in [`VERSION`](VERSION), so this policy does
+not become stale after each release.
 
 ## Deployment requirements
 

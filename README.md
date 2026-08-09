@@ -2,13 +2,15 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> Current release: `1.10.8`. Native vehicle software push, charging Live
+> [![Latest stable release](https://img.shields.io/github/v/release/MatchHar/My-T-Companion?display_name=tag&sort=semver)](https://github.com/MatchHar/My-T-Companion/releases/latest)
+>
+> The badge and [latest stable release](https://github.com/MatchHar/My-T-Companion/releases/latest)
+> link update automatically. Native vehicle software push, charging Live
 > Activities, and navigation Live Activities are optional and remain disabled
 > until a compatible My T build supplies a secure relay pairing.
 >
-> **My T 3.32** was submitted to Apple on August 1, 2026 and is waiting for
-> review; the downloadable App Store binary may remain older until approval.
-> TestFlight/pre-release My T 3.32 supports this companion. Parking timeline,
+> **My T 4.01.1** is in App Review; the downloadable App Store binary may
+> remain older until approval. Parking timeline,
 > observed events, trajectories, and destination-session history work when the
 > App can reach `/api/v1/capabilities`; push and Live Activities still need
 > pairing. See the
@@ -186,8 +188,10 @@ its own retention period; available history follows the TeslaMate database.
 | 1.10.4 | Persistent destination-navigation session history with real trip timing |
 | 1.10.5 | Push-history route/deadlock repair |
 | 1.10.6 | Separate closed sessions when the destination changes mid-drive |
-| 1.10.8 | Reliable `start_name` (sticky geofence + drive address backfill) for start → destination |
 | 1.10.7 | Genuine start-place name for start → destination trip titles |
+| 1.10.8 | Reliable `start_name` (sticky geofence + drive address backfill) for start → destination |
+| 1.10.10 | Correct runtime version reporting in capabilities and diagnostics |
+| 1.10.12 | Latest maintenance, packaging, and compatibility improvements |
 
 ## Navigation Live Activities
 
@@ -269,9 +273,8 @@ Authenticated status:
 GET /api/v1/notifications/software-update/status
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for complete changes,
-[RELEASE_NOTES_1.10.8.md](RELEASE_NOTES_1.10.8.md), or the
-[v1.10.8 GitHub Release](https://github.com/MatchHar/My-T-Companion/releases/tag/v1.10.8).
+See [CHANGELOG.md](CHANGELOG.md) for complete changes or the
+[latest GitHub Release](https://github.com/MatchHar/My-T-Companion/releases/latest).
 
 ## Who should install it
 
@@ -294,13 +297,13 @@ Installation uses a numbered GitHub Release rather than the mutable `main`
 branch. With GitHub CLI installed:
 
 ```sh
-version=1.10.8; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version="$(gh release view -R MatchHar/My-T-Companion --json tagName --jq '.tagName | ltrimstr("v")')"; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Without GitHub CLI:
 
 ```sh
-version=1.10.8; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version="$(curl -fsSL https://api.github.com/repos/MatchHar/My-T-Companion/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; test -n "$version" && workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 Full success is reported only after both the local service and the unified My T
@@ -428,7 +431,7 @@ sudo /opt/my-t-companion/update.sh
 ```
 
 My T may instead show a version-pinned command such as
-`sudo MY_T_VERSION=1.10.8 /opt/my-t-companion/update.sh`. That is intentional:
+`sudo MY_T_VERSION=<verified-version> /opt/my-t-companion/update.sh`. That is intentional:
 the App pins the newest Companion version verified with that App build, while
 the permanent command is for administrators who explicitly want the newest
 stable server release.

@@ -2,11 +2,12 @@
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md)
 
-> 当前正式版本：`1.10.8`。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
+> [![最新稳定版](https://img.shields.io/github/v/release/MatchHar/My-T-Companion?display_name=tag&sort=semver)](https://github.com/MatchHar/My-T-Companion/releases/latest)
+>
+> 上方徽章和[最新稳定版](https://github.com/MatchHar/My-T-Companion/releases/latest)链接会自动更新。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
 > 提供安全配对前保持关闭。
 >
-> **My T 3.32** 已于 2026 年 8 月 1 日提交 Apple，目前等待审核；审核通过前，
-> App Store 可下载版本仍可能是旧版。TestFlight／预发布 My T 3.32 已支持本组件。
+> **My T 4.01.1** 正在 App Review；审核通过前，App Store 可下载版本仍可能是旧版。
 > 停车流水、观测事件、轨迹及目的地行程记录在可访问 `/api/v1/capabilities` 时
 > 可用；推送与实时活动仍需完成配对。详见
 > [My T 功能可用性](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)。
@@ -194,12 +195,13 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 | 1.10.4 | 带真实行程时间的目的地导航会话历史 |
 | 1.10.5 | 推送历史路由与死锁修复 |
 | 1.10.6 | 行驶中更改目的地时拆分为完整独立会话 |
-| 1.10.8 | 更可靠的 `start_name`（围栏粘性 + 行程地址回填），起点 → 目的地 |
 | 1.10.7 | 记录真实起点名称，用于“起点 → 目的地”标题 |
+| 1.10.8 | 更可靠的 `start_name`（围栏粘性 + 行程地址回填），起点 → 目的地 |
+| 1.10.10 | 修正能力与诊断接口中的运行版本报告 |
+| 1.10.12 | 最新维护、打包及兼容性改进 |
 
-完整改动请查看 [CHANGELOG.md](CHANGELOG.md)，当前版本说明请查看
-[RELEASE_NOTES_1.10.8.zh-Hans.md](RELEASE_NOTES_1.10.8.zh-Hans.md) 或
-[v1.10.8 GitHub Release](https://github.com/MatchHar/My-T-Companion/releases/tag/v1.10.8)。
+完整改动请查看 [CHANGELOG.md](CHANGELOG.md) 或
+[最新 GitHub Release](https://github.com/MatchHar/My-T-Companion/releases/latest)。
 
 ## 哪些用户需要安装
 
@@ -223,13 +225,13 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 安装使用固定 GitHub Release，不直接执行会变化的 `main` 分支。已安装 GitHub CLI 时：
 
 ```sh
-version=1.10.8; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version="$(gh release view -R MatchHar/My-T-Companion --json tagName --jq '.tagName | ltrimstr("v")')"; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 未安装 GitHub CLI 时：
 
 ```sh
-version=1.10.8; workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+version="$(curl -fsSL https://api.github.com/repos/MatchHar/My-T-Companion/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; test -n "$version" && workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
 只有本地服务和 My T 统一入口都验证成功，安装器才报告完整成功。手动使用
@@ -328,7 +330,7 @@ sudo /opt/my-t-companion/update.sh
 ```
 
 My T 也可能显示类似
-`sudo MY_T_VERSION=1.10.8 /opt/my-t-companion/update.sh`
+`sudo MY_T_VERSION=<已验证版本> /opt/my-t-companion/update.sh`
 的指定版本命令。这是有意设计：App 固定到该 App 版本已验证兼容的最新
 Companion；永久命令则供明确希望跟随服务器最新稳定版的管理员使用。
 
