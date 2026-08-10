@@ -143,6 +143,33 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 自定义内网网关需要管理员手动加入路由；只安装容器、不配置统一入口时，My T
 不会显示增强功能。
 
+### 建议顺序（方法不变，只是常见三阶段）
+
+不改变既有部署方法，多数人会按此顺序：
+
+1. **TeslaMate + TeslaMateAPI** — My T 填 `http://IP:主机API端口`（或已有 HTTPS 反代）。基础看车可用。
+2. **Companion** — **仍用同一个** My T base_url。必须有统一入口（系统 Caddy、`Caddyfile.snippet`、或安装程序 edge）把扩展路径转到 `127.0.0.1:8083`，其余 `/api/*` 转官方 API。Token 不变。
+3. **Cloudflare Tunnel（可选安全）** — My T 改填 `https://你的域名`。Tunnel 成为新的统一入口；分流概念与 Caddy 相同（`Caddyfile.snippet` 路径 → `8083`，其余 `api/*` → 官方 API 主机端口）。
+
+#### 从临时 IP / edge 切换到 Cloudflare Tunnel
+
+若第 2 步用了**占用公网 API 端口的 edge**（API 常被挪到本机 `18081`），第 3 步必须**收口**，只留一个公网入口：
+
+| 要做 | 原因 |
+| --- | --- |
+| Tunnel 扩展路径 → `http://127.0.0.1:8083` | 与 `Caddyfile.snippet` 一致 |
+| Tunnel 其余 `api/*` → **TeslaMateAPI 实际监听的端口**（常见是恢复库存 `127.0.0.1:8081` 或 `8080`，不要指向已拆除的 edge） | 指错会导致 My T **HTTP 502** |
+| 停掉临时 IP 的 edge，避免继续占用 `8081` | 两套入口抢端口 |
+| My T 改用 `https://域名`（不要再用 `http://IP:8081`） | 只换外层入口；Token 不变 |
+
+Tunnel 完成后的干净目标（「一个 base_url」契约）：
+
+```text
+https://域名
+  ├─ 扩展路径  → 127.0.0.1:8083
+  └─ 其余 /api/* → 127.0.0.1:<官方API主机端口>   # 例如 8081
+```
+
 ## 数据如何流动
 
 ```text

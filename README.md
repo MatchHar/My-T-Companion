@@ -131,6 +131,33 @@ leaves the proxy unchanged and requires the administrator to add the routes.
 Installation of the container alone does not make the enhanced features
 reachable from My T.
 
+### Recommended order (same method, three stages)
+
+This does **not** change the deployment method — only the usual order people follow:
+
+1. **TeslaMate + TeslaMateAPI** — My T uses `http://IP:host-api-port` (or HTTPS if you already have a reverse proxy). Basic car data works.
+2. **Companion** — keep the **same** My T base URL. A unified entry (system Caddy, `Caddyfile.snippet`, or the installer edge) must send companion paths to `127.0.0.1:8083` and the rest of `/api/*` to stock TeslaMateAPI. Token does not change.
+3. **Cloudflare Tunnel (optional security)** — My T switches base URL to `https://your-hostname`. Tunnel is the new unified entry; path split stays the same idea as Caddy (`Caddyfile.snippet` paths → `8083`, other `api/*` → stock API host port).
+
+#### Switching from temporary IP / edge to Cloudflare Tunnel
+
+When stage 2 used an **edge on the public API port** (API often moved to loopback `18081`), stage 3 must **finish the handoff** so there is only one public entry:
+
+| Do | Why |
+| --- | --- |
+| Point Tunnel companion paths at `http://127.0.0.1:8083` | Same routes as `Caddyfile.snippet` |
+| Point Tunnel other `api/*` at the **port where TeslaMateAPI actually listens** (commonly restore stock `127.0.0.1:8081` or `8080`, not a dead public edge) | Wrong target → My T **HTTP 502** |
+| Stop / remove the temporary-IP edge so it does not keep port `8081` | Two entries fight for the same port |
+| In My T, use `https://hostname` (not `http://IP:8081`) | Outer security layer changed; token stays the same |
+
+Clean target after Tunnel (matches the documented “one base URL” contract):
+
+```text
+https://hostname
+  ├─ companion paths  → 127.0.0.1:8083
+  └─ other /api/*     → 127.0.0.1:<stock-api-host-port>   # e.g. 8081
+```
+
 ## How data flows
 
 ```text
