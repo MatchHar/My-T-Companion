@@ -210,7 +210,8 @@ require_command curl
   || fail "Invalid or missing VERSION file."
 [[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" &&
    -f "$SOURCE_DIR/notification.go" && -f "$SOURCE_DIR/charging_notification.go" &&
-   -f "$SOURCE_DIR/navigation_notification.go" && -f "$SOURCE_DIR/parking_event_monitor.go" ]] \
+   -f "$SOURCE_DIR/navigation_notification.go" && -f "$SOURCE_DIR/parking_event_monitor.go" &&
+   -f "$SOURCE_DIR/storage_policy.go" && -f "$SOURCE_DIR/lock_secure_notification.go" ]] \
   || fail "Run install.sh from a complete My-T-Companion checkout."
 
 log "Checking the existing TeslaMate deployment"
@@ -392,12 +393,14 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   if [[ -f "$SOURCE_DIR/go.sum" ]]; then
     install -m 0644 "$SOURCE_DIR/go.sum" "$INSTALL_DIR/go.sum"
   fi
-  install -m 0644 "$SOURCE_DIR/main.go" "$INSTALL_DIR/main.go"
-  install -m 0644 "$SOURCE_DIR/notification.go" "$INSTALL_DIR/notification.go"
-  install -m 0644 "$SOURCE_DIR/charging_notification.go" "$INSTALL_DIR/charging_notification.go"
-  install -m 0644 "$SOURCE_DIR/navigation_notification.go" "$INSTALL_DIR/navigation_notification.go"
-  install -m 0644 "$SOURCE_DIR/parking_event_monitor.go" "$INSTALL_DIR/parking_event_monitor.go"
-  install -m 0644 "$SOURCE_DIR/storage_policy.go" "$INSTALL_DIR/storage_policy.go"
+  # Copy every package-main .go file (including *_test.go). Docker `go build`
+  # ignores tests; listing files by hand previously dropped lock_secure_notification.go
+  # and broke HostBox / update.sh image builds on 1.10.13.
+  shopt -s nullglob
+  for go_file in "$SOURCE_DIR"/*.go; do
+    install -m 0644 "$go_file" "$INSTALL_DIR/$(basename "$go_file")"
+  done
+  shopt -u nullglob
   install -m 0644 "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
   install -m 0755 "$SOURCE_DIR/update.sh" "$INSTALL_DIR/update.sh"

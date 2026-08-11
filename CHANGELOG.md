@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.14
+
+- **Fix HostBox / install image build:** `install.sh` now copies **all** `*.go`
+  sources into `/opt/my-t-companion` (was a fixed list). 1.10.13 omitted
+  `lock_secure_notification.go`, so `docker build` failed with
+  `undefined: lockSecureNotificationMonitor`.
+- Still fully backward compatible with previous My T versions (same as 1.10.13).
+
 ## 1.10.13
 
 - **Optional lock-secure push** (`vehicle_lock_secure`): when locked and no user
