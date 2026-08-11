@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.13
+
+- **Optional lock-secure push** (`vehicle_lock_secure`): when locked and no user
+  present, can notify via the existing APNs relay. Off by default; requires push
+  pairing and server-confirmed prefs.
+- `GET/PUT /api/v1/notifications/lock-secure`; capability `lock_secure_push`.
+- **Backward compatible:** no change to existing APIs; `app_compatibility`
+  minimum **3.10** / recommended **3.30** unchanged. Older My T ignores the new
+  capability and keeps working on the same base URL.
+
 ## 1.10.12
 
 - **Fix install crash:** `docker-compose.yml` generation with `extra_hosts` no longer
