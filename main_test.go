@@ -33,14 +33,16 @@ func TestInstallerIncludesParkingEventMonitor(t *testing.T) {
 	text := string(installer)
 	for _, required := range []string{
 		`-f "$SOURCE_DIR/parking_event_monitor.go"`,
-		`install -m 0644 "$SOURCE_DIR/parking_event_monitor.go" "$INSTALL_DIR/parking_event_monitor.go"`,
-		`install -m 0644 "$SOURCE_DIR/storage_policy.go" "$INSTALL_DIR/storage_policy.go"`,
+		`-f "$SOURCE_DIR/lock_secure_notification.go"`,
+		// All package sources are installed via a glob loop (not a fixed list).
+		`for go_file in "$SOURCE_DIR"/*.go; do`,
+		`install -m 0644 "$go_file" "$INSTALL_DIR/$(basename "$go_file")"`,
 		`install -m 0755 "$SOURCE_DIR/backup.sh" "$INSTALL_DIR/backup.sh"`,
 		`install -m 0755 "$SOURCE_DIR/restore.sh" "$INSTALL_DIR/restore.sh"`,
 		`install -m 0755 "$SOURCE_DIR/storage-status.sh" "$INSTALL_DIR/storage-status.sh"`,
 	} {
 		if !strings.Contains(text, required) {
-			t.Fatalf("installer is missing required parking monitor handling: %s", required)
+			t.Fatalf("installer is missing required handling: %s", required)
 		}
 	}
 	routeFileInitialization := strings.Index(text, `route_file="$(mktemp)"`)
