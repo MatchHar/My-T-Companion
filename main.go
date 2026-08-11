@@ -39,6 +39,7 @@ var (
 	chargingPush          *chargingNotificationMonitor
 	navigationPush        *navigationNotificationMonitor
 	parkingEvents         *parkingEventMonitor
+	lockSecurePush        *lockSecureNotificationMonitor
 )
 
 type telemetrySample struct {
@@ -146,6 +147,9 @@ func main() {
 	parkingEvents = newParkingEventMonitorFromEnvironment()
 	parkingEvents.start()
 	defer parkingEvents.stop()
+	lockSecurePush = newLockSecureNotificationMonitorFromEnvironment()
+	lockSecurePush.start()
+	defer lockSecurePush.stop()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", handlePing)
@@ -155,6 +159,7 @@ func main() {
 	mux.HandleFunc("/api/v1/notifications/software-update/pair", handleSoftwareNotificationPair)
 	mux.HandleFunc("/api/v1/notifications/charging-live-activity/status", handleChargingNotificationStatus)
 	mux.HandleFunc("/api/v1/notifications/navigation-live-activity/status", handleNavigationNotificationStatus)
+	mux.HandleFunc("/api/v1/notifications/lock-secure", handleLockSecurePreferences)
 	mux.HandleFunc("/", handleStates)
 
 	addr := ":8080"
@@ -196,6 +201,9 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 		if navigationPush != nil {
 			navigationPush.disable()
 		}
+		if lockSecurePush != nil {
+			lockSecurePush.disablePairing()
+		}
 		writeJSON(w, http.StatusOK, map[string]bool{"paired": false})
 		return
 	}
@@ -224,7 +232,54 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if lockSecurePush != nil {
+		if err := lockSecurePush.configure(pairing); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid lock-secure pairing"})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"paired": true})
+}
+
+func handleLockSecurePreferences(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	if lockSecurePush == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Unavailable"})
+		return
+	}
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, lockSecurePush.status())
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	defer r.Body.Close()
+	var body lockSecurePutBody
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
+		return
+	}
+	result, err := lockSecurePush.applyPreferences(body)
+	if err != nil {
+		if err.Error() == "not_paired" {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "not_paired",
+				"message": "Push pairing required before enabling lock-secure notifications",
+			})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func handleChargingNotificationStatus(w http.ResponseWriter, r *http.Request) {
@@ -370,6 +425,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"parking_charge_connection_events",
 			"parking_security_events",
 			"parking_climate_events",
+			"lock_secure_push",
 		},
 		"data_policy":                 "teslamate_read_only_observations",
 		"storage_mode":                "teslamate_source_of_truth",
