@@ -34,9 +34,9 @@ func TestInstallerIncludesParkingEventMonitor(t *testing.T) {
 	for _, required := range []string{
 		`-f "$SOURCE_DIR/parking_event_monitor.go"`,
 		`-f "$SOURCE_DIR/lock_secure_notification.go"`,
-		// All package sources are installed via a glob loop (not a fixed list).
+		`lock_secure_notification.go`,
 		`for go_file in "$SOURCE_DIR"/*.go; do`,
-		`install -m 0644 "$go_file" "$INSTALL_DIR/$(basename "$go_file")"`,
+		`build --progress=plain`,
 		`install -m 0755 "$SOURCE_DIR/backup.sh" "$INSTALL_DIR/backup.sh"`,
 		`install -m 0755 "$SOURCE_DIR/restore.sh" "$INSTALL_DIR/restore.sh"`,
 		`install -m 0755 "$SOURCE_DIR/storage-status.sh" "$INSTALL_DIR/storage-status.sh"`,

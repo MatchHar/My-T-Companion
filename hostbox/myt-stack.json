@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "template_id": "myt-stack",
-  "revision": "2026.08.11.2",
-  "updated_at": "2026-08-11T14:45:00Z",
+  "revision": "2026.08.11.3",
+  "updated_at": "2026-08-11T14:55:00Z",
   "min_app_version": "1.0.0",
   "channel": "stable",
   "title": "My T Server",
@@ -32,7 +32,7 @@
     "teslamate": "teslamate/teslamate:4.0.1",
     "grafana": "teslamate/grafana:4.0.1",
     "teslamateapi": "tobiasehlert/teslamateapi:1.25.0",
-    "companion": "myt/companion:1.10.14",
+    "companion": "myt/companion:1.10.15",
     "postgres": "postgres:16",
     "mosquitto": "host-system (not docker)",
     "caddy": "caddy:2.8-alpine"

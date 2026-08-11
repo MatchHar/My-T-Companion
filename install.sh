@@ -393,15 +393,31 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   if [[ -f "$SOURCE_DIR/go.sum" ]]; then
     install -m 0644 "$SOURCE_DIR/go.sum" "$INSTALL_DIR/go.sum"
   fi
-  # Copy every package-main .go file (including *_test.go). Docker `go build`
-  # ignores tests; listing files by hand previously dropped lock_secure_notification.go
-  # and broke HostBox / update.sh image builds on 1.10.13.
+  # Production sources required by Dockerfile (explicit list + glob so new files are not dropped).
+  required_go=(
+    main.go
+    notification.go
+    charging_notification.go
+    navigation_notification.go
+    parking_event_monitor.go
+    storage_policy.go
+    lock_secure_notification.go
+  )
+  for name in "${required_go[@]}"; do
+    [[ -f "$SOURCE_DIR/$name" ]] || fail "Release package missing $name"
+    install -m 0644 "$SOURCE_DIR/$name" "$INSTALL_DIR/$name"
+  done
   shopt -s nullglob
   for go_file in "$SOURCE_DIR"/*.go; do
     install -m 0644 "$go_file" "$INSTALL_DIR/$(basename "$go_file")"
   done
   shopt -u nullglob
   install -m 0644 "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
+  # Fail fast if build context is incomplete (HostBox shows only last ~6KB of SSH output).
+  for name in "${required_go[@]}"; do
+    [[ -f "$INSTALL_DIR/$name" ]] || fail "Install incomplete: $INSTALL_DIR/$name missing after copy"
+  done
+  log "Build context Go sources: $(ls -1 "$INSTALL_DIR"/*.go 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
   install -m 0755 "$SOURCE_DIR/update.sh" "$INSTALL_DIR/update.sh"
   if [[ -f "$SOURCE_DIR/uninstall.sh" ]]; then
@@ -422,6 +438,11 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
 else
   log "Running from the installed directory; service source files are already current"
 fi
+# Always verify production sources before docker build (covers in-place reinstalls).
+for name in main.go notification.go charging_notification.go navigation_notification.go \
+  parking_event_monitor.go storage_policy.go lock_secure_notification.go Dockerfile VERSION; do
+  [[ -f "$INSTALL_DIR/$name" ]] || fail "Missing build file: $INSTALL_DIR/$name — re-run from a complete release package"
+done
 # Always refresh doctor when present in source (also on in-place reinstall).
 if [[ -f "$SOURCE_DIR/scripts/myt-doctor.sh" ]]; then
   install -m 0755 "$SOURCE_DIR/scripts/myt-doctor.sh" "$INSTALL_DIR/myt-doctor.sh"
@@ -464,8 +485,8 @@ services:
     restart: unless-stopped
     init: true
     cpus: 1.0
-    mem_limit: 256m
-    pids_limit: 128
+    mem_limit: 512m
+    pids_limit: 256
     read_only: true
     cap_drop:
       - ALL
@@ -528,20 +549,34 @@ YAML
 } > "$COMPOSE_FILE"
 
 log "Building and starting the read-only monitor"
+log "Build context check: $(ls -1 "$INSTALL_DIR"/lock_secure_notification.go "$INSTALL_DIR"/main.go "$INSTALL_DIR"/Dockerfile 2>&1 | tr '\n' ' ')"
+if ! docker compose \
+  --project-name "$COMPOSE_PROJECT" \
+  --env-file "$ENV_FILE" \
+  --file "$COMPOSE_FILE" \
+  build --progress=plain companion 2>&1; then
+  log "ERROR: docker compose build failed. Context files:"
+  ls -la "$INSTALL_DIR"/*.go "$INSTALL_DIR"/Dockerfile "$INSTALL_DIR"/VERSION 2>&1 || true
+  fail "docker compose build failed for myt/companion:${VERSION} (see plain build log above)"
+fi
 docker compose \
   --project-name "$COMPOSE_PROJECT" \
   --env-file "$ENV_FILE" \
   --file "$COMPOSE_FILE" \
-  up -d --build
+  up -d companion
 
-for _ in $(seq 1 20); do
+for _ in $(seq 1 30); do
   if curl --fail --silent --show-error http://127.0.0.1:8083/api/healthz >/dev/null; then
     break
   fi
   sleep 1
 done
-curl --fail --silent --show-error http://127.0.0.1:8083/api/healthz >/dev/null \
-  || fail "The monitor did not become healthy."
+if ! curl --fail --silent --show-error http://127.0.0.1:8083/api/healthz >/dev/null; then
+  log "ERROR: companion unhealthy. Recent logs:"
+  docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" --file "$COMPOSE_FILE" \
+    logs --tail 50 companion 2>&1 || true
+  fail "The monitor did not become healthy."
+fi
 
 proxy_ready=false
 if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then

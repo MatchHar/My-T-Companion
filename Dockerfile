@@ -1,12 +1,15 @@
 FROM golang:1.25-alpine AS build
 WORKDIR /src
-COPY go.mod ./
-COPY go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
 # VERSION is embedded into the binary (//go:embed) — keep in sync with release tags.
+# List production sources explicitly so a missed install-copy cannot silently omit a file
+# (Docker `COPY *.go` only builds whatever is present; missing lock_secure caused undefined types).
 COPY VERSION ./
-COPY *.go ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/states-api .
+COPY main.go notification.go charging_notification.go navigation_notification.go \
+     parking_event_monitor.go storage_policy.go lock_secure_notification.go ./
+RUN test -f lock_secure_notification.go \
+  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/states-api .
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.15
+
+- **HostBox build reliability:** Dockerfile lists production Go sources explicitly;
+  installer verifies files before build; `docker compose build --progress=plain`.
+- Runtime `mem_limit` 256m → **512m**.
+- Still backward compatible with previous My T versions.
+
 ## 1.10.14
 
 - **Fix HostBox / install image build:** `install.sh` now copies **all** `*.go`
