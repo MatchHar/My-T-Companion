@@ -30,6 +30,7 @@ if [[ "$REQUESTED_VERSION" == "latest" ]]; then
     || fail "MY_T_VERSION is required when MY_T_RELEASE_BASE_URL is used."
   release_url="$(
     curl --fail --silent --show-error --location \
+      --retry 3 --retry-delay 2 --connect-timeout 15 \
       --output /dev/null --write-out '%{url_effective}' \
       "https://github.com/${REPOSITORY}/releases/latest"
   )"
@@ -46,8 +47,10 @@ trap cleanup EXIT
 
 printf '[My T VPS Companion] Downloading verified release %s\n' "$REQUESTED_VERSION"
 curl --fail --silent --show-error --location \
+  --retry 3 --retry-delay 2 --connect-timeout 15 \
   --output "$work_dir/$archive_name" "$release_base/$archive_name"
 curl --fail --silent --show-error --location \
+  --retry 3 --retry-delay 2 --connect-timeout 15 \
   --output "$work_dir/$archive_name.sha256" "$release_base/$archive_name.sha256"
 (
   cd "$work_dir"
