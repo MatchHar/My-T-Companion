@@ -10,9 +10,38 @@ fi
 version="${tag#v}"
 notes_file="RELEASE_NOTES_${version}.md"
 title="My T Companion ${version}"
-assets=(dist/*)
-if [[ ! -e "${assets[0]}" ]]; then
-  echo "release assets are missing; run scripts/build-release.sh first" >&2
+archive="dist/my-t-companion-${version}.tar.gz"
+checksum="${archive}.sha256"
+assets=("$archive" "$checksum")
+for required in "${assets[@]}"; do
+  if [[ ! -f "$required" ]]; then
+    echo "release asset is missing: $required; run scripts/build-release.sh first" >&2
+    exit 1
+  fi
+done
+
+check_sha256() {
+  local checksum_file="$1"
+  local checksum_dir
+  checksum_dir="$(cd "$(dirname "$checksum_file")" && pwd)"
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$checksum_dir" && sha256sum --check "$(basename "$checksum_file")")
+  else
+    (cd "$checksum_dir" && shasum -a 256 --check "$(basename "$checksum_file")")
+  fi
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+check_sha256 "$checksum"
+if [[ ! -f "$notes_file" ]]; then
+  echo "release notes are missing: $notes_file" >&2
   exit 1
 fi
 for localized_notes in "RELEASE_NOTES_${version}".*.md; do
@@ -38,28 +67,28 @@ remote_assets="$(gh release view "$tag" --json assets --jq '.assets[] | [.name, 
 
 verification_dir="$(mktemp -d)"
 trap 'rm -rf "$verification_dir"' EXIT
-if printf '%s\n' "$remote_assets" | awk -F '\t' '$1 ~ /\.tar\.gz$/ { found=1 } END { exit !found }' &&
-   printf '%s\n' "$remote_assets" | awk -F '\t' '$1 ~ /\.tar\.gz\.sha256$/ { found=1 } END { exit !found }'; then
+archive_name="$(basename "$archive")"
+checksum_name="$(basename "$checksum")"
+if printf '%s\n' "$remote_assets" | awk -F '\t' -v name="$archive_name" '$1 == name { found=1 } END { exit !found }' &&
+   printf '%s\n' "$remote_assets" | awk -F '\t' -v name="$checksum_name" '$1 == name { found=1 } END { exit !found }'; then
   gh release download "$tag" \
-    --pattern 'my-t-companion-*.tar.gz' \
-    --pattern 'my-t-companion-*.tar.gz.sha256' \
+    --pattern "$archive_name" \
+    --pattern "$checksum_name" \
     --dir "$verification_dir"
-  (
-    cd "$verification_dir"
-    sha256sum --check ./*.tar.gz.sha256
-  )
+  check_sha256 "$verification_dir/$checksum_name"
 fi
 
 missing_assets=()
 for asset in "${assets[@]}"; do
   name="$(basename "$asset")"
-  local_digest="sha256:$(sha256sum "$asset" | awk '{print $1}')"
+  local_digest="sha256:$(sha256_of "$asset")"
   remote_digest="$(printf '%s\n' "$remote_assets" | awk -F '\t' -v asset_name="$name" \
     '$1 == asset_name { print $2; exit }')"
   if [[ -z "$remote_digest" ]]; then
     missing_assets+=("$asset")
   elif [[ "$remote_digest" != "$local_digest" ]]; then
-    echo "keeping existing immutable asset $name ($remote_digest)"
+    echo "existing immutable asset digest mismatch: $name ($remote_digest != $local_digest)" >&2
+    exit 1
   fi
 done
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.10.17
+
+- Repackages the audited current `main` line so the public release includes the
+  updater's transient-download retries and the patched Go dependencies already
+  verified by CI.
+- Updates the build image to Go 1.26.5 / Alpine 3.24 and includes `lib/pq`
+  1.12.3 plus `x/net` 0.56.0.
+- Release publishing now selects only the exact current-version archive and
+  checksum, verifies the local checksum, and fails closed if an immutable
+  same-named remote asset has a different digest.
+- No API or stored-data migration; backward compatible with previous My T
+  versions.
+
 ## 1.10.16
 
 - Lock-secure monitoring now establishes a retained-MQTT baseline before
