@@ -586,6 +586,65 @@ func TestParkingEventsDefaultToLongTermRetentionAndCapacityLimit(t *testing.T) {
 	}
 }
 
+func TestLockSecureInitialRetainedSnapshotEstablishesBaseline(t *testing.T) {
+	monitor := &lockSecureNotificationMonitor{
+		statePath: filepath.Join(t.TempDir(), "lock-secure-state.json"),
+		store: lockSecureStore{
+			Cars:      map[int]lockSecureCarState{},
+			Delivered: map[string]string{},
+		},
+		inFlight:       map[string]bool{},
+		prefs:          lockSecurePrefs{Enabled: true, Sound: "default"},
+		paired:         true,
+		installationID: strings.Repeat("a", 48),
+	}
+	at := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
+	monitor.observe(1, "locked", "true", at)
+	monitor.observe(1, "is_user_present", "false", at)
+
+	state := monitor.store.Cars[1]
+	if !state.Initialized || !state.LastSecure {
+		t.Fatalf("retained snapshot did not establish secure baseline: %+v", state)
+	}
+	if state.LastPushedAt != "" || len(monitor.inFlight) != 0 {
+		t.Fatalf("initial retained snapshot must not push: state=%+v inFlight=%+v", state, monitor.inFlight)
+	}
+}
+
+func TestLockSecureSoundWhitelistMatchesAdvertisedSet(t *testing.T) {
+	want := []string{
+		"none",
+		"default",
+		"lock_secure_user.caf",
+		"lock_secure_chime.caf",
+		"lock_secure_bell.caf",
+		"lock_secure_soft.caf",
+		"lock_secure_ack.caf",
+		"lock_secure_confirm.caf",
+		"lock_secure_sent.caf",
+	}
+	for _, sound := range want {
+		if got := normalizeLockSecureSound(sound); got != sound {
+			t.Fatalf("sound %q normalized to %q", sound, got)
+		}
+	}
+}
+
+func TestLockSecureEventDoesNotSendDeviceSoundPreference(t *testing.T) {
+	monitor := &lockSecureNotificationMonitor{installationID: strings.Repeat("a", 48)}
+	event := monitor.makeEvent(7, lockSecureCarState{DisplayName: "My T"}, time.Now().UTC())
+	if event.Sound != "" {
+		t.Fatalf("device-local sound leaked into relay event: %q", event.Sound)
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), `"sound"`) {
+		t.Fatalf("event payload must not contain sound: %s", payload)
+	}
+}
+
 func TestPruneTimestampMapByAgeAndCapacity(t *testing.T) {
 	now := time.Now().UTC()
 	delivered := map[string]string{

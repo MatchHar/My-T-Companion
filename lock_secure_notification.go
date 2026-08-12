@@ -20,15 +20,18 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-// Allowed APNs sound names (must match App bundle .caf basenames, or "default").
+// Allowed APNs sound names. `none` omits aps.sound; the imported CAF is stored
+// by My T in its Library/Sounds directory before it can be selected.
 var lockSecureSoundWhitelist = map[string]bool{
-	"default":                true,
-	"lock_secure_chime.caf":  true,
-	"lock_secure_bell.caf":   true,
-	"lock_secure_soft.caf":   true,
-	"lock_secure_ack.caf":    true,
+	"none":                    true,
+	"default":                 true,
+	"lock_secure_user.caf":    true,
+	"lock_secure_chime.caf":   true,
+	"lock_secure_bell.caf":    true,
+	"lock_secure_soft.caf":    true,
+	"lock_secure_ack.caf":     true,
 	"lock_secure_confirm.caf": true,
-	"lock_secure_sent.caf":   true,
+	"lock_secure_sent.caf":    true,
 }
 
 type lockSecurePrefs struct {
@@ -38,16 +41,17 @@ type lockSecurePrefs struct {
 }
 
 type lockSecureCarState struct {
-	DisplayName   string `json:"display_name,omitempty"`
-	Locked        *bool  `json:"locked,omitempty"`
-	UserPresent   *bool  `json:"is_user_present,omitempty"`
-	State         string `json:"state,omitempty"`
-	ShiftState    string `json:"shift_state,omitempty"`
-	DoorsOpen     *bool  `json:"doors_open,omitempty"`
-	TrunkOpen     *bool  `json:"trunk_open,omitempty"`
-	FrunkOpen     *bool  `json:"frunk_open,omitempty"`
-	LastSecure    bool   `json:"last_secure"`
-	LastPushedAt  string `json:"last_pushed_at,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Locked       *bool  `json:"locked,omitempty"`
+	UserPresent  *bool  `json:"is_user_present,omitempty"`
+	State        string `json:"state,omitempty"`
+	ShiftState   string `json:"shift_state,omitempty"`
+	DoorsOpen    *bool  `json:"doors_open,omitempty"`
+	TrunkOpen    *bool  `json:"trunk_open,omitempty"`
+	FrunkOpen    *bool  `json:"frunk_open,omitempty"`
+	LastSecure   bool   `json:"last_secure"`
+	Initialized  bool   `json:"initialized"`
+	LastPushedAt string `json:"last_pushed_at,omitempty"`
 }
 
 type lockSecureStore struct {
@@ -300,9 +304,19 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 	}
 	secure := lockSecureIsSecure(state)
 	wasSecure := state.LastSecure
+	wasInitialized := state.Initialized
+	if state.Locked != nil && state.UserPresent != nil {
+		state.Initialized = true
+	}
 	state.LastSecure = secure
 	m.store.Cars[carID] = state
 	_ = m.saveStateLocked()
+	// Retained MQTT values describe the current snapshot, not necessarily a new
+	// lock transition. Establish a per-car baseline before emitting events.
+	if !wasInitialized {
+		m.mu.Unlock()
+		return
+	}
 
 	shouldPush := m.prefs.Enabled && m.paired && m.installationID != "" &&
 		secure && !wasSecure
@@ -319,8 +333,7 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 			}
 		}
 	}
-	sound := normalizeLockSecureSound(m.prefs.Sound)
-	event := m.makeEvent(carID, state, sound, observedAt)
+	event := m.makeEvent(carID, state, observedAt)
 	if _, ok := m.store.Delivered[event.EventID]; ok {
 		m.mu.Unlock()
 		return
@@ -381,7 +394,6 @@ func normalizeLockSecureSound(sound string) string {
 func (m *lockSecureNotificationMonitor) makeEvent(
 	carID int,
 	state lockSecureCarState,
-	sound string,
 	observedAt time.Time,
 ) *lockSecurePushEvent {
 	// Edge identity: car + day-minute of first secure transition.
@@ -394,7 +406,6 @@ func (m *lockSecureNotificationMonitor) makeEvent(
 		CarID:          carID,
 		VehicleName:    state.DisplayName,
 		Type:           "vehicle_lock_secure",
-		Sound:          sound,
 		ObservedAt:     observedAt.Format(time.RFC3339),
 	}
 }
@@ -461,17 +472,24 @@ func (m *lockSecureNotificationMonitor) status() map[string]any {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := map[string]any{
-		"enabled":        m.prefs.Enabled,
-		"sound":          normalizeLockSecureSound(m.prefs.Sound),
-		"confirmed":      m.prefs.Enabled && m.paired,
-		"paired":         m.paired,
-		"mqtt_connected": m.connected,
-		"capability":     "lock_secure_push",
+		"enabled":         m.prefs.Enabled,
+		"sound":           normalizeLockSecureSound(m.prefs.Sound),
+		"confirmed":       m.prefs.Enabled && m.paired,
+		"ready":           m.prefs.Enabled && m.paired && m.connected && m.lastError == "",
+		"paired":          m.paired,
+		"mqtt_connected":  m.connected,
+		"capability":      "lock_secure_push",
+		"sound_selection": "device_local",
 		"sounds": []string{
+			"none",
 			"default",
+			"lock_secure_user.caf",
 			"lock_secure_chime.caf",
 			"lock_secure_bell.caf",
 			"lock_secure_soft.caf",
+			"lock_secure_ack.caf",
+			"lock_secure_confirm.caf",
+			"lock_secure_sent.caf",
 		},
 		"requires": []string{"locked", "is_user_present_false"},
 	}
