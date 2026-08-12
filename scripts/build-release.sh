@@ -5,14 +5,14 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version="$(tr -d '[:space:]' < "$repo_dir/VERSION")"
 output_dir="${1:-$repo_dir/dist}"
 archive_name="my-t-companion-${version}.tar.gz"
-stage_dir="$(mktemp -d)"
-trap 'rm -rf "$stage_dir"' EXIT
-
-mkdir -p "$output_dir" "$stage_dir/my-t-companion-${version}"
-git -C "$repo_dir" archive HEAD \
-  | tar --no-xattrs -x -C "$stage_dir/my-t-companion-${version}"
-COPYFILE_DISABLE=1 tar --no-xattrs -C "$stage_dir" -czf "$output_dir/$archive_name" \
-  "my-t-companion-${version}"
+mkdir -p "$output_dir"
+# Let Git produce the compressed archive directly. Unlike a second tar/gzip
+# pass, this keeps identical commits byte-for-byte reproducible across reruns.
+git -C "$repo_dir" archive \
+  --format=tar.gz \
+  --prefix="my-t-companion-${version}/" \
+  --output="$output_dir/$archive_name" \
+  HEAD
 (
   cd "$output_dir"
   if command -v sha256sum >/dev/null 2>&1; then

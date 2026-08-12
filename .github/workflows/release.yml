@@ -19,22 +19,4 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          notes_file="RELEASE_NOTES_${version}.md"
-          release_args=(
-            "$GITHUB_REF_NAME"
-            dist/*
-            --verify-tag
-            --title "My T Companion ${version}"
-          )
-          if [[ -f "$notes_file" ]]; then
-            release_args+=(--notes-file "$notes_file")
-            for localized_notes in "RELEASE_NOTES_${version}".*.md; do
-              [[ -f "$localized_notes" ]] || continue
-              release_args+=("$localized_notes")
-            done
-          else
-            release_args+=(--generate-notes)
-          fi
-          gh release create "${release_args[@]}"
+        run: scripts/publish-release.sh "$GITHUB_REF_NAME"
