@@ -11,7 +11,7 @@ COPY main.go notification.go charging_notification.go navigation_notification.go
 RUN test -f lock_secure_notification.go \
   && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/states-api .
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata
 RUN addgroup -S -g 10001 myt && adduser -S -D -H -u 10001 -G myt myt
 RUN install -d -o 10001 -g 10001 -m 0700 /data
