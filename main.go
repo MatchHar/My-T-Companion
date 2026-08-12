@@ -25,12 +25,12 @@ var embeddedVersion string
 
 var (
 	// Always matches the VERSION file (enforced by TestAPIVersionMatchesReleaseVersion).
-	apiVersion = strings.TrimSpace(embeddedVersion)
-	db         *sql.DB
-	apiToken   string
-	authProbeURL string
-	authClient *http.Client
-	location   *time.Location
+	apiVersion            = strings.TrimSpace(embeddedVersion)
+	db                    *sql.DB
+	apiToken              string
+	authProbeURL          string
+	authClient            *http.Client
+	location              *time.Location
 	carIDPath             = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
 	currentDrivePath      = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
 	navigationHistoryPath = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/push-history$`)
@@ -271,7 +271,7 @@ func handleLockSecurePreferences(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err.Error() == "not_paired" {
 			writeJSON(w, http.StatusConflict, map[string]string{
-				"error": "not_paired",
+				"error":   "not_paired",
 				"message": "Push pairing required before enabling lock-secure notifications",
 			})
 			return

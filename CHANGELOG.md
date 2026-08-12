@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.16
+
+- Lock-secure monitoring now establishes a retained-MQTT baseline before
+  sending alerts, preventing a stale already-locked snapshot from looking like
+  a new lock transition after install or restart.
+- Status now distinguishes saved configuration from active MQTT readiness and
+  advertises the complete App-bundled sound set.
+- Lock-secure relay events no longer contain a sound preference. My T 4.13 and
+  later apply each iPhone's private, device-local sound after delivery.
+- Backward compatible with previous My T versions.
+
 ## 1.10.15
 
 - **HostBox build reliability:** Dockerfile lists production Go sources explicitly;
