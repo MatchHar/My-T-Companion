@@ -7,7 +7,8 @@
 > 上方徽章和[最新稳定版](https://github.com/MatchHar/My-T-Companion/releases/latest)链接会自动更新。车辆软件原生推送、充电锁屏实时活动与导航实时活动均为可选功能，在兼容的 My T 版本
 > 提供安全配对前保持关闭。
 >
-> **My T 4.01.1** 正在 App Review；审核通过前，App Store 可下载版本仍可能是旧版。
+> **My T：** App Store 公开可下载版本以 Apple 产品页为准（2026 年 8 月中旬核验为
+> **3.10**）。较新版本可能正在审核中，本仓库不声明具体审核版本号。
 > 停车流水、观测事件、轨迹及目的地行程记录在可访问 `/api/v1/capabilities` 时
 > 可用；推送与实时活动仍需完成配对。详见
 > [My T 功能可用性](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)。

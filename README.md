@@ -9,13 +9,13 @@
 > Activities, and navigation Live Activities are optional and remain disabled
 > until a compatible My T build supplies a secure relay pairing.
 >
-> **My T 4.01.1** is in App Review; the downloadable App Store binary may
-> remain older until approval. Parking timeline,
-> observed events, trajectories, and destination-session history work when the
-> App can reach `/api/v1/capabilities`; push and Live Activities still need
-> pairing. See the
-> [My T feature availability](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)
-> notes.
+> **My T:** the public App Store downloadable version is whatever Apple’s
+> listing shows (verified **3.10** as of mid-August 2026). A newer My T build
+> may be in App Review; this repo does not claim a specific review version.
+> Parking timeline, observed events, trajectories, and destination-session
+> history work when the App can reach `/api/v1/capabilities`; push and Live
+> Activities still need pairing. See
+> [My T feature availability](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md).
 
 **This companion is built specifically for the
 [My T iPhone app — download it from the App Store](https://apps.apple.com/us/app/my-t/id6780299502).**
