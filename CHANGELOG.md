@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.10.19
+
+- Ignores a stale `host.docker.internal` MQTT address during install or update
+  when Mosquitto is actually a Docker Compose service and no broker listens on
+  the host's port 1883.
+- Prefers the live Docker Mosquitto service and shared TeslaMate network over
+  saved HostBox or prior-install host-MQTT values, while preserving explicit
+  external MQTT hosts and genuine host-based brokers.
+- Keeps the verified release archive, checksum, backup, rollback, and complete
+  readiness checks used by previous 1.10 releases.
+- Backward compatible with previous My T versions; no API or stored-data
+  migration.
+
 ## 1.10.18
 
 - Keeps one navigation session when Tesla changes only the destination label

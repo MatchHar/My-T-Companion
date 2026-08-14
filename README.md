@@ -218,7 +218,7 @@ its own retention period; available history follows the TeslaMate database.
 | 1.10.7 | Genuine start-place name for start → destination trip titles |
 | 1.10.8 | Reliable `start_name` (sticky geofence + drive address backfill) for start → destination |
 | 1.10.10 | Correct runtime version reporting in capabilities and diagnostics |
-| 1.10.12 | Latest maintenance, packaging, and compatibility improvements |
+| 1.10.19 | Reliable upgrades when saved MQTT settings no longer match the live Docker topology |
 
 ## Navigation Live Activities
 

@@ -226,7 +226,7 @@ https://域名
 | 1.10.7 | 记录真实起点名称，用于“起点 → 目的地”标题 |
 | 1.10.8 | 更可靠的 `start_name`（围栏粘性 + 行程地址回填），起点 → 目的地 |
 | 1.10.10 | 修正能力与诊断接口中的运行版本报告 |
-| 1.10.12 | 最新维护、打包及兼容性改进 |
+| 1.10.19 | 已保存 MQTT 设置与实际 Docker 拓扑不一致时仍可可靠升级 |
 
 完整改动请查看 [CHANGELOG.md](CHANGELOG.md) 或
 [最新 GitHub Release](https://github.com/MatchHar/My-T-Companion/releases/latest)。
