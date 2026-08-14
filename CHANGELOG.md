@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.20
+
+- Stops treating leftover TeslaMateAPI `:18081` as the public My T port during
+  install or update (that made the edge and API share one port and 404 on
+  `/api/v1/capabilities`).
+- If the public-edge capabilities check fails, restores the compose backup and
+  continues instead of aborting the whole upgrade.
+- Tunnel / HostBox sidecar installs skip the public 8081 edge when loopback
+  `:8083` already serves Companion capabilities.
+- Backward compatible with previous My T versions; no API or stored-data
+  migration.
+
 ## 1.10.19
 
 - Ignores a stale `host.docker.internal` MQTT address during install or update

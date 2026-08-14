@@ -808,6 +808,21 @@ setup_api_port_edge() {
     fi
   fi
 
+  # 18081 is the *internal* loopback slot used after an edge is created.
+  # A previous failed upgrade often leaves TeslaMateAPI published on :18081.
+  # Treating that leftover as the public My T port makes edge + API bind the
+  # same port; capabilities then hit stock TeslaMateAPI (404) and update dies.
+  if [[ "$host_port" == "18081" ]]; then
+    log "TeslaMateAPI is on leftover :18081 — restoring public :8081 before any edge"
+    host_port=8081
+    sed -i.bak -E \
+      's/"127\.0\.0\.1:18081:8080"/"8081:8080"/g; s/"0\.0\.0\.0:18081:8080"/"8081:8080"/g; s/"18081:8080"/"8081:8080"/g' \
+      "$compose"
+    rm -f "$compose.bak"
+    (cd "$TESLAMATE_DIR" && docker compose up -d teslamateapi 2>/dev/null) || true
+    sleep 2
+  fi
+
   local internal_port=18081
   log "Configuring unified edge on public API port :$host_port (API loopback :$internal_port)"
 
@@ -866,7 +881,14 @@ YAML
     sleep 2
   done
   if [[ "$ok" != true ]]; then
-    fail "Edge on :$host_port did not serve Companion capabilities. Compose backup: $backup"
+    log "Edge on :$host_port did not serve Companion capabilities — restoring $backup (not fatal)"
+    if [[ -f "$backup" ]]; then
+      cp "$backup" "$compose"
+      (cd "$TESLAMATE_DIR" && docker compose up -d teslamateapi 2>/dev/null) || true
+    fi
+    (cd "$INSTALL_DIR/edge" && docker compose down 2>/dev/null) || true
+    docker rm -f my-t-api-edge-my-t-api-edge-1 my-t-api-edge 2>/dev/null || true
+    return 1
   fi
 
   # Persist for HostBox / reinstall
@@ -892,6 +914,23 @@ if [[ "$proxy_ready" != true ]]; then
       log "Docker Caddy (:80) serves Companion on the public site"
     else
       log "Docker Caddy routes written; verifying via API port edge if needed"
+    fi
+  fi
+fi
+
+# Tunnel / HostBox sidecar: Companion is already the My T enhancement
+# endpoint on loopback :8083. Do not hijack TeslaMateAPI onto :18081.
+if [[ "$proxy_ready" != true ]]; then
+  if curl --fail --silent --show-error \
+    -H "Authorization: Bearer $api_token" \
+    "http://127.0.0.1:8083/api/v1/capabilities" 2>/dev/null \
+    | grep -q 'my-t-companion\|parking_state_history'; then
+    if [[ -n "$MY_T_BASE_URL" ]] \
+      || systemctl is-active --quiet cloudflared 2>/dev/null \
+      || pgrep -x cloudflared >/dev/null 2>&1; then
+      proxy_ready=true
+      MY_T_BASE_URL="${MY_T_BASE_URL:-http://127.0.0.1:8083}"
+      log "Companion :8083 already serves capabilities — skipping public API edge"
     fi
   fi
 fi
