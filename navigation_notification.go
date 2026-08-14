@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,10 +42,11 @@ type navigationLiveActivityEvent struct {
 	TotalDistanceKM       *float64 `json:"total_distance_km,omitempty"`
 	HasVerifiedTrajectory bool     `json:"has_verified_trajectory"`
 	// Trip timing for 100% real end-frame (unix seconds + RFC3339).
-	TripStartedAt         *int64   `json:"trip_started_at,omitempty"`
-	TripEndedAt           *int64   `json:"trip_ended_at,omitempty"`
-	DurationMinutes       *int     `json:"duration_minutes,omitempty"`
-	ObservedAt            string   `json:"observed_at"`
+	TripStartedAt   *int64 `json:"trip_started_at,omitempty"`
+	TripEndedAt     *int64 `json:"trip_ended_at,omitempty"`
+	DurationMinutes *int   `json:"duration_minutes,omitempty"`
+	EndReason       string `json:"end_reason,omitempty"`
+	ObservedAt      string `json:"observed_at"`
 	// Optional history end_reason override (not sent to push relay).
 	endReasonOverride string
 }
@@ -58,14 +60,14 @@ type activeRouteMQTT struct {
 }
 
 type carNavigationState struct {
-	DisplayName         string   `json:"display_name,omitempty"`
-	VehicleState        string   `json:"vehicle_state,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	VehicleState string `json:"vehicle_state,omitempty"`
 	// Last known TeslaMate geofence name (MQTT), used as trip start label.
-	Geofence            string   `json:"geofence,omitempty"`
+	Geofence string `json:"geofence,omitempty"`
 	// Sticky non-empty geofence: MQTT clears the name after leaving a fence, but
 	// navigation often starts after exit — keep the last real place for start_name.
-	LastKnownGeofence   string   `json:"last_known_geofence,omitempty"`
-	Destination         string   `json:"destination,omitempty"`
+	LastKnownGeofence string `json:"last_known_geofence,omitempty"`
+	Destination       string `json:"destination,omitempty"`
 	// Frozen label for where the navigation session began (geofence or drive start).
 	StartName           string   `json:"start_name,omitempty"`
 	RemainingDistanceKM *float64 `json:"remaining_distance_km,omitempty"`
@@ -74,12 +76,12 @@ type carNavigationState struct {
 	Active              bool     `json:"active"`
 	SessionID           string   `json:"session_id,omitempty"`
 	// RFC3339 when this navigation session became active (real trip start for end-frame).
-	SessionStartedAt    string   `json:"session_started_at,omitempty"`
-	DriveID             int64    `json:"drive_id,omitempty"`
-	Sequence            int      `json:"sequence"`
-	StartDelivered      bool     `json:"start_delivered"`
-	LastQueuedAt        string   `json:"last_queued_at,omitempty"`
-	LastObservedAt      string   `json:"last_observed_at,omitempty"`
+	SessionStartedAt string `json:"session_started_at,omitempty"`
+	DriveID          int64  `json:"drive_id,omitempty"`
+	Sequence         int    `json:"sequence"`
+	StartDelivered   bool   `json:"start_delivered"`
+	LastQueuedAt     string `json:"last_queued_at,omitempty"`
+	LastObservedAt   string `json:"last_observed_at,omitempty"`
 }
 
 type navigationNotificationStore struct {
@@ -90,27 +92,27 @@ type navigationNotificationStore struct {
 // navigationPushHistorySession is the App-readable source of truth for
 // destination/name/distance/time that Companion already trusts for push.
 type navigationPushHistorySession struct {
-	SessionID               string   `json:"session_id"`
-	CarID                   int      `json:"car_id"`
-	VehicleName             string   `json:"vehicle_name,omitempty"`
-	StartName               string   `json:"start_name,omitempty"`
-	Destination             string   `json:"destination"`
-	StartedAt               string   `json:"started_at"`
-	EndedAt                 string   `json:"ended_at,omitempty"`
-	EndReason               string   `json:"end_reason,omitempty"`
+	SessionID                string   `json:"session_id"`
+	CarID                    int      `json:"car_id"`
+	VehicleName              string   `json:"vehicle_name,omitempty"`
+	StartName                string   `json:"start_name,omitempty"`
+	Destination              string   `json:"destination"`
+	StartedAt                string   `json:"started_at"`
+	EndedAt                  string   `json:"ended_at,omitempty"`
+	EndReason                string   `json:"end_reason,omitempty"`
 	StartRemainingDistanceKM *float64 `json:"start_remaining_distance_km,omitempty"`
-	StartRemainingMinutes   *int     `json:"start_remaining_minutes,omitempty"`
-	StartEstimatedArrivalAt *int64   `json:"start_estimated_arrival_at,omitempty"`
-	EndRemainingDistanceKM  *float64 `json:"end_remaining_distance_km,omitempty"`
-	EndRemainingMinutes     *int     `json:"end_remaining_minutes,omitempty"`
-	LastRemainingDistanceKM *float64 `json:"last_remaining_distance_km,omitempty"`
-	LastRemainingMinutes    *int     `json:"last_remaining_minutes,omitempty"`
-	LastEstimatedArrivalAt  *int64   `json:"last_estimated_arrival_at,omitempty"`
-	DrivenDistanceKM        *float64 `json:"driven_distance_km,omitempty"`
-	TotalDistanceKM         *float64 `json:"total_distance_km,omitempty"`
-	LastEventType           string   `json:"last_event_type"`
-	LastDeliveryStatus      string   `json:"last_delivery_status,omitempty"`
-	UpdatedAt               string   `json:"updated_at"`
+	StartRemainingMinutes    *int     `json:"start_remaining_minutes,omitempty"`
+	StartEstimatedArrivalAt  *int64   `json:"start_estimated_arrival_at,omitempty"`
+	EndRemainingDistanceKM   *float64 `json:"end_remaining_distance_km,omitempty"`
+	EndRemainingMinutes      *int     `json:"end_remaining_minutes,omitempty"`
+	LastRemainingDistanceKM  *float64 `json:"last_remaining_distance_km,omitempty"`
+	LastRemainingMinutes     *int     `json:"last_remaining_minutes,omitempty"`
+	LastEstimatedArrivalAt   *int64   `json:"last_estimated_arrival_at,omitempty"`
+	DrivenDistanceKM         *float64 `json:"driven_distance_km,omitempty"`
+	TotalDistanceKM          *float64 `json:"total_distance_km,omitempty"`
+	LastEventType            string   `json:"last_event_type"`
+	LastDeliveryStatus       string   `json:"last_delivery_status,omitempty"`
+	UpdatedAt                string   `json:"updated_at"`
 }
 
 type navigationPushHistoryStore struct {
@@ -351,6 +353,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	wasActive := state.Active
 	routeInvalid := false
 	previousDestination := state.Destination
+	previousRemainingDistanceKM := cloneFloat(state.RemainingDistanceKM)
 	switch field {
 	case "display_name":
 		state.DisplayName = normalizedMQTTValue(value)
@@ -399,7 +402,12 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	// Mid-drive destination change: close previous session as redirected, open a new one.
 	if wasActive && shouldBeActive && state.SessionID != "" &&
 		previousDestination != "" && state.Destination != "" &&
-		!navigationDestinationEqual(previousDestination, state.Destination) {
+		navigationDestinationChangeStartsNewSession(
+			previousDestination,
+			state.Destination,
+			previousRemainingDistanceKM,
+			state.RemainingDistanceKM,
+		) {
 		if timer := m.pending[carID]; timer != nil {
 			timer.Stop()
 			delete(m.pending, carID)
@@ -410,6 +418,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		endEvent := m.makeEventLocked(carID, &endState, "navigation_ended", observedAt)
 		endEvent.Destination = previousDestination
 		endEvent.endReasonOverride = "redirected"
+		endEvent.EndReason = "redirected"
 
 		driveID, _, _ := currentDriveDistances(carID)
 		state.Active = true
@@ -577,7 +586,7 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 	}
 	idInput := fmt.Sprintf("%s:%s:%s:%d", m.installationID, state.SessionID, eventType, state.Sequence)
 	idHash := sha256.Sum256([]byte(idInput))
-	return navigationLiveActivityEvent{
+	event := navigationLiveActivityEvent{
 		EventID:               hex.EncodeToString(idHash[:16]),
 		InstallationID:        m.installationID,
 		CarID:                 carID,
@@ -598,6 +607,10 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		DurationMinutes:       durationMin,
 		ObservedAt:            observedAt.Format(time.RFC3339),
 	}
+	if eventType == "navigation_ended" {
+		event.EndReason = navigationEndReason(event)
+	}
+	return event
 }
 
 // resolveNavigationStartName prefers (1) live MQTT geofence, (2) sticky last
@@ -926,15 +939,15 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 	}
 	if idx < 0 {
 		session := navigationPushHistorySession{
-			SessionID:   event.SessionID,
-			CarID:       event.CarID,
-			VehicleName: event.VehicleName,
-			StartName:   strings.TrimSpace(event.StartName),
-			Destination: event.Destination,
-			StartedAt:   event.ObservedAt,
-			LastEventType: event.Type,
+			SessionID:          event.SessionID,
+			CarID:              event.CarID,
+			VehicleName:        event.VehicleName,
+			StartName:          strings.TrimSpace(event.StartName),
+			Destination:        event.Destination,
+			StartedAt:          event.ObservedAt,
+			LastEventType:      event.Type,
 			LastDeliveryStatus: delivery,
-			UpdatedAt:   now,
+			UpdatedAt:          now,
 		}
 		if event.Type == "navigation_started" || event.Type == "navigation_updated" {
 			session.StartRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
@@ -1004,6 +1017,9 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 }
 
 func navigationEndReason(event navigationLiveActivityEvent) string {
+	if strings.TrimSpace(event.EndReason) != "" {
+		return strings.TrimSpace(event.EndReason)
+	}
 	if strings.TrimSpace(event.endReasonOverride) != "" {
 		return strings.TrimSpace(event.endReasonOverride)
 	}
@@ -1018,6 +1034,30 @@ func navigationEndReason(event navigationLiveActivityEvent) string {
 
 func navigationDestinationEqual(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// Tesla may replace a street address with its geofence label (for example,
+// "20 Hi Mount Dr" -> "Home") while the physical route remains unchanged.
+// Treat a label-only change with nearly identical remaining distance as the
+// same session; a material route-distance change still starts a new session.
+func navigationDestinationChangeStartsNewSession(
+	previousDestination string,
+	currentDestination string,
+	previousRemainingDistanceKM *float64,
+	currentRemainingDistanceKM *float64,
+) bool {
+	if navigationDestinationEqual(previousDestination, currentDestination) {
+		return false
+	}
+	guardedPrevious := previousRemainingDistanceKM
+	guardedCurrent := currentRemainingDistanceKM
+	if guardedPrevious == nil || guardedCurrent == nil {
+		return true
+	}
+	previous := math.Max(0, *guardedPrevious)
+	current := math.Max(0, *guardedCurrent)
+	tolerance := math.Min(3, math.Max(0.8, math.Max(previous, current)*0.12))
+	return math.Abs(previous-current) > tolerance
 }
 
 func (m *navigationNotificationMonitor) historyForCar(carID int, limit int) []navigationPushHistorySession {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.18
+
+- Keeps one navigation session when Tesla changes only the destination label
+  (for example, a street address becomes `Home`) while the remaining route is
+  effectively unchanged.
+- Navigation end events now include an explicit `end_reason`, allowing the push
+  relay to distinguish genuine arrival from redirects and cancellations.
+- Prevents label-only route updates from generating redundant end/start push
+  pairs while preserving genuine mid-drive destination changes.
+- Backward compatible with previous My T versions; no stored-data migration.
+
 ## 1.10.17
 
 - Repackages the audited current `main` line so the public release includes the
