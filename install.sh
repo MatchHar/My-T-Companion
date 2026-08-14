@@ -275,24 +275,42 @@ mqtt_broker_url="$(
   resolve_secret MQTT_BROKER_URL "MQTT_URL" || true
 )"
 mqtt_needs_host_gateway=false
+host_mqtt_listening=false
+if ss -lntp 2>/dev/null | grep -qE ':1883\b' || netstat -lntp 2>/dev/null | grep -qE ':1883\b'; then
+  host_mqtt_listening=true
+fi
+# Stale HostBox / prior install may leave MQTT_BROKER_URL=host.docker.internal in
+# companion .env even when Mosquitto only runs as a Docker service (1883 not on host).
+# Prefer live Docker topology over that saved value so upgrades do not re-break MQTT.
+if [[ -n "$mqtt_broker_url" && "$mqtt_broker_url" == *host.docker.internal* && -n "$MQTT_CONTAINER" && "$host_mqtt_listening" != true ]]; then
+  log "MQTT: ignoring stale host.docker.internal (docker mosquitto present, host :1883 not listening)"
+  mqtt_broker_url=""
+fi
 if [[ -z "$mqtt_broker_url" ]]; then
   mqtt_host="$(resolve_secret MQTT_HOST "" || true)"
   mqtt_port="$(resolve_secret MQTT_PORT "" || printf '1883')"
-  if [[ -n "$mqtt_host" ]]; then
+  # Prefer Docker mosquitto on the TeslaMate network over a stale MQTT_HOST=host.docker.internal
+  if [[ -n "$MQTT_CONTAINER" ]]; then
+    mqtt_svc="$(
+      docker inspect "$MQTT_CONTAINER" --format '{{index .Config.Labels "com.docker.compose.service"}}' 2>/dev/null || true
+    )"
+    [[ -n "$mqtt_svc" ]] || mqtt_svc="mosquitto"
+    if [[ -n "$mqtt_host" && "$mqtt_host" != "host.docker.internal" && "$mqtt_host" != "localhost" && "$mqtt_host" != "127.0.0.1" ]]; then
+      # Explicit non-host MQTT_HOST wins (e.g. mqtt.example.com)
+      mqtt_broker_url="tcp://${mqtt_host}:${mqtt_port}"
+      log "MQTT: using MQTT_HOST=$mqtt_host"
+    else
+      mqtt_broker_url="tcp://${mqtt_svc}:1883"
+      log "MQTT: docker service '$mqtt_svc' on TeslaMate network"
+    fi
+  elif [[ -n "$mqtt_host" ]]; then
     mqtt_broker_url="tcp://${mqtt_host}:${mqtt_port}"
     # host-gateway / bare IP / localhost → Docker needs host.docker.internal mapping
     if [[ "$mqtt_host" == "host.docker.internal" || "$mqtt_host" == "localhost" || "$mqtt_host" == "127.0.0.1" ]]; then
       mqtt_needs_host_gateway=true
       mqtt_broker_url="tcp://host.docker.internal:${mqtt_port}"
     fi
-  elif [[ -n "$MQTT_CONTAINER" ]]; then
-    mqtt_svc="$(
-      docker inspect "$MQTT_CONTAINER" --format '{{index .Config.Labels "com.docker.compose.service"}}' 2>/dev/null || true
-    )"
-    [[ -n "$mqtt_svc" ]] || mqtt_svc="mosquitto"
-    mqtt_broker_url="tcp://${mqtt_svc}:1883"
-    log "MQTT: docker service '$mqtt_svc' on TeslaMate network"
-  elif ss -lntp 2>/dev/null | grep -qE ':1883\b' || netstat -lntp 2>/dev/null | grep -qE ':1883\b'; then
+  elif [[ "$host_mqtt_listening" == true ]]; then
     # HostBox and many VPS: system mosquitto, not a compose service
     mqtt_broker_url="tcp://host.docker.internal:1883"
     mqtt_needs_host_gateway=true
