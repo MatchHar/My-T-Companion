@@ -9,6 +9,8 @@
   relay to distinguish genuine arrival from redirects and cancellations.
 - Prevents label-only route updates from generating redundant end/start push
   pairs while preserving genuine mid-drive destination changes.
+- Builds with Go 1.26.6 so the released binary includes the current standard
+  library security fixes required by the vulnerability gate.
 - Backward compatible with previous My T versions; no stored-data migration.
 
 ## 1.10.17
