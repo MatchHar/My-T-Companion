@@ -498,3 +498,7 @@ func normalizedMQTTValue(value string) string {
 		return strings.TrimSpace(value)
 	}
 }
+
+func collapsedDisplayName(value string) string {
+	return strings.Join(strings.Fields(normalizedMQTTValue(value)), " ")
+}

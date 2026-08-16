@@ -134,6 +134,22 @@ func TestDestinationDistanceChangeStartsNewSession(t *testing.T) {
 	) != false {
 		t.Fatal("near-identical route distance must keep the current session")
 	}
+	if navigationDestinationChangeStartsNewSession(
+		"住家",
+		"Highway 7, Unionville, Markham",
+		nil,
+		floatPointer(19.6),
+	) != false {
+		t.Fatal("label swap with missing remaining km must keep the current session")
+	}
+	if navigationDestinationChangeStartsNewSession(
+		"Highway 7, Unionville, Markham",
+		"住家",
+		floatPointer(19.6),
+		nil,
+	) != false {
+		t.Fatal("label swap after remaining km arrives must keep the current session")
+	}
 }
 
 func TestNavigationEndReasonIsSerialized(t *testing.T) {

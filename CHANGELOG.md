@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.21
+
+- Keeps one navigation Live Activity when Tesla only renames the destination
+  (`住家` ↔ street address) or has not published remaining distance yet.
+- Collapses extra spaces in vehicle display names so lock-screen cards match
+  the App (`Lily's  Car` → `Lily's Car`).
+- Backward compatible with previous My T versions; no API or stored-data
+  migration.
+
 ## 1.10.20
 
 - Stops treating leftover TeslaMateAPI `:18081` as the public My T port during

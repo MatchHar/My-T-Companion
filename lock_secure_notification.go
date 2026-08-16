@@ -283,7 +283,7 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 	state := m.store.Cars[carID]
 	switch field {
 	case "display_name":
-		state.DisplayName = normalizedMQTTValue(raw)
+		state.DisplayName = collapsedDisplayName(raw)
 	case "locked":
 		state.Locked = parseMQTTBool(raw)
 	case "is_user_present":

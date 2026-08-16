@@ -356,7 +356,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	previousRemainingDistanceKM := cloneFloat(state.RemainingDistanceKM)
 	switch field {
 	case "display_name":
-		state.DisplayName = normalizedMQTTValue(value)
+		state.DisplayName = collapsedDisplayName(value)
 	case "state":
 		state.VehicleState = strings.ToLower(normalizedMQTTValue(value))
 	case "geofence":
@@ -1049,10 +1049,12 @@ func navigationDestinationChangeStartsNewSession(
 	if navigationDestinationEqual(previousDestination, currentDestination) {
 		return false
 	}
+	// Tesla often publishes the new label before miles/minutes. Missing
+	// remaining distance is a label swap, not a new route.
 	guardedPrevious := previousRemainingDistanceKM
 	guardedCurrent := currentRemainingDistanceKM
 	if guardedPrevious == nil || guardedCurrent == nil {
-		return true
+		return false
 	}
 	previous := math.Max(0, *guardedPrevious)
 	current := math.Max(0, *guardedCurrent)

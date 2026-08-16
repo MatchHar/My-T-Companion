@@ -32,7 +32,7 @@
     "teslamate": "teslamate/teslamate:4.0.1",
     "grafana": "teslamate/grafana:4.0.1",
     "teslamateapi": "tobiasehlert/teslamateapi:1.25.0",
-    "companion": "myt/companion:1.10.20",
+    "companion": "myt/companion:1.10.21",
     "postgres": "postgres:16",
     "mosquitto": "host-system (not docker)",
     "caddy": "caddy:2.8-alpine"
