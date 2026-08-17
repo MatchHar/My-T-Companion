@@ -34,7 +34,7 @@
     "teslamateapi": "tobiasehlert/teslamateapi:1.25.0",
     "companion": "myt/companion:1.10.21",
     "postgres": "postgres:16",
-    "mosquitto": "host-system (not docker)",
+    "mosquitto": "eclipse-mosquitto:2",
     "caddy": "caddy:2.8-alpine"
   },
   "ports": {
