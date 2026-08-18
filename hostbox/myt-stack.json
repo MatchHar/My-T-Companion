@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
   "template_id": "myt-stack",
-  "revision": "2026.08.14.2",
-  "updated_at": "2026-08-14T20:44:02Z",
+  "revision": "2026.08.18.1",
+  "updated_at": "2026-08-19T01:10:00Z",
   "min_app_version": "1.0.0",
   "channel": "stable",
   "title": "My T Server",
-  "notes_zh": "HostBox 部署卡版（公开）。postgres 默认 16，兼容既有数据卷。重部署保留现网主版本；跨主版本须备份后按 TeslaMate 文档迁移。",
+  "notes_zh": "TeslaMate / Grafana 跟随 GitHub 最新正式版（现 4.1.1）。postgres 默认 16，重部署保留现网主版本。",
   "upstream": {
     "teslamate": {
       "github": "teslamate-org/teslamate",
-      "follow_latest_release": false,
+      "follow_latest_release": true,
       "docker_image_prefix": "teslamate/teslamate"
     },
     "grafana": {
@@ -29,8 +29,8 @@
     }
   },
   "images": {
-    "teslamate": "teslamate/teslamate:4.0.1",
-    "grafana": "teslamate/grafana:4.0.1",
+    "teslamate": "teslamate/teslamate:4.1.1",
+    "grafana": "teslamate/grafana:4.1.1",
     "teslamateapi": "tobiasehlert/teslamateapi:1.25.0",
     "companion": "myt/companion:1.10.21",
     "postgres": "postgres:16",
