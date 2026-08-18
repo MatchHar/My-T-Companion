@@ -437,6 +437,12 @@ func relaySecretBytes(value string) []byte {
 	return []byte(value)
 }
 
+func (m *softwareNotificationMonitor) carState(carID int) carSoftwareState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.store.Cars[carID]
+}
+
 func (m *softwareNotificationMonitor) status() map[string]any {
 	m.mu.Lock()
 	defer m.mu.Unlock()

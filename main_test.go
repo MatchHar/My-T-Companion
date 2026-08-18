@@ -493,6 +493,37 @@ func TestParkingSecurityAndClimateTransitions(t *testing.T) {
 	}
 }
 
+func TestTeslaMate41WindowAndServiceModeEvents(t *testing.T) {
+	monitor := &parkingEventMonitor{
+		statePath:     filepath.Join(t.TempDir(), "parking-events.json"),
+		retentionDays: 365,
+		store: parkingEventStore{
+			Cars:   map[int]parkingEventCarState{},
+			Events: []parkingObservedEvent{},
+		},
+	}
+	at := time.Date(2026, 8, 18, 22, 0, 0, 0, time.UTC)
+	monitor.observe(2, "driver_front_window_open", "false", at)
+	monitor.observe(2, "service_mode", "false", at)
+	monitor.observe(2, "sun_roof_state", "closed", at)
+	monitor.observe(2, "driver_front_window_open", "true", at.Add(time.Minute))
+	monitor.observe(2, "service_mode", "true", at.Add(2*time.Minute))
+	monitor.observe(2, "sun_roof_state", "vent", at.Add(3*time.Minute))
+	want := []string{"driver_front_window_opened", "service_mode_started", "sunroof_opened"}
+	if len(monitor.store.Events) != len(want) {
+		t.Fatalf("got events %+v", monitor.store.Events)
+	}
+	for index, eventType := range want {
+		if monitor.store.Events[index].Type != eventType {
+			t.Fatalf("event %d=%q, want %q", index, monitor.store.Events[index].Type, eventType)
+		}
+	}
+	values := monitor.currentValues(2)
+	if values["driver_front_window_open"] != "true" || values["service_mode"] != "true" {
+		t.Fatalf("current values %+v", values)
+	}
+}
+
 func TestParsePageLimit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

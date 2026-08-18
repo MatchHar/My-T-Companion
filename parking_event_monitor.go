@@ -161,6 +161,14 @@ var parkingEventMQTTFields = []string{
 	"locked",
 	"sentry_mode",
 	"windows_open",
+	"driver_front_window_open",
+	"driver_rear_window_open",
+	"passenger_front_window_open",
+	"passenger_rear_window_open",
+	"sun_roof_state",
+	"sun_roof_installed",
+	"sun_roof_percent_open",
+	"service_mode",
 	"doors_open",
 	"trunk_open",
 	"frunk_open",
@@ -268,6 +276,23 @@ func parkingEventType(field, value string) string {
 		return boolEvent(value, "sentry_enabled", "sentry_disabled")
 	case "windows_open":
 		return boolEvent(value, "windows_opened", "windows_closed")
+	case "driver_front_window_open":
+		return boolEvent(value, "driver_front_window_opened", "driver_front_window_closed")
+	case "driver_rear_window_open":
+		return boolEvent(value, "driver_rear_window_opened", "driver_rear_window_closed")
+	case "passenger_front_window_open":
+		return boolEvent(value, "passenger_front_window_opened", "passenger_front_window_closed")
+	case "passenger_rear_window_open":
+		return boolEvent(value, "passenger_rear_window_opened", "passenger_rear_window_closed")
+	case "service_mode":
+		return boolEvent(value, "service_mode_started", "service_mode_ended")
+	case "sun_roof_state":
+		switch value {
+		case "open", "vent", "moving":
+			return "sunroof_opened"
+		case "closed":
+			return "sunroof_closed"
+		}
 	case "doors_open":
 		return boolEvent(value, "doors_opened", "doors_closed")
 	case "trunk_open":
@@ -294,6 +319,20 @@ func boolEvent(value, trueEvent, falseEvent string) string {
 		return falseEvent
 	}
 	return ""
+}
+
+func (m *parkingEventMonitor) currentValues(carID int) map[string]string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state := m.store.Cars[carID]
+	if state.Values == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(state.Values))
+	for key, value := range state.Values {
+		out[key] = value
+	}
+	return out
 }
 
 func (m *parkingEventMonitor) events(carID int, startDate, endDate time.Time) []parkingObservedEvent {

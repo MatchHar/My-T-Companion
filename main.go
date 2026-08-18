@@ -35,6 +35,7 @@ var (
 	currentDrivePath      = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
 	navigationHistoryPath = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/push-history$`)
 	parkingEventsPath     = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
+	companionStatusPath   = regexp.MustCompile(`^/api/v1/cars/(\d+)/companion-status$`)
 	softwarePush          *softwareNotificationMonitor
 	chargingPush          *chargingNotificationMonitor
 	navigationPush        *navigationNotificationMonitor
@@ -426,6 +427,9 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"parking_security_events",
 			"parking_climate_events",
 			"lock_secure_push",
+			"vehicle_detail_status",
+			"window_detail_status",
+			"service_mode_status",
 		},
 		"data_policy":                 "teslamate_read_only_observations",
 		"storage_mode":                "teslamate_source_of_truth",
@@ -482,6 +486,10 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 		handleParkingEvents(w, r, matches[1])
 		return
 	}
+	if matches := companionStatusPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
+		handleCompanionStatus(w, r, matches[1])
+		return
+	}
 
 	matches := carIDPath.FindStringSubmatch(r.URL.Path)
 	if len(matches) != 2 {
@@ -531,6 +539,83 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 			RecommendedRefreshSeconds: 30,
 		},
 	})
+}
+
+func mqttBool(values map[string]string, key string) any {
+	value, ok := values[key]
+	if !ok || value == "" {
+		return nil
+	}
+	switch value {
+	case "true", "1":
+		return true
+	case "false", "0":
+		return false
+	default:
+		return nil
+	}
+}
+
+func mqttInt(values map[string]string, key string) any {
+	value, ok := values[key]
+	if !ok || value == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
+
+func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !authorized(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	carID, err := strconv.Atoi(carIDValue)
+	if err != nil || carID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid car id"})
+		return
+	}
+	values := map[string]string{}
+	if parkingEvents != nil {
+		values = parkingEvents.currentValues(carID)
+	}
+	var software carSoftwareState
+	if softwarePush != nil {
+		software = softwarePush.carState(carID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"car_id":                     carID,
+			"service_mode":               mqttBool(values, "service_mode"),
+			"windows_open":               mqttBool(values, "windows_open"),
+			"driver_front_window_open":   mqttBool(values, "driver_front_window_open"),
+			"driver_rear_window_open":    mqttBool(values, "driver_rear_window_open"),
+			"passenger_front_window_open": mqttBool(values, "passenger_front_window_open"),
+			"passenger_rear_window_open": mqttBool(values, "passenger_rear_window_open"),
+			"sun_roof_installed":         mqttBool(values, "sun_roof_installed"),
+			"sun_roof_state":             emptyToNil(values["sun_roof_state"]),
+			"sun_roof_percent_open":      mqttInt(values, "sun_roof_percent_open"),
+			"update_available":           software.UpdateAvailable,
+			"update_version":             emptyToNil(software.UpdateVersion),
+			"software_version":           emptyToNil(software.Version),
+			"download_percent":           software.DownloadPercent,
+			"install_percent":            software.InstallPercent,
+		},
+	})
+}
+
+func emptyToNil(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func handleParkingEvents(w http.ResponseWriter, r *http.Request, carIDValue string) {

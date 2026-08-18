@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.22
+
+- TeslaMate 4.1: live companion-status overlay for per-window, sunroof, service mode, and software download/install percent.
+
 ## 1.10.21
 
 - Keeps one navigation Live Activity when Tesla only renames the destination
