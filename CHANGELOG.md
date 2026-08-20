@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.23
+
+- MQTT discovery treats a Restarting / Exited Docker Mosquitto as missing.
+- If HostBox left `MQTT_BROKER_URL=tcp://mosquitto:1883` but that container
+  cannot start (config EACCES) and host `:1883` is listening, install uses
+  `host.docker.internal` instead of killing TeslaMateAPI.
+- TeslaMate charges and trips still work if Companion is off.
+
 ## 1.10.22
 
 - TeslaMate 4.1: live companion-status overlay for per-window, sunroof, service mode, and software download/install percent.

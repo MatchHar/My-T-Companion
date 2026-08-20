@@ -233,9 +233,26 @@ API_CONTAINER="$(
 TESLAMATE_CONTAINER="$(
   find_compose_service_id teslamate || true
 )"
+mqtt_container_healthy() {
+  local id="${1:-}"
+  local running restarting status
+  [[ -n "$id" ]] || return 1
+  running="$(docker inspect "$id" --format '{{.State.Running}}' 2>/dev/null || echo false)"
+  restarting="$(docker inspect "$id" --format '{{.State.Restarting}}' 2>/dev/null || echo true)"
+  status="$(docker inspect "$id" --format '{{.State.Status}}' 2>/dev/null || echo '')"
+  [[ "$running" == "true" && "$restarting" == "false" && "$status" == "running" ]]
+}
+
 MQTT_CONTAINER="$(
   find_compose_service_id mosquitto mqtt eclipse-mosquitto broker || true
 )"
+# docker compose ps -q returns Exited / Restarting containers too. A dead
+# eclipse-mosquitto (config EACCES on some HostBox-native VPS) must not win
+# over a working host broker on :1883.
+if [[ -n "$MQTT_CONTAINER" ]] && ! mqtt_container_healthy "$MQTT_CONTAINER"; then
+  log "MQTT: docker mosquitto present but not healthy (running=$(docker inspect "$MQTT_CONTAINER" --format '{{.State.Running}} {{.State.Status}}' 2>/dev/null || echo unknown)) — ignoring"
+  MQTT_CONTAINER=""
+fi
 
 COMPOSE_CONFIG_CACHE="$(
   cd "$TESLAMATE_DIR"
@@ -284,6 +301,12 @@ fi
 # Prefer live Docker topology over that saved value so upgrades do not re-break MQTT.
 if [[ -n "$mqtt_broker_url" && "$mqtt_broker_url" == *host.docker.internal* && -n "$MQTT_CONTAINER" && "$host_mqtt_listening" != true ]]; then
   log "MQTT: ignoring stale host.docker.internal (docker mosquitto present, host :1883 not listening)"
+  mqtt_broker_url=""
+fi
+# Opposite stale value: HostBox 89 exported tcp://mosquitto:1883 even when the
+# docker broker was crash-looping and host :1883 was the working broker.
+if [[ -n "$mqtt_broker_url" && "$mqtt_broker_url" == *://mosquitto:* && -z "$MQTT_CONTAINER" && "$host_mqtt_listening" == true ]]; then
+  log "MQTT: ignoring tcp://mosquitto (docker broker unhealthy, host :1883 listening)"
   mqtt_broker_url=""
 fi
 if [[ -z "$mqtt_broker_url" ]]; then
