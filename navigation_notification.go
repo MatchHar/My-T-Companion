@@ -825,28 +825,69 @@ func (m *navigationNotificationMonitor) reconcileRestoredSessions(startedAt time
 }
 
 func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEvent) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
+	subs := []pushSubscriber{}
+	if pushRegistry != nil {
+		subs = pushRegistry.matching(event.CarID, func(s pushSubscriber) bool { return s.NavigationLiveActivity })
+	} else if m.installationID != "" {
+		subs = []pushSubscriber{{
+			InstallationID:         m.installationID,
+			RelayURL:               m.relayURL,
+			RelaySecret:            m.relaySecret,
+			NavigationLiveActivity: true,
+			Status:                 pushStatusActive,
+		}}
 	}
-	signature := hmac.New(sha256.New, relaySecretBytes(m.relaySecret))
-	_, _ = signature.Write(payload)
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.relayURL, bytes.NewReader(payload))
-	if err != nil {
-		return err
+	if len(subs) == 0 {
+		return nil
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-My-T-Installation", m.installationID)
-	request.Header.Set("X-My-T-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
-	response, err := m.httpClient.Do(request)
-	if err != nil {
-		return err
+	var last error
+	ok := 0
+	for _, sub := range subs {
+		copy := event
+		copy.InstallationID = sub.InstallationID
+		payload, err := json.Marshal(copy)
+		if err != nil {
+			last = err
+			continue
+		}
+		if pushRegistry != nil {
+			err = pushRegistry.deliverJSON(sub, payload)
+		} else {
+			signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
+			_, _ = signature.Write(payload)
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			request, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
+			if reqErr != nil {
+				cancel()
+				last = reqErr
+				continue
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-My-T-Installation", sub.InstallationID)
+			request.Header.Set("X-My-T-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
+			response, doErr := m.httpClient.Do(request)
+			cancel()
+			if doErr != nil {
+				last = doErr
+				continue
+			}
+			response.Body.Close()
+			if response.StatusCode < 200 || response.StatusCode >= 300 {
+				err = fmt.Errorf("relay returned HTTP %d", response.StatusCode)
+			}
+		}
+		if err != nil {
+			last = err
+			log.Printf("[warn] navigation fan-out installation=%s: %v", sub.InstallationID[:8], err)
+			continue
+		}
+		ok++
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("relay returned HTTP %d", response.StatusCode)
+	if ok == 0 {
+		if last == nil {
+			return fmt.Errorf("no navigation live-activity subscribers")
+		}
+		return last
 	}
 	return nil
 }

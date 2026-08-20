@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -41,6 +42,7 @@ var (
 	navigationPush        *navigationNotificationMonitor
 	parkingEvents         *parkingEventMonitor
 	lockSecurePush        *lockSecureNotificationMonitor
+	pushRegistry          *pushSubscriberRegistry
 )
 
 type telemetrySample struct {
@@ -136,6 +138,7 @@ func main() {
 
 	initDB()
 	defer db.Close()
+	pushRegistry = newPushSubscriberRegistry()
 	softwarePush = newSoftwareNotificationMonitorFromEnvironment()
 	softwarePush.start()
 	defer softwarePush.stop()
@@ -179,7 +182,7 @@ func main() {
 }
 
 func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete && r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -187,14 +190,72 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 		return
 	}
+	if pushRegistry == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Unavailable"})
+		return
+	}
+	selfID := installationIDFromRequest(r)
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, pushRegistry.snapshot(selfID))
+		return
+	}
 	if r.Method == http.MethodDelete {
-		if softwarePush == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Unavailable"})
-			return
-		}
-		if err := softwarePush.disable(); err != nil {
+		result, err := pushRegistry.unsubscribe(selfID)
+		if err != nil {
+			if err.Error() == "need_installation_id" {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error":   "need_installation_id",
+					"message": "Multiple push subscribers are registered; send X-My-T-Installation to remove only this iPhone.",
+				})
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Unpair failed"})
 			return
+		}
+		applyRegistryToMonitors()
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	defer r.Body.Close()
+	var req pushPairRequest
+	decoder := json.NewDecoder(r.Body)
+	if decoder.Decode(&req) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pairing"})
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(req.Status), "paused") && req.InstallationID != "" {
+		result, err := pushRegistry.pause(req.InstallationID)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		applyRegistryToMonitors()
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	result, err := pushRegistry.upsert(req)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "subscriber_limit" {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	applyRegistryToMonitors()
+	writeJSON(w, http.StatusOK, result)
+}
+
+func applyRegistryToMonitors() {
+	if pushRegistry == nil {
+		return
+	}
+	snap := pushRegistry.snapshot("")
+	count, _ := snap["subscriber_count"].(int)
+	if count == 0 {
+		if softwarePush != nil {
+			_ = softwarePush.disable()
 		}
 		if chargingPush != nil {
 			chargingPush.disable()
@@ -205,41 +266,29 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 		if lockSecurePush != nil {
 			lockSecurePush.disablePairing()
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"paired": false})
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
-	defer r.Body.Close()
+	pairingPath := filepath.Join(filepath.Dir(getenv("PUSH_STATE_PATH", "/data/software-notifications.json")), "software-push-pairing.json")
+	data, err := os.ReadFile(pairingPath)
+	if err != nil {
+		return
+	}
 	var pairing softwarePushPairing
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&pairing) != nil || softwarePush == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pairing"})
+	if json.Unmarshal(data, &pairing) != nil || pairing.InstallationID == "" {
 		return
 	}
-	if err := softwarePush.configure(pairing); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid pairing"})
-		return
+	if softwarePush != nil {
+		_ = softwarePush.configure(pairing)
 	}
 	if chargingPush != nil {
-		if err := chargingPush.configure(pairing); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid charging pairing"})
-			return
-		}
+		_ = chargingPush.configure(pairing)
 	}
 	if navigationPush != nil {
-		if err := navigationPush.configure(pairing); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid navigation pairing"})
-			return
-		}
+		_ = navigationPush.configure(pairing)
 	}
 	if lockSecurePush != nil {
-		if err := lockSecurePush.configure(pairing); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid lock-secure pairing"})
-			return
-		}
+		_ = lockSecurePush.configure(pairing)
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"paired": true})
 }
 
 func handleLockSecurePreferences(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +316,9 @@ func handleLockSecurePreferences(w http.ResponseWriter, r *http.Request) {
 	if err := decoder.Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid body"})
 		return
+	}
+	if body.InstallationID == "" {
+		body.InstallationID = installationIDFromRequest(r)
 	}
 	result, err := lockSecurePush.applyPreferences(body)
 	if err != nil {
@@ -427,6 +479,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"parking_security_events",
 			"parking_climate_events",
 			"lock_secure_push",
+			"push_subscribers",
 			"vehicle_detail_status",
 			"window_detail_status",
 			"service_mode_status",

@@ -519,20 +519,63 @@ func (m *chargingNotificationMonitor) deliverWithRetry(event chargingLiveActivit
 }
 
 func (m *chargingNotificationMonitor) deliver(event chargingLiveActivityEvent) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
+	subs := []pushSubscriber{}
+	if pushRegistry != nil {
+		subs = pushRegistry.matching(event.CarID, func(s pushSubscriber) bool { return s.ChargingLiveActivity })
+	} else if m.installationID != "" {
+		subs = []pushSubscriber{{
+			InstallationID:       m.installationID,
+			RelayURL:             m.relayURL,
+			RelaySecret:          m.relaySecret,
+			ChargingLiveActivity: true,
+			Status:               pushStatusActive,
+		}}
 	}
-	signature := hmac.New(sha256.New, relaySecretBytes(m.relaySecret))
+	if len(subs) == 0 {
+		return nil
+	}
+	var last error
+	ok := 0
+	for _, sub := range subs {
+		copy := event
+		copy.InstallationID = sub.InstallationID
+		payload, err := json.Marshal(copy)
+		if err != nil {
+			last = err
+			continue
+		}
+		if pushRegistry != nil {
+			err = pushRegistry.deliverJSON(sub, payload)
+		} else {
+			err = m.deliverLegacy(sub, payload)
+		}
+		if err != nil {
+			last = err
+			log.Printf("[warn] charging fan-out installation=%s: %v", sub.InstallationID[:8], err)
+			continue
+		}
+		ok++
+	}
+	if ok == 0 {
+		if last == nil {
+			return fmt.Errorf("no charging live-activity subscribers")
+		}
+		return last
+	}
+	return nil
+}
+
+func (m *chargingNotificationMonitor) deliverLegacy(sub pushSubscriber, payload []byte) error {
+	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.relayURL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-My-T-Installation", m.installationID)
+	request.Header.Set("X-My-T-Installation", sub.InstallationID)
 	request.Header.Set("X-My-T-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
 	response, err := m.httpClient.Do(request)
 	if err != nil {

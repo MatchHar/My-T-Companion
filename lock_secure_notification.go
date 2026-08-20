@@ -318,8 +318,7 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 		return
 	}
 
-	shouldPush := m.prefs.Enabled && m.paired && m.installationID != "" &&
-		secure && !wasSecure
+	shouldPush := secure && !wasSecure && m.hasLockSecureTargets(carID)
 	if !shouldPush {
 		m.mu.Unlock()
 		return
@@ -333,21 +332,71 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 			}
 		}
 	}
-	event := m.makeEvent(carID, state, observedAt)
-	if _, ok := m.store.Delivered[event.EventID]; ok {
+	originID := lockSecureOriginID(carID, observedAt)
+	if _, ok := m.store.Delivered[originID]; ok {
 		m.mu.Unlock()
 		return
 	}
-	if m.inFlight[event.EventID] {
+	if m.inFlight[originID] {
 		m.mu.Unlock()
 		return
 	}
-	m.inFlight[event.EventID] = true
+	m.inFlight[originID] = true
 	state.LastPushedAt = observedAt.Format(time.RFC3339)
 	m.store.Cars[carID] = state
 	_ = m.saveStateLocked()
 	m.mu.Unlock()
-	go m.deliverWithRetry(*event)
+	go m.fanOutLockSecure(originID, carID, state, observedAt)
+}
+
+func (m *lockSecureNotificationMonitor) hasLockSecureTargets(carID int) bool {
+	if pushRegistry != nil {
+		return len(pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.LockSecure })) > 0
+	}
+	return m.prefs.Enabled && m.paired && m.installationID != ""
+}
+
+func lockSecureOriginID(carID int, observedAt time.Time) string {
+	return fmt.Sprintf("%d:vehicle_lock_secure:%s", carID, observedAt.UTC().Format("200601021504"))
+}
+
+func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID int, state lockSecureCarState, observedAt time.Time) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.inFlight, originID)
+		m.mu.Unlock()
+	}()
+	subs := []pushSubscriber{}
+	if pushRegistry != nil {
+		subs = pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.LockSecure })
+	} else if m.installationID != "" {
+		subs = []pushSubscriber{{
+			InstallationID: m.installationID,
+			RelayURL:       m.relayURL,
+			RelaySecret:    m.relaySecret,
+			LockSecure:     true,
+			Status:         pushStatusActive,
+		}}
+	}
+	deliveredAny := false
+	for _, sub := range subs {
+		event := m.makeEventFor(sub.InstallationID, carID, state, observedAt)
+		if err := m.deliverTo(sub, *event); err != nil {
+			log.Printf("[warn] lock-secure fan-out installation=%s: %v", sub.InstallationID[:8], err)
+			continue
+		}
+		deliveredAny = true
+	}
+	if !deliveredAny {
+		return
+	}
+	m.mu.Lock()
+	m.store.Delivered[originID] = observedAt.Format(time.RFC3339)
+	m.lastError = ""
+	now := time.Now().UTC()
+	m.lastEventAt = &now
+	_ = m.saveStateLocked()
+	m.mu.Unlock()
 }
 
 func lockSecureIsSecure(state lockSecureCarState) bool {
@@ -391,18 +440,18 @@ func normalizeLockSecureSound(sound string) string {
 	return "default"
 }
 
-func (m *lockSecureNotificationMonitor) makeEvent(
+func (m *lockSecureNotificationMonitor) makeEventFor(
+	installationID string,
 	carID int,
 	state lockSecureCarState,
 	observedAt time.Time,
 ) *lockSecurePushEvent {
-	// Edge identity: car + day-minute of first secure transition.
 	bucket := observedAt.UTC().Format("200601021504")
-	idInput := fmt.Sprintf("%s:%d:vehicle_lock_secure:%s", m.installationID, carID, bucket)
+	idInput := fmt.Sprintf("%s:%d:vehicle_lock_secure:%s", installationID, carID, bucket)
 	idHash := sha256.Sum256([]byte(idInput))
 	return &lockSecurePushEvent{
 		EventID:        hex.EncodeToString(idHash[:16]),
-		InstallationID: m.installationID,
+		InstallationID: installationID,
 		CarID:          carID,
 		VehicleName:    state.DisplayName,
 		Type:           "vehicle_lock_secure",
@@ -410,52 +459,28 @@ func (m *lockSecureNotificationMonitor) makeEvent(
 	}
 }
 
-func (m *lockSecureNotificationMonitor) deliverWithRetry(event lockSecurePushEvent) {
-	defer func() {
-		m.mu.Lock()
-		delete(m.inFlight, event.EventID)
-		m.mu.Unlock()
-	}()
-	delays := []time.Duration{0, 5 * time.Second, 30 * time.Second, 2 * time.Minute}
-	for attempt, delay := range delays {
-		if delay > 0 {
-			time.Sleep(delay)
+func (m *lockSecureNotificationMonitor) deliverTo(sub pushSubscriber, event lockSecurePushEvent) error {
+	if pushRegistry != nil {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return err
 		}
-		if err := m.deliver(event); err != nil {
-			m.mu.Lock()
-			m.lastError = err.Error()
-			m.mu.Unlock()
-			log.Printf("[warn] lock-secure push event=%s attempt=%d: %v", event.EventID, attempt+1, err)
-			continue
-		}
-		m.mu.Lock()
-		m.store.Delivered[event.EventID] = event.ObservedAt
-		m.lastError = ""
-		now := time.Now().UTC()
-		m.lastEventAt = &now
-		_ = m.saveStateLocked()
-		m.mu.Unlock()
-		log.Printf("[info] lock-secure push delivered event=%s car=%d", event.EventID, event.CarID)
-		return
+		return pushRegistry.deliverJSON(sub, payload)
 	}
-}
-
-func (m *lockSecureNotificationMonitor) deliver(event lockSecurePushEvent) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	signature := hmac.New(sha256.New, relaySecretBytes(m.relaySecret))
+	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.relayURL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-My-T-Installation", m.installationID)
+	request.Header.Set("X-My-T-Installation", sub.InstallationID)
 	request.Header.Set("X-My-T-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
 	response, err := m.httpClient.Do(request)
 	if err != nil {
@@ -506,15 +531,16 @@ func (m *lockSecureNotificationMonitor) status() map[string]any {
 }
 
 type lockSecurePutBody struct {
-	Enabled *bool  `json:"enabled"`
-	Sound   string `json:"sound"`
+	Enabled        *bool  `json:"enabled"`
+	Sound          string `json:"sound"`
+	InstallationID string `json:"installation_id,omitempty"`
 }
 
 func (m *lockSecureNotificationMonitor) applyPreferences(body lockSecurePutBody) (map[string]any, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if body.Enabled != nil && *body.Enabled {
-		if !m.paired || m.installationID == "" {
+		if pushRegistry == nil && (!m.paired || m.installationID == "") {
 			return nil, fmt.Errorf("not_paired")
 		}
 		m.prefs.Enabled = true
@@ -527,6 +553,11 @@ func (m *lockSecureNotificationMonitor) applyPreferences(body lockSecurePutBody)
 	m.prefs.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := m.savePrefsLocked(); err != nil {
 		return nil, err
+	}
+	if pushRegistry != nil && strings.TrimSpace(body.InstallationID) != "" && body.Enabled != nil {
+		if err := pushRegistry.setLockSecure(body.InstallationID, *body.Enabled); err != nil && err.Error() != "not_paired" {
+			return nil, err
+		}
 	}
 	return map[string]any{
 		"enabled":   m.prefs.Enabled,

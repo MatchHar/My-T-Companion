@@ -105,7 +105,11 @@ func TestSoftwareNotificationRelaySignatureAndPrivacy(t *testing.T) {
 		UpdateVersion:  "2026.26.3",
 		ObservedAt:     "2026-07-27T12:00:00Z",
 	}
-	if err := monitor.deliver(event); err != nil {
+	if err := monitor.deliverTo(pushSubscriber{
+		InstallationID: event.InstallationID,
+		RelayURL:       server.URL,
+		RelaySecret:    secret,
+	}, event); err != nil {
 		t.Fatal(err)
 	}
 	if received.UpdateVersion != event.UpdateVersion || received.InstallationID != event.InstallationID {
@@ -663,7 +667,7 @@ func TestLockSecureSoundWhitelistMatchesAdvertisedSet(t *testing.T) {
 
 func TestLockSecureEventDoesNotSendDeviceSoundPreference(t *testing.T) {
 	monitor := &lockSecureNotificationMonitor{installationID: strings.Repeat("a", 48)}
-	event := monitor.makeEvent(7, lockSecureCarState{DisplayName: "My T"}, time.Now().UTC())
+	event := monitor.makeEventFor(strings.Repeat("a", 48), 7, lockSecureCarState{DisplayName: "My T"}, time.Now().UTC())
 	if event.Sound != "" {
 		t.Fatalf("device-local sound leaked into relay event: %q", event.Sound)
 	}

@@ -327,43 +327,90 @@ func (m *softwareNotificationMonitor) observe(carID int, field, value string, ob
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
 
-	var event *softwareNotificationEvent
+	var eventType, eventVersion string
 	if state.UpdateAvailable && state.UpdateVersion != "" &&
 		(!previous.UpdateAvailable || previous.UpdateVersion != state.UpdateVersion) {
-		event = m.makeEvent(carID, state, "update_available", state.UpdateVersion, observedAt)
+		eventType, eventVersion = "update_available", state.UpdateVersion
 	} else if field == "version" && previous.Version != "" && state.Version != "" &&
 		previous.Version != state.Version {
-		event = m.makeEvent(carID, state, "update_installed", state.Version, observedAt)
+		eventType, eventVersion = "update_installed", state.Version
 	}
-	if event == nil {
+	if eventType == "" {
 		m.mu.Unlock()
 		return
 	}
-	if _, delivered := m.store.Delivered[event.EventID]; delivered {
+	originID := fmt.Sprintf("%d:%s:%s", carID, eventType, eventVersion)
+	if _, delivered := m.store.Delivered[originID]; delivered {
 		m.mu.Unlock()
 		return
 	}
-	if m.inFlight[event.EventID] {
+	if m.inFlight[originID] {
 		m.mu.Unlock()
 		return
 	}
-	m.inFlight[event.EventID] = true
+	m.inFlight[originID] = true
 	m.mu.Unlock()
 
-	go m.deliverWithRetry(*event)
+	go m.fanOutSoftware(originID, carID, state, eventType, eventVersion, observedAt)
+}
+
+func (m *softwareNotificationMonitor) fanOutSoftware(
+	originID string,
+	carID int,
+	state carSoftwareState,
+	eventType, eventVersion string,
+	observedAt time.Time,
+) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.inFlight, originID)
+		m.mu.Unlock()
+	}()
+	subs := []pushSubscriber{}
+	if pushRegistry != nil {
+		subs = pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.SoftwareUpdate })
+	} else if m.installationID != "" {
+		subs = []pushSubscriber{{
+			InstallationID: m.installationID,
+			RelayURL:       m.relayURL,
+			RelaySecret:    m.relaySecret,
+			SoftwareUpdate: true,
+			Status:         pushStatusActive,
+		}}
+	}
+	deliveredAny := false
+	for _, sub := range subs {
+		event := m.makeEvent(sub.InstallationID, carID, state, eventType, eventVersion, observedAt)
+		if err := m.deliverTo(sub, *event); err != nil {
+			log.Printf("[warn] software fan-out installation=%s: %v", sub.InstallationID[:8], err)
+			continue
+		}
+		deliveredAny = true
+	}
+	if !deliveredAny {
+		return
+	}
+	m.mu.Lock()
+	m.store.Delivered[originID] = observedAt.Format(time.RFC3339)
+	m.lastError = ""
+	now := time.Now().UTC()
+	m.lastEventAt = &now
+	_ = m.saveLocked()
+	m.mu.Unlock()
 }
 
 func (m *softwareNotificationMonitor) makeEvent(
+	installationID string,
 	carID int,
 	state carSoftwareState,
 	eventType, eventVersion string,
 	observedAt time.Time,
 ) *softwareNotificationEvent {
-	idInput := fmt.Sprintf("%s:%d:%s:%s", m.installationID, carID, eventType, eventVersion)
+	idInput := fmt.Sprintf("%s:%d:%s:%s", installationID, carID, eventType, eventVersion)
 	idHash := sha256.Sum256([]byte(idInput))
 	return &softwareNotificationEvent{
 		EventID:        hex.EncodeToString(idHash[:16]),
-		InstallationID: m.installationID,
+		InstallationID: installationID,
 		CarID:          carID,
 		VehicleName:    state.DisplayName,
 		Type:           eventType,
@@ -373,51 +420,24 @@ func (m *softwareNotificationMonitor) makeEvent(
 	}
 }
 
-func (m *softwareNotificationMonitor) deliverWithRetry(event softwareNotificationEvent) {
-	defer func() {
-		m.mu.Lock()
-		delete(m.inFlight, event.EventID)
-		m.mu.Unlock()
-	}()
-	delays := []time.Duration{0, 5 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute}
-	for attempt, delay := range delays {
-		if delay > 0 {
-			time.Sleep(delay)
-		}
-		if err := m.deliver(event); err != nil {
-			m.mu.Lock()
-			m.lastError = err.Error()
-			m.mu.Unlock()
-			log.Printf("[warn] push relay event=%s attempt=%d: %v", event.EventID, attempt+1, err)
-			continue
-		}
-		m.mu.Lock()
-		m.store.Delivered[event.EventID] = event.ObservedAt
-		m.lastError = ""
-		now := time.Now().UTC()
-		m.lastEventAt = &now
-		_ = m.saveLocked()
-		m.mu.Unlock()
-		return
-	}
-}
-
-func (m *softwareNotificationMonitor) deliver(event softwareNotificationEvent) error {
+func (m *softwareNotificationMonitor) deliverTo(sub pushSubscriber, event softwareNotificationEvent) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	signature := hmac.New(sha256.New, relaySecretBytes(m.relaySecret))
+	if pushRegistry != nil {
+		return pushRegistry.deliverJSON(sub, payload)
+	}
+	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.relayURL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-My-T-Installation", m.installationID)
+	request.Header.Set("X-My-T-Installation", sub.InstallationID)
 	request.Header.Set("X-My-T-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
 	response, err := m.httpClient.Do(request)
 	if err != nil {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.24
+
+- Push subscribers: one iPhone is one `installation_id`. Switching TeslaMate
+  servers pauses this phone on the previous VPS instead of wiping everyone.
+- Coming back to a server resumes the same row (not a new device).
+- Each phone can choose software-update, lock-secure, charging lock-screen,
+  and destination-trip Live Activity independently, plus which cars.
+- Legacy `POST /pair` still upserts. `DELETE /pair` without an installation
+  header is rejected when more than one phone is registered.
+
 ## 1.10.23
 
 - MQTT discovery treats a Restarting / Exited Docker Mosquitto as missing.
