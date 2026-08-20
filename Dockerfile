@@ -6,9 +6,12 @@ RUN go mod download
 # List production sources explicitly so a missed install-copy cannot silently omit a file
 # (Docker `COPY *.go` only builds whatever is present; missing lock_secure caused undefined types).
 COPY VERSION ./
-COPY main.go notification.go charging_notification.go navigation_notification.go \
-     parking_event_monitor.go storage_policy.go lock_secure_notification.go ./
+# Copy every Go file. An explicit filename list (1.10.15–1.10.24) omitted
+# new production sources such as push_subscribers.go, so `go build` failed
+# on VPS while GitHub CI was sometimes bypassed.
+COPY *.go ./
 RUN test -f lock_secure_notification.go \
+  && test -f push_subscribers.go \
   && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/states-api .
 
 FROM alpine:3.24

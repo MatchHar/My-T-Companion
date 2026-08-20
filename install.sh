@@ -211,7 +211,8 @@ require_command curl
 [[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" &&
    -f "$SOURCE_DIR/notification.go" && -f "$SOURCE_DIR/charging_notification.go" &&
    -f "$SOURCE_DIR/navigation_notification.go" && -f "$SOURCE_DIR/parking_event_monitor.go" &&
-   -f "$SOURCE_DIR/storage_policy.go" && -f "$SOURCE_DIR/lock_secure_notification.go" ]] \
+   -f "$SOURCE_DIR/storage_policy.go" && -f "$SOURCE_DIR/lock_secure_notification.go" &&
+   -f "$SOURCE_DIR/push_subscribers.go" ]] \
   || fail "Run install.sh from a complete My-T-Companion checkout."
 
 log "Checking the existing TeslaMate deployment"
@@ -443,6 +444,7 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
     parking_event_monitor.go
     storage_policy.go
     lock_secure_notification.go
+    push_subscribers.go
   )
   for name in "${required_go[@]}"; do
     [[ -f "$SOURCE_DIR/$name" ]] || fail "Release package missing $name"
@@ -481,9 +483,18 @@ else
 fi
 # Always verify production sources before docker build (covers in-place reinstalls).
 for name in main.go notification.go charging_notification.go navigation_notification.go \
-  parking_event_monitor.go storage_policy.go lock_secure_notification.go Dockerfile VERSION; do
+  parking_event_monitor.go storage_policy.go lock_secure_notification.go \
+  push_subscribers.go Dockerfile VERSION; do
   [[ -f "$INSTALL_DIR/$name" ]] || fail "Missing build file: $INSTALL_DIR/$name — re-run from a complete release package"
 done
+if ! grep -qE '^COPY[[:space:]]+\*\.go' "$INSTALL_DIR/Dockerfile"; then
+  for go_file in "$INSTALL_DIR"/*.go; do
+    base="$(basename "$go_file")"
+    [[ "$base" == *_test.go ]] && continue
+    grep -qF "$base" "$INSTALL_DIR/Dockerfile" \
+      || fail "Dockerfile does not COPY $base — cannot build Companion $VERSION"
+  done
+fi
 # Always refresh doctor when present in source (also on in-place reinstall).
 if [[ -f "$SOURCE_DIR/scripts/myt-doctor.sh" ]]; then
   install -m 0755 "$SOURCE_DIR/scripts/myt-doctor.sh" "$INSTALL_DIR/myt-doctor.sh"

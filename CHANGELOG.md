@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.25
+
+- Docker image copies every `*.go` file so a new source (1.10.24
+  `push_subscribers.go`) cannot be omitted from `go build`.
+- Installer refuses to start the image build if the Dockerfile would drop a
+  production `.go` file. CI and `build-release.sh` run the same check.
+- Same features as 1.10.24 (per-iPhone push subscribers). 1.10.24 itself
+  cannot be installed on a VPS.
+
 ## 1.10.24
 
 - Push subscribers: one iPhone is one `installation_id`. Switching TeslaMate
