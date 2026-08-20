@@ -294,14 +294,16 @@ mqtt_broker_url="$(
 )"
 mqtt_needs_host_gateway=false
 host_mqtt_listening=false
-if ss -lntp 2>/dev/null | grep -qE ':1883\b' || netstat -lntp 2>/dev/null | grep -qE ':1883\b'; then
+# Containers use docker0 / host-gateway (172.17.0.1), not 127.0.0.1.
+if ss -lntp 2>/dev/null | grep -qE '(0\.0\.0\.0|\*):1883\b' \
+  || netstat -lntp 2>/dev/null | grep -qE '0\.0\.0\.0:1883\b'; then
   host_mqtt_listening=true
 fi
 # Stale HostBox / prior install may leave MQTT_BROKER_URL=host.docker.internal in
 # companion .env even when Mosquitto only runs as a Docker service (1883 not on host).
 # Prefer live Docker topology over that saved value so upgrades do not re-break MQTT.
-if [[ -n "$mqtt_broker_url" && "$mqtt_broker_url" == *host.docker.internal* && -n "$MQTT_CONTAINER" && "$host_mqtt_listening" != true ]]; then
-  log "MQTT: ignoring stale host.docker.internal (docker mosquitto present, host :1883 not listening)"
+if [[ -n "$mqtt_broker_url" && "$mqtt_broker_url" == *host.docker.internal* && -n "$MQTT_CONTAINER" ]]; then
+  log "MQTT: ignoring stale host.docker.internal (docker mosquitto present)"
   mqtt_broker_url=""
 fi
 # Opposite stale value: HostBox 89 exported tcp://mosquitto:1883 even when the
@@ -617,7 +619,7 @@ docker compose \
   --file "$COMPOSE_FILE" \
   up -d companion
 
-for _ in $(seq 1 30); do
+for _ in $(seq 1 90); do
   if curl --fail --silent --show-error http://127.0.0.1:8083/api/healthz >/dev/null; then
     break
   fi
