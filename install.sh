@@ -956,17 +956,24 @@ fi
 
 # Tunnel / HostBox sidecar: Companion is already the My T enhancement
 # endpoint on loopback :8083. Do not hijack TeslaMateAPI onto :18081.
+# Only skip the public edge when the phone URL is :8083 or cloudflared is
+# in front. A LAN My T base_url of :8081 plus a live :8083 is NOT sidecar —
+# HostBox used to skip the edge and My T showed 未安装或未接入.
 if [[ "$proxy_ready" != true ]]; then
   if curl --fail --silent --show-error \
     -H "Authorization: Bearer $api_token" \
     "http://127.0.0.1:8083/api/v1/capabilities" 2>/dev/null \
     | grep -q 'my-t-companion\|parking_state_history'; then
-    if [[ -n "$MY_T_BASE_URL" ]] \
+    sidecar_url=false
+    [[ "${MY_T_BASE_URL:-}" == *":8083"* ]] && sidecar_url=true
+    if [[ "$sidecar_url" == true ]] \
       || systemctl is-active --quiet cloudflared 2>/dev/null \
       || pgrep -x cloudflared >/dev/null 2>&1; then
       proxy_ready=true
       MY_T_BASE_URL="${MY_T_BASE_URL:-http://127.0.0.1:8083}"
-      log "Companion :8083 already serves capabilities — skipping public API edge"
+      log "Companion :8083 already serves capabilities — skipping public API edge (tunnel/sidecar)"
+    else
+      log "Companion :8083 is healthy, but My T uses ${MY_T_BASE_URL:-:8081} — still need a public API edge"
     fi
   fi
 fi
