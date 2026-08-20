@@ -65,6 +65,46 @@ func TestPushSubscriberUpsertDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+func TestPushSubscriberStoresTripAlertsSeparatelyFromLiveActivity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	on, off := true, false
+	snap, err := reg.upsert(pushPairRequest{
+		InstallationID:         id,
+		RelayURL:               url,
+		RelaySecret:            secret,
+		ChargingLiveActivity:   &on,
+		NavigationLiveActivity: &on,
+		NavigationTripAlerts:   &off,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap["navigation_live_activity"] != true {
+		t.Fatalf("live activity=%v", snap["navigation_live_activity"])
+	}
+	if snap["navigation_trip_alerts"] != false {
+		t.Fatalf("trip alerts=%v", snap["navigation_trip_alerts"])
+	}
+	updated, err := reg.upsert(pushPairRequest{
+		InstallationID:       id,
+		RelayURL:             url,
+		RelaySecret:          secret,
+		NavigationTripAlerts: &on,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated["navigation_live_activity"] != true {
+		t.Fatal("upsert must not clear live-activity when only trip alerts change")
+	}
+	if updated["navigation_trip_alerts"] != true {
+		t.Fatalf("trip alerts=%v", updated["navigation_trip_alerts"])
+	}
+}
+
 func TestPushSubscriberPauseUnknownIsNoop(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))

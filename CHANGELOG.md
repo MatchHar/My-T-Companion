@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.26
+
+- Lock-screen Live Activities (charging + destination trip) are one subscriber
+  flag pair. Destination start/arrival banners use a new `navigation_trip_alerts`
+  flag and are not the lock-screen card.
+- Capability: `navigation_trip_alerts`. Older My T builds ignore it.
+
 ## 1.10.25
 
 - Docker image copies every `*.go` file so a new source (1.10.24

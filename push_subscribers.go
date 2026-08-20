@@ -35,6 +35,7 @@ type pushSubscriber struct {
 	LockSecure             bool                 `json:"lock_secure"`
 	ChargingLiveActivity   bool                 `json:"charging_live_activity"`
 	NavigationLiveActivity bool                 `json:"navigation_live_activity"`
+	NavigationTripAlerts   bool                 `json:"navigation_trip_alerts"`
 	CarIDs                 []int                `json:"car_ids,omitempty"`
 	UpdatedAt              string               `json:"updated_at,omitempty"`
 	LastSeenAt             string               `json:"last_seen_at,omitempty"`
@@ -165,6 +166,7 @@ type pushPairRequest struct {
 	LockSecure             *bool  `json:"lock_secure,omitempty"`
 	ChargingLiveActivity   *bool  `json:"charging_live_activity,omitempty"`
 	NavigationLiveActivity *bool  `json:"navigation_live_activity,omitempty"`
+	NavigationTripAlerts   *bool  `json:"navigation_trip_alerts,omitempty"`
 	CarIDs                 []int  `json:"car_ids,omitempty"`
 }
 
@@ -230,6 +232,9 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 	}
 	if req.NavigationLiveActivity != nil {
 		sub.NavigationLiveActivity = *req.NavigationLiveActivity
+	}
+	if req.NavigationTripAlerts != nil {
+		sub.NavigationTripAlerts = *req.NavigationTripAlerts
 	}
 	if req.CarIDs != nil {
 		sub.CarIDs = append([]int(nil), req.CarIDs...)
@@ -356,6 +361,7 @@ func (r *pushSubscriberRegistry) snapshotLocked(installationID string) map[strin
 		result["lock_secure"] = prefs.LockSecure
 		result["charging_live_activity"] = prefs.ChargingLiveActivity
 		result["navigation_live_activity"] = prefs.NavigationLiveActivity
+		result["navigation_trip_alerts"] = prefs.NavigationTripAlerts
 		result["car_ids"] = prefs.CarIDs
 	}
 	return result

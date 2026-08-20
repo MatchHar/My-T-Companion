@@ -473,6 +473,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"navigation_live_activity_events",
 			"navigation_live_activity_push_to_start",
 			"navigation_live_activity_remote_updates",
+			"navigation_trip_alerts",
 			"navigation_push_history",
 			"parking_observed_events",
 			"parking_charge_connection_events",

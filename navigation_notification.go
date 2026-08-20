@@ -825,10 +825,41 @@ func (m *navigationNotificationMonitor) reconcileRestoredSessions(startedAt time
 }
 
 func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEvent) error {
+	laErr := m.deliverTo(event, func(s pushSubscriber) bool { return s.NavigationLiveActivity })
+	alertType := ""
+	switch event.Type {
+	case "navigation_started":
+		alertType = "destination_trip_started"
+	case "navigation_ended":
+		if navigationEndReason(event) == "arrived" {
+			alertType = "destination_trip_arrived"
+		}
+	}
+	var alertErr error
+	if alertType != "" {
+		alertEvent := event
+		alertEvent.Type = alertType
+		alertEvent.EventID = event.EventID + ":" + alertType
+		alertErr = m.deliverTo(alertEvent, func(s pushSubscriber) bool { return s.NavigationTripAlerts })
+	}
+	if laErr != nil {
+		return laErr
+	}
+	return alertErr
+}
+
+func (m *navigationNotificationMonitor) deliverTo(
+	event navigationLiveActivityEvent,
+	pred func(pushSubscriber) bool,
+) error {
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
-		subs = pushRegistry.matching(event.CarID, func(s pushSubscriber) bool { return s.NavigationLiveActivity })
-	} else if m.installationID != "" {
+		subs = pushRegistry.matching(event.CarID, pred)
+	} else if m.installationID != "" && pred(pushSubscriber{
+		InstallationID:         m.installationID,
+		NavigationLiveActivity: true,
+		Status:                 pushStatusActive,
+	}) {
 		subs = []pushSubscriber{{
 			InstallationID:         m.installationID,
 			RelayURL:               m.relayURL,
@@ -885,7 +916,7 @@ func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEven
 	}
 	if ok == 0 {
 		if last == nil {
-			return fmt.Errorf("no navigation live-activity subscribers")
+			return fmt.Errorf("no navigation subscribers")
 		}
 		return last
 	}
