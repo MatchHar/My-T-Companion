@@ -12,6 +12,7 @@ It never changes or deletes TeslaMate PostgreSQL history.
 | Active charging snapshot | Resume a short interrupted delivery | 48 hours |
 | Active navigation snapshot, start and waypoints | Live trip only | 12 hours |
 | Push pairing | Private device-to-relay configuration | Until unpaired or replaced |
+| Pending push retry | Minimum signed event needed for a failed delivery | 10 minutes–24 hours by event type; newest 256 total |
 
 Set `PARKING_EVENT_RETENTION_DAYS=0` for the default long-term policy. An
 administrator may instead select 30–3650 days. `PARKING_EVENT_MAX_EVENTS`
@@ -31,6 +32,12 @@ archives are permissioned `0600`, checksummed, and only the newest 12 are kept.
 Backups include durable parking evidence and software-notification
 deduplication. They exclude temporary charging/navigation state and push
 pairing secrets. Use `backup.sh --include-pairing` only for a trusted migration.
+
+Pending push retries are stored only in the Companion data volume on the
+user-controlled VPS, inside the same `0600` pairing store. They are not an
+operator audit log, are removed after successful delivery, pause, unpair, or
+expiry, and are excluded unless pairing data is explicitly included in a
+trusted migration backup.
 
 This backup is not a TeslaMate backup. Back up and restore TeslaMate PostgreSQL
 with TeslaMate's documented process.

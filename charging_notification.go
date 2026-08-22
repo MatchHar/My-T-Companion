@@ -556,11 +556,11 @@ func (m *chargingNotificationMonitor) deliver(event chargingLiveActivityEvent) e
 		}
 		ok++
 	}
-	if ok == 0 {
-		if last == nil {
-			return fmt.Errorf("no charging live-activity subscribers")
-		}
+	if last != nil {
 		return last
+	}
+	if ok == 0 {
+		return fmt.Errorf("no charging live-activity subscribers")
 	}
 	return nil
 }

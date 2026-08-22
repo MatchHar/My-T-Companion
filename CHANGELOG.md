@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.10.27
+
+- Add a bounded, permissioned, durable per-iPhone push outbox. A transient
+  network/relay failure or pending ActivityKit token is retried without one
+  successful subscriber hiding another subscriber's failure.
+- Pause only the invalid installation on relay/APNs 404/410 and remove its
+  queued events. Pausing or unpairing also removes that phone's retry rows.
+- Make lock-secure preferences and status installation-specific; an unknown
+  phone now receives `not_paired` instead of silently changing global state.
+- Stop all push monitors when every subscriber is paused, not only when the
+  subscriber table is empty.
+- Correct PostgreSQL `connect_timeout` from 60,000 seconds to 10 seconds, add
+  read-only/statement timeouts and request contexts, and move navigation
+  enrichment queries outside the MQTT state mutex.
+- Validate persisted relay URL/installation/secret values again at startup.
+- Installer reliability fixes made after 1.10.26 are included in this release.
+
 ## 1.10.26
 
 - Lock-screen Live Activities (charging + destination trip) are one subscriber

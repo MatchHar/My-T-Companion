@@ -17,7 +17,10 @@ import (
 	"time"
 )
 
-const maxPushSubscribers = 8
+const (
+	maxPushSubscribers = 8
+	maxPushOutboxItems = 256
+)
 
 type pushSubscriberStatus string
 
@@ -63,6 +66,23 @@ func (s pushSubscriber) pairing() softwarePushPairing {
 
 type pushSubscriberStore struct {
 	Subscribers []pushSubscriber `json:"subscribers"`
+	Outbox      []queuedPush     `json:"outbox,omitempty"`
+}
+
+type queuedPush struct {
+	ID             string          `json:"id"`
+	InstallationID string          `json:"installation_id"`
+	Payload        json.RawMessage `json:"payload"`
+	EventType      string          `json:"event_type"`
+	Attempts       int             `json:"attempts"`
+	CreatedAt      string          `json:"created_at"`
+	NextAttemptAt  string          `json:"next_attempt_at"`
+	ExpiresAt      string          `json:"expires_at"`
+}
+
+type pushPayloadMetadata struct {
+	EventID string `json:"event_id"`
+	Type    string `json:"type"`
 }
 
 type pushSubscriberRegistry struct {
@@ -70,6 +90,9 @@ type pushSubscriberRegistry struct {
 	path     string
 	store    pushSubscriberStore
 	http     *http.Client
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 func newPushSubscriberRegistry() *pushSubscriberRegistry {
@@ -79,7 +102,9 @@ func newPushSubscriberRegistry() *pushSubscriberRegistry {
 		http: &http.Client{Timeout: 12 * time.Second},
 		store: pushSubscriberStore{
 			Subscribers: []pushSubscriber{},
+			Outbox:      []queuedPush{},
 		},
+		stopCh: make(chan struct{}),
 	}
 	r.load()
 	r.migrateLegacyPairingLocked()
@@ -98,7 +123,40 @@ func (r *pushSubscriberRegistry) load() {
 	if stored.Subscribers == nil {
 		stored.Subscribers = []pushSubscriber{}
 	}
+	if stored.Outbox == nil {
+		stored.Outbox = []queuedPush{}
+	}
+	validSubscribers := stored.Subscribers[:0]
+	validIDs := map[string]bool{}
+	for _, sub := range stored.Subscribers {
+		if !validPushSubscriber(sub) {
+			log.Printf("[warn] discarded invalid stored push subscriber")
+			continue
+		}
+		validSubscribers = append(validSubscribers, sub)
+		validIDs[sub.InstallationID] = true
+	}
+	stored.Subscribers = validSubscribers
+	now := time.Now().UTC()
+	validOutbox := stored.Outbox[:0]
+	for _, item := range stored.Outbox {
+		expires, err := time.Parse(time.RFC3339, item.ExpiresAt)
+		if err == nil && expires.After(now) && validIDs[item.InstallationID] && len(item.Payload) <= 16<<10 {
+			validOutbox = append(validOutbox, item)
+		}
+	}
+	stored.Outbox = validOutbox
 	r.store = stored
+}
+
+func (r *pushSubscriberRegistry) start() {
+	r.wg.Add(1)
+	go r.retryLoop()
+}
+
+func (r *pushSubscriberRegistry) stop() {
+	r.stopOnce.Do(func() { close(r.stopCh) })
+	r.wg.Wait()
 }
 
 func (r *pushSubscriberRegistry) saveLocked() error {
@@ -250,6 +308,7 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 		}
 		kept = append(kept, sub)
 		r.store.Subscribers = kept
+		r.removeOutboxExceptLocked(req.InstallationID)
 	} else if known {
 		r.store.Subscribers[idx] = sub
 	} else {
@@ -275,6 +334,7 @@ func (r *pushSubscriberRegistry) pause(installationID string) (map[string]any, e
 	}
 	r.store.Subscribers[idx].Status = pushStatusPaused
 	r.store.Subscribers[idx].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	r.removeOutboxForLocked(installationID)
 	if err := r.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -290,6 +350,7 @@ func (r *pushSubscriberRegistry) unsubscribe(installationID string) (map[string]
 			return nil, fmt.Errorf("need_installation_id")
 		}
 		r.store.Subscribers = nil
+		r.store.Outbox = nil
 		if err := r.saveLocked(); err != nil {
 			return nil, err
 		}
@@ -303,6 +364,7 @@ func (r *pushSubscriberRegistry) unsubscribe(installationID string) (map[string]
 		}
 	}
 	r.store.Subscribers = next
+	r.removeOutboxForLocked(installationID)
 	if err := r.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -349,12 +411,13 @@ func (r *pushSubscriberRegistry) snapshotLocked(installationID string) map[strin
 		}
 	}
 	result := map[string]any{
-		"push_subscribers":  true,
-		"self_status":       self,
-		"subscriber_count":  len(r.store.Subscribers),
-		"active_count":      active,
-		"other_active":      others,
-		"known":             self != "absent",
+		"push_subscribers":   true,
+		"self_status":        self,
+		"subscriber_count":   len(r.store.Subscribers),
+		"active_count":       active,
+		"other_active":       others,
+		"pending_deliveries": len(r.store.Outbox),
+		"known":              self != "absent",
 	}
 	if prefs != nil {
 		result["software_update"] = prefs.SoftwareUpdate
@@ -421,13 +484,41 @@ func (r *pushSubscriberRegistry) matching(carID int, pred func(pushSubscriber) b
 }
 
 func (r *pushSubscriberRegistry) deliverJSON(sub pushSubscriber, payload []byte) error {
+	if !validPushSubscriber(sub) {
+		return fmt.Errorf("invalid stored push subscriber")
+	}
+	var metadata pushPayloadMetadata
+	if len(payload) == 0 || len(payload) > 16<<10 || json.Unmarshal(payload, &metadata) != nil ||
+		strings.TrimSpace(metadata.EventID) == "" || strings.TrimSpace(metadata.Type) == "" {
+		return fmt.Errorf("invalid push event payload")
+	}
+	status, err := r.postJSON(sub, payload)
+	if err == nil && status >= 200 && status < 300 {
+		return nil
+	}
+	if err != nil || retryableRelayStatus(status) {
+		if queueErr := r.enqueue(sub, metadata, payload); queueErr != nil {
+			if err != nil {
+				return fmt.Errorf("relay delivery failed (%v); durable queue failed: %w", err, queueErr)
+			}
+			return queueErr
+		}
+		return nil
+	}
+	if status == http.StatusNotFound || status == http.StatusGone {
+		r.pauseInvalidSubscriber(sub.InstallationID)
+	}
+	return fmt.Errorf("relay returned HTTP %d", status)
+}
+
+func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (int, error) {
 	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-My-T-Installation", sub.InstallationID)
@@ -438,13 +529,196 @@ func (r *pushSubscriberRegistry) deliverJSON(sub pushSubscriber, payload []byte)
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("relay returned HTTP %d", response.StatusCode)
+	return response.StatusCode, nil
+}
+
+func (r *pushSubscriberRegistry) enqueue(sub pushSubscriber, metadata pushPayloadMetadata, payload []byte) error {
+	now := time.Now().UTC()
+	id := sub.InstallationID + ":" + metadata.EventID
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.store.Outbox {
+		if r.store.Outbox[index].ID == id {
+			r.store.Outbox[index].Payload = append(json.RawMessage(nil), payload...)
+			r.store.Outbox[index].EventType = metadata.Type
+			return r.saveLocked()
+		}
 	}
-	return nil
+	if len(r.store.Outbox) >= maxPushOutboxItems {
+		return fmt.Errorf("push_outbox_full")
+	}
+	r.store.Outbox = append(r.store.Outbox, queuedPush{
+		ID:             id,
+		InstallationID: sub.InstallationID,
+		Payload:        append(json.RawMessage(nil), payload...),
+		EventType:      metadata.Type,
+		CreatedAt:      now.Format(time.RFC3339),
+		NextAttemptAt:  now.Add(2 * time.Second).Format(time.RFC3339),
+		ExpiresAt:      now.Add(pushEventTTL(metadata.Type)).Format(time.RFC3339),
+	})
+	return r.saveLocked()
+}
+
+func (r *pushSubscriberRegistry) retryLoop() {
+	defer r.wg.Done()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-ticker.C:
+			r.retryDue(time.Now().UTC())
+		}
+	}
+}
+
+func (r *pushSubscriberRegistry) retryDue(now time.Time) {
+	r.mu.Lock()
+	items := append([]queuedPush(nil), r.store.Outbox...)
+	subs := append([]pushSubscriber(nil), r.store.Subscribers...)
+	r.mu.Unlock()
+	byID := make(map[string]pushSubscriber, len(subs))
+	for _, sub := range subs {
+		if sub.Status == pushStatusActive {
+			byID[sub.InstallationID] = sub
+		}
+	}
+	for _, item := range items {
+		next, nextErr := time.Parse(time.RFC3339, item.NextAttemptAt)
+		expires, expiresErr := time.Parse(time.RFC3339, item.ExpiresAt)
+		if expiresErr != nil || !expires.After(now) {
+			r.removeOutboxItem(item.ID)
+			continue
+		}
+		if nextErr == nil && next.After(now) {
+			continue
+		}
+		sub, ok := byID[item.InstallationID]
+		if !ok {
+			r.removeOutboxItem(item.ID)
+			continue
+		}
+		status, err := r.postJSON(sub, item.Payload)
+		if err == nil && status >= 200 && status < 300 {
+			r.removeOutboxItem(item.ID)
+			continue
+		}
+		if status == http.StatusNotFound || status == http.StatusGone {
+			r.pauseInvalidSubscriber(item.InstallationID)
+			continue
+		}
+		if err == nil && !retryableRelayStatus(status) {
+			log.Printf("[warn] dropped permanent relay failure installation=%s status=%d", shortInstallationID(item.InstallationID), status)
+			r.removeOutboxItem(item.ID)
+			continue
+		}
+		r.rescheduleOutboxItem(item.ID, now)
+	}
+}
+
+func (r *pushSubscriberRegistry) rescheduleOutboxItem(id string, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for index := range r.store.Outbox {
+		if r.store.Outbox[index].ID != id {
+			continue
+		}
+		r.store.Outbox[index].Attempts++
+		attempt := r.store.Outbox[index].Attempts
+		delay := time.Duration(1<<min(attempt, 8)) * 2 * time.Second
+		if delay > 15*time.Minute {
+			delay = 15 * time.Minute
+		}
+		r.store.Outbox[index].NextAttemptAt = now.Add(delay).Format(time.RFC3339)
+		_ = r.saveLocked()
+		return
+	}
+}
+
+func (r *pushSubscriberRegistry) removeOutboxItem(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next := r.store.Outbox[:0]
+	for _, item := range r.store.Outbox {
+		if item.ID != id {
+			next = append(next, item)
+		}
+	}
+	r.store.Outbox = next
+	_ = r.saveLocked()
+}
+
+func (r *pushSubscriberRegistry) pauseInvalidSubscriber(installationID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if index := r.indexLocked(installationID); index >= 0 {
+		r.store.Subscribers[index].Status = pushStatusPaused
+		r.store.Subscribers[index].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	r.removeOutboxForLocked(installationID)
+	r.syncLegacyPairingLocked()
+	_ = r.saveLocked()
+}
+
+func (r *pushSubscriberRegistry) removeOutboxForLocked(installationID string) {
+	next := r.store.Outbox[:0]
+	for _, item := range r.store.Outbox {
+		if item.InstallationID != installationID {
+			next = append(next, item)
+		}
+	}
+	r.store.Outbox = next
+}
+
+func (r *pushSubscriberRegistry) removeOutboxExceptLocked(installationID string) {
+	next := r.store.Outbox[:0]
+	for _, item := range r.store.Outbox {
+		if item.InstallationID == installationID {
+			next = append(next, item)
+		}
+	}
+	r.store.Outbox = next
+}
+
+func retryableRelayStatus(status int) bool {
+	return status == 0 || status == http.StatusConflict || status == http.StatusTooManyRequests || status >= 500
+}
+
+func pushEventTTL(eventType string) time.Duration {
+	switch eventType {
+	case "charging_updated", "navigation_updated":
+		return 10 * time.Minute
+	case "charging_started", "navigation_started":
+		return 30 * time.Minute
+	case "destination_trip_started", "destination_trip_arrived", "vehicle_lock_secure":
+		return time.Hour
+	case "charging_ended", "navigation_ended":
+		return 2 * time.Hour
+	default:
+		return 24 * time.Hour
+	}
+}
+
+func validPushSubscriber(sub pushSubscriber) bool {
+	if len(sub.InstallationID) != 48 || !isTrustedSoftwarePushRelayURL(sub.RelayURL) {
+		return false
+	}
+	if _, err := hex.DecodeString(sub.InstallationID); err != nil {
+		return false
+	}
+	secret, err := hex.DecodeString(sub.RelaySecret)
+	return err == nil && len(secret) == 32 && (sub.Status == pushStatusActive || sub.Status == pushStatusPaused)
+}
+
+func shortInstallationID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 func installationIDFromRequest(r *http.Request) string {

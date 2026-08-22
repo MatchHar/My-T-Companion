@@ -378,16 +378,16 @@ func (m *softwareNotificationMonitor) fanOutSoftware(
 			Status:         pushStatusActive,
 		}}
 	}
-	deliveredAny := false
+	deliveredAll := len(subs) > 0
 	for _, sub := range subs {
 		event := m.makeEvent(sub.InstallationID, carID, state, eventType, eventVersion, observedAt)
 		if err := m.deliverTo(sub, *event); err != nil {
 			log.Printf("[warn] software fan-out installation=%s: %v", sub.InstallationID[:8], err)
+			deliveredAll = false
 			continue
 		}
-		deliveredAny = true
 	}
-	if !deliveredAny {
+	if !deliveredAll {
 		return
 	}
 	m.mu.Lock()

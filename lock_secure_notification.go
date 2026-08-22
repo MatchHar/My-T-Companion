@@ -378,16 +378,16 @@ func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID 
 			Status:         pushStatusActive,
 		}}
 	}
-	deliveredAny := false
+	deliveredAll := len(subs) > 0
 	for _, sub := range subs {
 		event := m.makeEventFor(sub.InstallationID, carID, state, observedAt)
 		if err := m.deliverTo(sub, *event); err != nil {
 			log.Printf("[warn] lock-secure fan-out installation=%s: %v", sub.InstallationID[:8], err)
+			deliveredAll = false
 			continue
 		}
-		deliveredAny = true
 	}
-	if !deliveredAny {
+	if !deliveredAll {
 		return
 	}
 	m.mu.Lock()
@@ -537,6 +537,20 @@ type lockSecurePutBody struct {
 }
 
 func (m *lockSecureNotificationMonitor) applyPreferences(body lockSecurePutBody) (map[string]any, error) {
+	if pushRegistry != nil && body.Enabled != nil {
+		if strings.TrimSpace(body.InstallationID) == "" {
+			return nil, fmt.Errorf("not_paired")
+		}
+		if err := pushRegistry.setLockSecure(body.InstallationID, *body.Enabled); err != nil {
+			return nil, err
+		}
+		snapshot := pushRegistry.snapshot(body.InstallationID)
+		return map[string]any{
+			"enabled":   snapshot["lock_secure"],
+			"confirmed": snapshot["self_status"] == "active" && snapshot["lock_secure"] == true,
+			"paired":    snapshot["self_status"] != "absent",
+		}, nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if body.Enabled != nil && *body.Enabled {
@@ -553,11 +567,6 @@ func (m *lockSecureNotificationMonitor) applyPreferences(body lockSecurePutBody)
 	m.prefs.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := m.savePrefsLocked(); err != nil {
 		return nil, err
-	}
-	if pushRegistry != nil && strings.TrimSpace(body.InstallationID) != "" && body.Enabled != nil {
-		if err := pushRegistry.setLockSecure(body.InstallationID, *body.Enabled); err != nil && err.Error() != "not_paired" {
-			return nil, err
-		}
 	}
 	return map[string]any{
 		"enabled":   m.prefs.Enabled,

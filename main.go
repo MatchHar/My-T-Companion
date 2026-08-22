@@ -139,6 +139,8 @@ func main() {
 	initDB()
 	defer db.Close()
 	pushRegistry = newPushSubscriberRegistry()
+	pushRegistry.start()
+	defer pushRegistry.stop()
 	softwarePush = newSoftwareNotificationMonitorFromEnvironment()
 	softwarePush.start()
 	defer softwarePush.stop()
@@ -252,7 +254,7 @@ func applyRegistryToMonitors() {
 		return
 	}
 	snap := pushRegistry.snapshot("")
-	count, _ := snap["subscriber_count"].(int)
+	count, _ := snap["active_count"].(int)
 	if count == 0 {
 		if softwarePush != nil {
 			_ = softwarePush.disable()
@@ -305,6 +307,27 @@ func handleLockSecurePreferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
+		installationID := installationIDFromRequest(r)
+		if pushRegistry != nil && installationID != "" {
+			snapshot := pushRegistry.snapshot(installationID)
+			if snapshot["self_status"] == "absent" {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error":   "not_paired",
+					"message": "Push pairing required before reading lock-secure preferences",
+				})
+				return
+			}
+			result := lockSecurePush.status()
+			enabled := snapshot["lock_secure"] == true
+			active := snapshot["self_status"] == "active"
+			connected, _ := result["mqtt_connected"].(bool)
+			result["enabled"] = enabled
+			result["confirmed"] = active && enabled
+			result["paired"] = true
+			result["ready"] = active && enabled && connected && result["last_error"] == nil
+			writeJSON(w, http.StatusOK, result)
+			return
+		}
 		writeJSON(w, http.StatusOK, lockSecurePush.status())
 		return
 	}
@@ -577,7 +600,7 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := fetchStates(carID, startDate, endDate)
+	payload, err := fetchStates(r.Context(), carID, startDate, endDate)
 	if err != nil {
 		log.Printf("[error] fetchStates car=%d: %v", carID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Unable to load state history"})
@@ -646,21 +669,21 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
-			"car_id":                     carID,
-			"service_mode":               mqttBool(values, "service_mode"),
-			"windows_open":               mqttBool(values, "windows_open"),
-			"driver_front_window_open":   mqttBool(values, "driver_front_window_open"),
-			"driver_rear_window_open":    mqttBool(values, "driver_rear_window_open"),
+			"car_id":                      carID,
+			"service_mode":                mqttBool(values, "service_mode"),
+			"windows_open":                mqttBool(values, "windows_open"),
+			"driver_front_window_open":    mqttBool(values, "driver_front_window_open"),
+			"driver_rear_window_open":     mqttBool(values, "driver_rear_window_open"),
 			"passenger_front_window_open": mqttBool(values, "passenger_front_window_open"),
-			"passenger_rear_window_open": mqttBool(values, "passenger_rear_window_open"),
-			"sun_roof_installed":         mqttBool(values, "sun_roof_installed"),
-			"sun_roof_state":             emptyToNil(values["sun_roof_state"]),
-			"sun_roof_percent_open":      mqttInt(values, "sun_roof_percent_open"),
-			"update_available":           software.UpdateAvailable,
-			"update_version":             emptyToNil(software.UpdateVersion),
-			"software_version":           emptyToNil(software.Version),
-			"download_percent":           software.DownloadPercent,
-			"install_percent":            software.InstallPercent,
+			"passenger_rear_window_open":  mqttBool(values, "passenger_rear_window_open"),
+			"sun_roof_installed":          mqttBool(values, "sun_roof_installed"),
+			"sun_roof_state":              emptyToNil(values["sun_roof_state"]),
+			"sun_roof_percent_open":       mqttInt(values, "sun_roof_percent_open"),
+			"update_available":            software.UpdateAvailable,
+			"update_version":              emptyToNil(software.UpdateVersion),
+			"software_version":            emptyToNil(software.Version),
+			"download_percent":            software.DownloadPercent,
+			"install_percent":             software.InstallPercent,
 		},
 	})
 }
@@ -734,7 +757,7 @@ func handleCurrentDrive(w http.ResponseWriter, r *http.Request, carIDValue strin
 		return
 	}
 
-	payload, err := fetchCurrentDrive(carID, afterPointID, limit)
+	payload, err := fetchCurrentDrive(r.Context(), carID, afterPointID, limit)
 	if err != nil {
 		log.Printf("[error] fetchCurrentDrive car=%d: %v", carID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Unable to load current drive"})
@@ -751,10 +774,12 @@ func handleCurrentDrive(w http.ResponseWriter, r *http.Request, carIDValue strin
 	})
 }
 
-func fetchCurrentDrive(carID int, afterPointID int64, limit int) (currentDriveData, error) {
+func fetchCurrentDrive(ctx context.Context, carID int, afterPointID int64, limit int) (currentDriveData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
 	data := currentDriveData{Car: carRef{CarID: carID}}
 	var carName sql.NullString
-	if err := db.QueryRow(`SELECT name FROM cars WHERE id = $1`, carID).Scan(&carName); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT name FROM cars WHERE id = $1`, carID).Scan(&carName); err != nil {
 		if err == sql.ErrNoRows {
 			return data, nil
 		}
@@ -768,7 +793,7 @@ func fetchCurrentDrive(carID int, afterPointID int64, limit int) (currentDriveDa
 	var driveID int64
 	var startDate time.Time
 	var endDate sql.NullTime
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id, start_date, end_date
 		FROM drives
 		WHERE car_id = $1 AND end_date IS NULL
@@ -794,13 +819,13 @@ func fetchCurrentDrive(carID int, afterPointID int64, limit int) (currentDriveDa
 		drive.EndDate = &value
 	}
 
-	first, err := fetchDrivePoint(driveID)
+	first, err := fetchDrivePoint(ctx, driveID)
 	if err != nil {
 		return data, err
 	}
 	drive.FirstPoint = first
 
-	rows, err := db.Query(`
+	rows, err := db.QueryContext(ctx, `
 		SELECT id, date, latitude, longitude, speed, odometer
 		FROM positions
 		WHERE drive_id = $1
@@ -844,8 +869,8 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func fetchDrivePoint(driveID int64) (*drivePoint, error) {
-	row := db.QueryRow(`
+func fetchDrivePoint(ctx context.Context, driveID int64) (*drivePoint, error) {
+	row := db.QueryRowContext(ctx, `
 		SELECT id, date, latitude, longitude, speed, odometer
 		FROM positions
 		WHERE drive_id = $1
@@ -962,7 +987,9 @@ func authorizedByExistingAPI(r *http.Request) bool {
 	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 
-func fetchStates(carID int, startDate, endDate time.Time) (responseData, error) {
+func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (responseData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
 	const query = `
 		SELECT
 			s.state,
@@ -1017,7 +1044,7 @@ func fetchStates(carID int, startDate, endDate time.Time) (responseData, error) 
 		  AND COALESCE(s.end_date, NOW()) > $2
 		ORDER BY s.start_date ASC`
 
-	rows, err := db.Query(query, carID, startDate.UTC(), endDate.UTC())
+	rows, err := db.QueryContext(ctx, query, carID, startDate.UTC(), endDate.UTC())
 	if err != nil {
 		return responseData{}, err
 	}
@@ -1141,10 +1168,10 @@ func initDB() {
 	pass := getenv("DATABASE_PASS", "secret")
 	name := getenv("DATABASE_NAME", "teslamate")
 	sslmode := getenv("DATABASE_SSL", "disable")
-	timeout := getenv("DATABASE_TIMEOUT", "60000")
+	timeout := getenv("DATABASE_TIMEOUT", "10")
 
 	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=%s",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=%s application_name=my-t-companion options='-c statement_timeout=15000 -c default_transaction_read_only=on'",
 		host, port, user, pass, name, sslmode, timeout,
 	)
 
@@ -1153,7 +1180,9 @@ func initDB() {
 	if err != nil {
 		log.Fatalf("[error] database open: %v", err)
 	}
-	if err = db.Ping(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err = db.PingContext(ctx); err != nil {
 		log.Fatalf("[error] database ping: %v", err)
 	}
 	log.Printf("[info] database connected")

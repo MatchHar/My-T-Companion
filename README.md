@@ -45,6 +45,13 @@ is kept long-term by default, with a 50,000-event capacity guard, in the
 existing companion data volume. Temporary navigation and push-delivery state
 expires independently. See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
 
+If a relay is temporarily unavailable or ActivityKit has not registered the
+session token yet, Companion keeps only the minimum signed event in its local
+`0600` data store and retries it. Retry rows expire by event type (10 minutes
+to 24 hours), are capped at 256 total, and are removed on delivery, pause, or
+unpair. This temporary queue remains on the user's VPS; it is not copied into
+the developer relay's delivery audit.
+
 Install this add-on **after TeslaMate is already deployed and working**. It is
 not a replacement for TeslaMate or TeslaMateAPI.
 
@@ -273,7 +280,8 @@ Push is off by default. A compatible My T build will provide an opaque
 installation ID, the official HTTPS relay URL, and a unique per-installation
 secret. All three must be configured together.
 Events are HMAC-SHA256 signed and deduplicated across container restarts.
-The App writes the pairing through the user's existing authenticated connection:
+The App writes the pairing through the user's existing authenticated connection.
+Preferences and status are scoped to that iPhone's installation ID:
 
 ```text
 POST /api/v1/notifications/software-update/pair

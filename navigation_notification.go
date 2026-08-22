@@ -76,12 +76,14 @@ type carNavigationState struct {
 	Active              bool     `json:"active"`
 	SessionID           string   `json:"session_id,omitempty"`
 	// RFC3339 when this navigation session became active (real trip start for end-frame).
-	SessionStartedAt string `json:"session_started_at,omitempty"`
-	DriveID          int64  `json:"drive_id,omitempty"`
-	Sequence         int    `json:"sequence"`
-	StartDelivered   bool   `json:"start_delivered"`
-	LastQueuedAt     string `json:"last_queued_at,omitempty"`
-	LastObservedAt   string `json:"last_observed_at,omitempty"`
+	SessionStartedAt      string   `json:"session_started_at,omitempty"`
+	DriveID               int64    `json:"drive_id,omitempty"`
+	DrivenDistanceKM      *float64 `json:"driven_distance_km,omitempty"`
+	HasVerifiedTrajectory bool     `json:"has_verified_trajectory,omitempty"`
+	Sequence              int      `json:"sequence"`
+	StartDelivered        bool     `json:"start_delivered"`
+	LastQueuedAt          string   `json:"last_queued_at,omitempty"`
+	LastObservedAt        string   `json:"last_observed_at,omitempty"`
 }
 
 type navigationNotificationStore struct {
@@ -142,6 +144,7 @@ type navigationNotificationMonitor struct {
 	queue          chan navigationLiveActivityEvent
 	priorityQueue  chan navigationLiveActivityEvent
 	pending        map[int]*time.Timer
+	enriching      map[int]string
 }
 
 func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMonitor {
@@ -159,6 +162,7 @@ func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMo
 		queue:          make(chan navigationLiveActivityEvent, 128),
 		priorityQueue:  make(chan navigationLiveActivityEvent, 16),
 		pending:        map[int]*time.Timer{},
+		enriching:      map[int]string{},
 		store: navigationNotificationStore{
 			Cars:      map[int]carNavigationState{},
 			Delivered: map[string]string{},
@@ -420,40 +424,46 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		endEvent.endReasonOverride = "redirected"
 		endEvent.EndReason = "redirected"
 
-		driveID, _, _ := currentDriveDistances(carID)
 		state.Active = true
-		state.DriveID = driveID
-		state.SessionID = navigationSessionID(m.installationID, carID, driveID, observedAt)
+		state.DriveID = 0
+		state.DrivenDistanceKM = nil
+		state.HasVerifiedTrajectory = false
+		state.SessionID = navigationSessionID(m.installationID, carID, 0, observedAt)
 		state.SessionStartedAt = observedAt.Format(time.RFC3339)
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
 		// New session for the new destination — re-resolve start place for this leg.
-		state.StartName = resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence)
+		state.StartName = knownNavigationStartName(state.Geofence, state.LastKnownGeofence)
+		sessionID := state.SessionID
 		startEvent := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
 		m.mu.Unlock()
 		m.enqueue(endEvent)
 		m.enqueue(startEvent)
+		m.requestNavigationEnrichment(carID, sessionID)
 		return
 	}
 
 	if shouldBeActive && (!wasActive || state.SessionID == "") {
-		driveID, _, _ := currentDriveDistances(carID)
 		state.Active = true
-		state.DriveID = driveID
-		state.SessionID = navigationSessionID(m.installationID, carID, driveID, observedAt)
+		state.DriveID = 0
+		state.DrivenDistanceKM = nil
+		state.HasVerifiedTrajectory = false
+		state.SessionID = navigationSessionID(m.installationID, carID, 0, observedAt)
 		state.SessionStartedAt = observedAt.Format(time.RFC3339)
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
-		state.StartName = resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence)
+		state.StartName = knownNavigationStartName(state.Geofence, state.LastKnownGeofence)
+		sessionID := state.SessionID
 		event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
 		m.mu.Unlock()
 		m.enqueue(event)
+		m.requestNavigationEnrichment(carID, sessionID)
 		return
 	}
 	if !shouldBeActive && wasActive {
@@ -477,11 +487,8 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	}
 	// TeslaMate may reverse-geocode the drive start only after the first points land.
 	// Keep trying until we freeze a non-empty start_name for push history / App titles.
-	if state.Active && strings.TrimSpace(state.StartName) == "" {
-		if filled := resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence); filled != "" {
-			state.StartName = filled
-		}
-	}
+	needsEnrichment := state.Active && (state.DriveID == 0 || strings.TrimSpace(state.StartName) == "")
+	sessionID := state.SessionID
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
 	if state.Active {
@@ -493,6 +500,9 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 				_ = m.saveLocked()
 				m.mu.Unlock()
 				m.enqueue(event)
+				if needsEnrichment {
+					m.requestNavigationEnrichment(carID, sessionID)
+				}
 				return
 			}
 		} else {
@@ -500,6 +510,78 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		}
 	}
 	m.mu.Unlock()
+	if needsEnrichment {
+		m.requestNavigationEnrichment(carID, sessionID)
+	}
+}
+
+func knownNavigationStartName(liveGeofence, lastKnownGeofence string) string {
+	for _, candidate := range []string{liveGeofence, lastKnownGeofence} {
+		if name := strings.TrimSpace(candidate); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// Database enrichment never runs while the MQTT state mutex is held. Slow or
+// unavailable PostgreSQL therefore cannot stall retained-state processing.
+func (m *navigationNotificationMonitor) requestNavigationEnrichment(carID int, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	m.mu.Lock()
+	if m.enriching == nil {
+		m.enriching = map[int]string{}
+	}
+	if m.enriching[carID] == sessionID {
+		m.mu.Unlock()
+		return
+	}
+	m.enriching[carID] = sessionID
+	m.mu.Unlock()
+	go m.enrichNavigationSession(carID, sessionID)
+}
+
+func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	driveID, driven, verified := currentDriveDistances(carID)
+	startName := resolveNavigationStartName(carID, "", "")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.enriching[carID] == sessionID {
+		delete(m.enriching, carID)
+	}
+	state := m.store.Cars[carID]
+	if !state.Active || state.SessionID != sessionID {
+		return
+	}
+	changed := false
+	if state.DriveID == 0 && driveID > 0 {
+		state.DriveID = driveID
+		changed = true
+	}
+	if verified && driven != nil {
+		if state.DrivenDistanceKM == nil || math.Abs(*state.DrivenDistanceKM-*driven) > 0.001 {
+			state.DrivenDistanceKM = cloneFloat(driven)
+			state.HasVerifiedTrajectory = true
+			changed = true
+		}
+	}
+	if strings.TrimSpace(state.StartName) == "" && strings.TrimSpace(startName) != "" {
+		state.StartName = strings.TrimSpace(startName)
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	m.store.Cars[carID] = state
+	_ = m.saveLocked()
+	if state.StartDelivered {
+		m.scheduleUpdateLocked(carID, time.Now().UTC())
+	}
 }
 
 func navigationShouldBeActive(routeInvalid bool, state carNavigationState) bool {
@@ -552,10 +634,8 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 ) navigationLiveActivityEvent {
 	state.Sequence++
 	state.LastQueuedAt = observedAt.Format(time.RFC3339)
-	driveID, driven, verified := currentDriveDistances(carID)
-	if driveID != 0 {
-		state.DriveID = driveID
-	}
+	driven := cloneFloat(state.DrivenDistanceKM)
+	verified := state.HasVerifiedTrajectory && driven != nil
 	var total *float64
 	if verified && driven != nil && state.RemainingDistanceKM != nil {
 		value := *driven + *state.RemainingDistanceKM
@@ -618,10 +698,8 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 // address on the open drive, (5) previous completed drive end place.
 // Empty string means unknown — App may still fall back to matching a TeslaMate drive.
 func resolveNavigationStartName(carID int, liveGeofence, lastKnownGeofence string) string {
-	for _, candidate := range []string{liveGeofence, lastKnownGeofence} {
-		if name := strings.TrimSpace(candidate); name != "" {
-			return name
-		}
+	if name := knownNavigationStartName(liveGeofence, lastKnownGeofence); name != "" {
+		return name
 	}
 	if db == nil {
 		return ""
@@ -636,8 +714,10 @@ func resolveNavigationStartName(carID int, liveGeofence, lastKnownGeofence strin
 }
 
 func queryOpenDriveStartLabel(carID int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	var label string
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT COALESCE(
 			NULLIF(TRIM(g.name), ''),
 			NULLIF(TRIM(a.name), ''),
@@ -657,9 +737,11 @@ func queryOpenDriveStartLabel(carID int) string {
 }
 
 func queryOpenDriveFirstPositionAddress(carID int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	var label string
 	// Prefer the earliest position that already has a reverse-geocoded address.
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT COALESCE(
 			NULLIF(TRIM(a.name), ''),
 			NULLIF(TRIM(a.display_name), ''),
@@ -678,8 +760,10 @@ func queryOpenDriveFirstPositionAddress(carID int) string {
 }
 
 func queryLastCompletedDriveEndLabel(carID int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	var label string
-	err := db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT COALESCE(
 			NULLIF(TRIM(g.name), ''),
 			NULLIF(TRIM(a.name), ''),
@@ -705,7 +789,9 @@ func currentDriveDistances(carID int) (int64, *float64, bool) {
 	var driveID int64
 	var firstOdometer, latestOdometer float64
 	var count int
-	err := db.QueryRow(`
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := db.QueryRowContext(ctx, `
 		SELECT d.id,
 		       first_position.odometer,
 		       latest_position.odometer,
@@ -914,11 +1000,11 @@ func (m *navigationNotificationMonitor) deliverTo(
 		}
 		ok++
 	}
-	if ok == 0 {
-		if last == nil {
-			return fmt.Errorf("no navigation subscribers")
-		}
+	if last != nil {
 		return last
+	}
+	if ok == 0 {
+		return fmt.Errorf("no navigation subscribers")
 	}
 	return nil
 }

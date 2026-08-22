@@ -3,10 +3,18 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func testInstallation() (id, secret, url string) {
 	idBytes := make([]byte, 24)
@@ -179,5 +187,63 @@ func TestPushSubscriberMigratesLegacyPairing(t *testing.T) {
 	snap := reg.snapshot(id)
 	if snap["subscriber_count"] != 1 || snap["self_status"] != "active" {
 		t.Fatalf("migration failed: %v", snap)
+	}
+}
+
+func TestPushDeliveryPersistsRetryableFailure(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	on := true
+	if _, err := reg.upsert(pushPairRequest{
+		InstallationID: id,
+		RelayURL:       url,
+		RelaySecret:    secret,
+		SoftwareUpdate: &on,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("temporary network failure")
+	})}
+	sub := reg.matching(1, func(s pushSubscriber) bool { return s.SoftwareUpdate })[0]
+	payload := []byte(`{"event_id":"event-1","type":"update_available"}`)
+	if err := reg.deliverJSON(sub, payload); err != nil {
+		t.Fatalf("durably queued delivery should be accepted: %v", err)
+	}
+	if got := reg.snapshot(id)["pending_deliveries"]; got != 1 {
+		t.Fatalf("pending=%v", got)
+	}
+	reloaded := newPushSubscriberRegistry()
+	if got := reloaded.snapshot(id)["pending_deliveries"]; got != 1 {
+		t.Fatalf("persisted pending=%v", got)
+	}
+}
+
+func TestPushDeliveryPausesInvalidInstallation(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	on := true
+	if _, err := reg.upsert(pushPairRequest{
+		InstallationID: id,
+		RelayURL:       url,
+		RelaySecret:    secret,
+		SoftwareUpdate: &on,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusGone, Body: http.NoBody}, nil
+	})}
+	sub := reg.matching(1, func(s pushSubscriber) bool { return s.SoftwareUpdate })[0]
+	err := reg.deliverJSON(sub, []byte(`{"event_id":"event-2","type":"update_available"}`))
+	if err == nil {
+		t.Fatal("permanent invalid-installation response must be reported")
+	}
+	if got := reg.snapshot(id)["self_status"]; got != "paused" {
+		t.Fatalf("status=%v", got)
 	}
 }
