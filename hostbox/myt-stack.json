@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "template_id": "myt-stack",
-  "revision": "2026.08.20.2",
-  "updated_at": "2026-08-20T13:00:00Z",
+  "revision": "2026.08.22.1",
+  "updated_at": "2026-08-22T14:49:00Z",
   "min_app_version": "1.0.0",
   "channel": "stable",
   "title": "My T Server",
-  "notes_zh": "TeslaMate / Grafana 跟随 GitHub 最新正式版（现 4.1.1）。postgres 默认 16，重部署保留现网主版本。",
+  "notes_zh": "TeslaMate / Grafana 跟随 GitHub 最新正式版（现 4.1.1），Companion 更新至 1.10.27。postgres 默认 16，重部署保留现网主版本。",
   "upstream": {
     "teslamate": {
       "github": "teslamate-org/teslamate",
@@ -32,7 +32,7 @@
     "teslamate": "teslamate/teslamate:4.1.1",
     "grafana": "teslamate/grafana:4.1.1",
     "teslamateapi": "tobiasehlert/teslamateapi:1.25.0",
-    "companion": "myt/companion:1.10.26",
+    "companion": "myt/companion:1.10.27",
     "postgres": "postgres:16",
     "mosquitto": "eclipse-mosquitto:2",
     "caddy": "caddy:2.8-alpine"
