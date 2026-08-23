@@ -158,7 +158,7 @@ func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMo
 		mqttBroker:     getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
 		mqttUsername:   strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
 		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
-		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		httpClient:     newPushRelayHTTPClient(15 * time.Second),
 		queue:          make(chan navigationLiveActivityEvent, 128),
 		priorityQueue:  make(chan navigationLiveActivityEvent, 16),
 		pending:        map[int]*time.Timer{},
@@ -973,7 +973,7 @@ func (m *navigationNotificationMonitor) deliverTo(
 			signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 			_, _ = signature.Write(payload)
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-			request, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
+			request, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 			if reqErr != nil {
 				cancel()
 				last = reqErr
@@ -1226,7 +1226,10 @@ func (m *navigationNotificationMonitor) historyForCar(carID int, limit int) []na
 	if limit <= 0 || limit > navigationPushHistoryLimit {
 		limit = 50
 	}
-	out := make([]navigationPushHistorySession, 0, limit)
+	// Use a compile-time bounded allocation. The requested limit has already
+	// been clamped, but keeping it out of make() also makes the memory boundary
+	// explicit to static analyzers.
+	out := make([]navigationPushHistorySession, 0, navigationPushHistoryLimit)
 	for _, session := range m.history.Sessions {
 		if carID > 0 && session.CarID != carID {
 			continue

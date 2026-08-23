@@ -7,11 +7,16 @@
 > 上方徽章及[最新穩定版](https://github.com/MatchHar/My-T-Companion/releases/latest)連結會自動更新。車輛軟體原生推送、充電鎖屏即時活動及導航即時活動均為選用功能，在相容的 My T 版本
 > 提供安全配對前保持關閉。
 >
-> **My T：** App Store 公開可下載版本以 Apple 產品頁為準（2026 年 8 月中旬核驗為
-> **3.10**）。較新版本可能正在審查中，本儲存庫不聲明具體審查版本號。
+> **My T：** App Store 公開可下載版本以
+> [Apple 產品頁](https://apps.apple.com/us/app/my-t/id6780299502)為準。
+> 較新版本可能正在審查中，本儲存庫不寫死版本號，也不聲明非公開審查版本。
 > 停車流水、觀測事件、軌跡及目的地行程記錄在可存取 `/api/v1/capabilities` 時
 > 可用；推播及即時動態仍需完成配對。詳見
 > [My T 功能可用性](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)。
+
+安全配對後，每支 iPhone 可以個別開啟「上鎖且車內無人」通知。Companion 只會
+傳送簽署事件；可見訊息及提示音由 My T 在手機上處理。匯入音訊、檔名及靜音／
+預設選擇均不會傳送到 Companion 或推播中繼。
 
 **本元件專為
 [My T iPhone App 開發，可於 App Store 下載](https://apps.apple.com/us/app/my-t/id6780299502)。**
@@ -233,6 +238,8 @@ https://域名
 | 1.10.8 | 更可靠的 `start_name`（圍欄黏性 + 行程地址回填），起點 → 目的地 |
 | 1.10.10 | 修正能力及診斷介面的運行版本報告 |
 | 1.10.19 | 已儲存 MQTT 設定與實際 Docker 拓撲不一致時仍可可靠升級 |
+| 1.10.28 | 固定使用官方中繼、拒絕重新導向、限制導航歷史容量，並同步三語相容性說明 |
+| 1.10.27 | 每支 iPhone 個別的持久推播佇列、偏好設定、失效裝置隔離，以及更嚴格的資料庫／網路逾時 |
 
 完整改動請查看 [CHANGELOG.md](CHANGELOG.md) 或
 [最新 GitHub Release](https://github.com/MatchHar/My-T-Companion/releases/latest)。

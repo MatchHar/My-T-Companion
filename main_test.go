@@ -8,12 +8,28 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func relayTestClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseTransport := server.Client().Transport
+	return &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		copy := request.Clone(request.Context())
+		copy.URL.Scheme = target.Scheme
+		copy.URL.Host = target.Host
+		return baseTransport.RoundTrip(copy)
+	})}
+}
 
 func TestAPIVersionMatchesReleaseVersion(t *testing.T) {
 	releaseVersion, err := os.ReadFile("VERSION")
@@ -93,7 +109,7 @@ func TestSoftwareNotificationRelaySignatureAndPrivacy(t *testing.T) {
 		relayURL:       server.URL,
 		relaySecret:    secret,
 		installationID: "installation-1",
-		httpClient:     server.Client(),
+		httpClient:     relayTestClient(t, server),
 	}
 	event := softwareNotificationEvent{
 		EventID:        "event-1",
@@ -322,7 +338,7 @@ func TestChargingEventUsesOnlyRequiredTelemetryAndValidSignature(t *testing.T) {
 		relayURL:       server.URL,
 		relaySecret:    secret,
 		installationID: "installation-1",
-		httpClient:     server.Client(),
+		httpClient:     relayTestClient(t, server),
 	}
 	event := chargingLiveActivityEvent{
 		EventID:             "event-1",

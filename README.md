@@ -9,9 +9,10 @@
 > Activities, and navigation Live Activities are optional and remain disabled
 > until a compatible My T build supplies a secure relay pairing.
 >
-> **My T:** the public App Store downloadable version is whatever Apple’s
-> listing shows (verified **3.10** as of mid-August 2026). A newer My T build
-> may be in App Review; this repo does not claim a specific review version.
+> **My T:** the public App Store downloadable version is whatever
+> [Apple’s listing](https://apps.apple.com/us/app/my-t/id6780299502) shows. A
+> newer My T build may be in App Review; this repo does not hard-code or claim
+> a private review version.
 > Parking timeline, observed events, trajectories, and destination-session
 > history work when the App can reach `/api/v1/capabilities`; push and Live
 > Activities still need pairing. See
@@ -44,6 +45,11 @@ TeslaMate/Companion,” not a promised physical-action timestamp. The event log
 is kept long-term by default, with a 50,000-event capacity guard, in the
 existing companion data volume. Temporary navigation and push-delivery state
 expires independently. See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
+
+After secure pairing, each iPhone can also opt into a notification when a
+selected vehicle is observed locked and unoccupied. Companion sends only the
+signed event; the visible alert sound is selected locally on that iPhone.
+Imported audio, filenames, and the silent/default choice never reach Companion.
 
 If a relay is temporarily unavailable or ActivityKit has not registered the
 session token yet, Companion keeps only the minimum signed event in its local
@@ -100,6 +106,7 @@ views when `/api/v1/capabilities` is available.
 | Charging while parked | Existing charging sessions remain visible | Charging can be placed alongside the state timeline |
 | Plug/security/climate events | No durable history while My T is closed | Long-term genuine MQTT transitions, with battery/range only when reported |
 | Active-drive map | Real current position and speed only when the true route start is unavailable | Immutable true start plus incremental real trajectory |
+| Locked-and-unoccupied alert | No server-side observation while the App is suspended | Optional per-iPhone signed event; My T applies the visible message and device-local sound |
 
 The component is optional. My T detects it automatically; users do not add a
 second server, account, or vehicle connection in the app.
@@ -226,6 +233,8 @@ its own retention period; available history follows the TeslaMate database.
 | 1.10.8 | Reliable `start_name` (sticky geofence + drive address backfill) for start → destination |
 | 1.10.10 | Correct runtime version reporting in capabilities and diagnostics |
 | 1.10.19 | Reliable upgrades when saved MQTT settings no longer match the live Docker topology |
+| 1.10.28 | Official-relay pinning, redirect refusal, bounded navigation history, and synchronized trilingual compatibility documentation |
+| 1.10.27 | Durable per-iPhone push outbox, installation-specific preferences, invalid-device isolation, and stricter database/network timeouts |
 
 ## Navigation Live Activities
 

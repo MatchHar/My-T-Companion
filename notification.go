@@ -28,6 +28,18 @@ func isTrustedSoftwarePushRelayURL(raw string) bool {
 	return strings.TrimSpace(raw) == officialSoftwarePushRelayURL
 }
 
+func newPushRelayHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		// The only accepted destination is the official HTTPS endpoint. Do not
+		// follow redirects to another host even if that endpoint is ever
+		// misconfigured or compromised.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 func (m *softwareNotificationMonitor) disable() error {
 	m.stop()
 	m.mu.Lock()
@@ -109,7 +121,7 @@ func newSoftwareNotificationMonitorFromEnvironment() *softwareNotificationMonito
 		mqttClientID:   getenv("MQTT_CLIENT_ID", "my-t-companion"),
 		mqttUsername:   strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
 		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
-		httpClient:     &http.Client{Timeout: 12 * time.Second},
+		httpClient:     newPushRelayHTTPClient(12 * time.Second),
 		inFlight:       map[string]bool{},
 		store: softwareNotificationStore{
 			Cars:      map[int]carSoftwareState{},
@@ -432,7 +444,7 @@ func (m *softwareNotificationMonitor) deliverTo(sub pushSubscriber, event softwa
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

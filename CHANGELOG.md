@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.10.28
+
+- Pin every software, charging, navigation, and lock-secure delivery to the
+  official My T relay endpoint instead of trusting a persisted URL.
+- Refuse HTTP redirects in relay clients so authorization material cannot be
+  forwarded to a different origin.
+- Keep navigation notification history allocation statically bounded, matching
+  the existing runtime limit.
+- Refresh the English, Simplified Chinese, and Traditional Chinese
+  compatibility documentation without hard-coding the current My T App Store
+  version.
+
 ## 1.10.27
 
 - Add a bounded, permissioned, durable per-iPhone push outbox. A transient

@@ -99,7 +99,7 @@ func newPushSubscriberRegistry() *pushSubscriberRegistry {
 	base := filepath.Dir(getenv("PUSH_STATE_PATH", "/data/software-notifications.json"))
 	r := &pushSubscriberRegistry{
 		path: filepath.Join(base, "push-subscribers.json"),
-		http: &http.Client{Timeout: 12 * time.Second},
+		http: newPushRelayHTTPClient(12 * time.Second),
 		store: pushSubscriberStore{
 			Subscribers: []pushSubscriber{},
 			Outbox:      []queuedPush{},
@@ -516,7 +516,7 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return 0, err
 	}

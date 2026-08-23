@@ -103,7 +103,7 @@ func newChargingNotificationMonitorFromEnvironment() *chargingNotificationMonito
 		mqttClientID:   getenv("MQTT_CLIENT_ID", "my-t-companion") + "-charging",
 		mqttUsername:   strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
 		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
-		httpClient:     &http.Client{Timeout: 12 * time.Second},
+		httpClient:     newPushRelayHTTPClient(12 * time.Second),
 		pending:        map[int]*time.Timer{},
 		queue:          make(chan chargingLiveActivityEvent, 64),
 		store: chargingNotificationStore{
@@ -570,7 +570,7 @@ func (m *chargingNotificationMonitor) deliverLegacy(sub pushSubscriber, payload 
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

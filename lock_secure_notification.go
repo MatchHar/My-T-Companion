@@ -101,7 +101,7 @@ func newLockSecureNotificationMonitorFromEnvironment() *lockSecureNotificationMo
 		mqttClientID: getenv("MQTT_CLIENT_ID", "my-t-companion") + "-lock-secure",
 		mqttUsername: strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
 		mqttPassword: strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
-		httpClient:   &http.Client{Timeout: 15 * time.Second},
+		httpClient:   newPushRelayHTTPClient(15 * time.Second),
 		inFlight:     map[string]bool{},
 		store: lockSecureStore{
 			Cars:      map[int]lockSecureCarState{},
@@ -475,7 +475,7 @@ func (m *lockSecureNotificationMonitor) deliverTo(sub pushSubscriber, event lock
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, sub.RelayURL, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
