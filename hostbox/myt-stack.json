@@ -1,16 +1,18 @@
 {
   "schema_version": 1,
   "template_id": "myt-stack",
-  "revision": "2026.08.22.1",
-  "updated_at": "2026-08-22T14:49:00Z",
+  "revision": "2026.08.23.2",
+  "updated_at": "2026-08-23T12:30:00Z",
   "min_app_version": "1.0.0",
   "channel": "stable",
   "title": "My T Server",
-  "notes_zh": "TeslaMate / Grafana 跟随 GitHub 最新正式版（现 4.1.1），Companion 更新至 1.10.28。postgres 默认 16，重部署保留现网主版本。",
+  "notes_zh": "已验证稳定目录：TeslaMate / Grafana 固定为 4.1.1，Companion 固定为 1.10.28；上游新版本只提示，不会自动部署。",
+  "notes_zh_hant": "已驗證穩定目錄：TeslaMate / Grafana 固定為 4.1.1，Companion 固定為 1.10.28；上游新版本只會提示，不會自動部署。",
+  "notes_en": "Verified stable catalog: TeslaMate and Grafana are pinned to 4.1.1 and Companion to 1.10.28. New upstream releases are reported but never deployed automatically.",
   "upstream": {
     "teslamate": {
       "github": "teslamate-org/teslamate",
-      "follow_latest_release": true,
+      "follow_latest_release": false,
       "docker_image_prefix": "teslamate/teslamate"
     },
     "grafana": {
@@ -29,13 +31,16 @@
     }
   },
   "images": {
-    "teslamate": "teslamate/teslamate:4.1.1",
-    "grafana": "teslamate/grafana:4.1.1",
-    "teslamateapi": "tobiasehlert/teslamateapi:1.25.0",
+    "teslamate": "teslamate/teslamate:4.1.1@sha256:cc87082e7d67a91aa11ca0fb30c2e730bc2a1fccbec9578bb3f3c64f586410f1",
+    "grafana": "teslamate/grafana:4.1.1@sha256:fe24cb24d8543cb9742cbcb662aeb00ac10aeeab9a53d4c8af5cf329d20cef0b",
+    "teslamateapi": "tobiasehlert/teslamateapi:1.25.0@sha256:6f7eea55c6475c2bc4639ee582dfec01d5cf618d30b0c7444020274a4786704e",
     "companion": "myt/companion:1.10.28",
-    "postgres": "postgres:16",
-    "mosquitto": "eclipse-mosquitto:2",
-    "caddy": "caddy:2.8-alpine"
+    "postgres": "postgres:16.15@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5",
+    "mosquitto": "eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c",
+    "caddy": "caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648"
+  },
+  "artifacts": {
+    "companion_archive_sha256": "dc12a9b158cc8fe0c5ae74a0d5905c31d02823788f79d08dd26e6d4cf99a8356"
   },
   "ports": {
     "teslamate_web": 4000,
@@ -60,6 +65,18 @@
     "teslamate_web": "TeslaMate 网页（4000）：输入 Tesla 令牌。",
     "grafana": "Grafana（3000）：图表；改密。",
     "api": "TeslaMateAPI 主机 8081：My T base_url。",
-    "companion": "My T Companion：增强；版本卡在 images.companion。"
+    "companion": "My T Companion：增强；版本固定在 images.companion。"
+  },
+  "hints_zh_hant": {
+    "teslamate_web": "TeslaMate 網頁（4000）：輸入 Tesla 權杖。",
+    "grafana": "Grafana（3000）：圖表；登入後請立即更改密碼。",
+    "api": "TeslaMateAPI 主機 8081：My T base_url。",
+    "companion": "My T Companion：擴充功能；版本固定在 images.companion。"
+  },
+  "hints_en": {
+    "teslamate_web": "TeslaMate web UI (4000): enter the Tesla token.",
+    "grafana": "Grafana (3000): dashboards; change the password immediately after signing in.",
+    "api": "TeslaMateAPI host port 8081: the My T base_url.",
+    "companion": "My T Companion enhancements; the verified version is pinned in images.companion."
   }
 }

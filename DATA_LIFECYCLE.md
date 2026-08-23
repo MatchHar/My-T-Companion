@@ -1,5 +1,7 @@
 # Data lifecycle
 
+English · [简体中文](DATA_LIFECYCLE.zh-Hans.md) · [繁體中文](DATA_LIFECYCLE.zh-Hant.md)
+
 My T Companion separates durable evidence from replaceable operational state.
 It never changes or deletes TeslaMate PostgreSQL history.
 
@@ -13,6 +15,10 @@ It never changes or deletes TeslaMate PostgreSQL history.
 | Active navigation snapshot, start and waypoints | Live trip only | 12 hours |
 | Push pairing | Private device-to-relay configuration | Until unpaired or replaced |
 | Pending push retry | Minimum signed event needed for a failed delivery | 10 minutes–24 hours by event type; newest 256 total |
+
+The navigation watchdog checks active sessions every 15 minutes. A session
+older than 12 hours is ended through the normal terminal-event path so its
+Live Activity is dismissed instead of leaving an immortal snapshot.
 
 Set `PARKING_EVENT_RETENTION_DAYS=0` for the default long-term policy. An
 administrator may instead select 30–3650 days. `PARKING_EVENT_MAX_EVENTS`

@@ -199,6 +199,7 @@ func (m *navigationNotificationMonitor) start() {
 		go m.deliveryWorker(m.queue)
 		go m.deliveryWorker(m.priorityQueue)
 		go m.reconcileRestoredSessions(time.Now().UTC())
+		go m.expireStaleSessionsWorker()
 	}
 	options := mqtt.NewClientOptions().
 		AddBroker(m.mqttBroker).
@@ -900,6 +901,48 @@ func (m *navigationNotificationMonitor) reconcileRestoredSessions(startedAt time
 		// rather than silently deleting it and leaving the Lock Screen stuck.
 		state.Active = false
 		event := m.makeEventLocked(carID, &state, "navigation_ended", time.Now().UTC())
+		m.store.Cars[carID] = state
+		endings = append(endings, event)
+	}
+	_ = m.saveLocked()
+	m.mu.Unlock()
+	for _, event := range endings {
+		m.enqueue(event)
+	}
+}
+
+func (m *navigationNotificationMonitor) expireStaleSessionsWorker() {
+	m.expireStaleSessions(time.Now().UTC())
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+	for now := range ticker.C {
+		m.expireStaleSessions(now.UTC())
+	}
+}
+
+// A retained active route must never become an immortal Live Activity when
+// MQTT stops updating without publishing a terminal route. End stale sessions
+// through the normal priority delivery path so the iPhone card is dismissed.
+func (m *navigationNotificationMonitor) expireStaleSessions(now time.Time) {
+	var endings []navigationLiveActivityEvent
+	m.mu.Lock()
+	if !m.enabled {
+		m.mu.Unlock()
+		return
+	}
+	for carID, state := range m.store.Cars {
+		if !state.Active || state.SessionID == "" ||
+			!timestampIsOlderThan(state.SessionStartedAt, now, navigationTransientMaximumAge) {
+			continue
+		}
+		if timer := m.pending[carID]; timer != nil {
+			timer.Stop()
+			delete(m.pending, carID)
+		}
+		state.Active = false
+		event := m.makeEventLocked(carID, &state, "navigation_ended", now)
+		event.EndReason = "stale"
+		event.endReasonOverride = "stale"
 		m.store.Cars[carID] = state
 		endings = append(endings, event)
 	}

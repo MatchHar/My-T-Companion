@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Let trusted deployment tools provide `MY_T_EXPECTED_SHA256`, so a release
+  archive can be checked against a separately signed catalog digest in addition
+  to its publisher checksum.
+- End active navigation state older than 12 hours through the normal terminal
+  event path, matching the documented lifecycle and dismissing orphaned Live
+  Activities.
+- Add tag-release tests, vulnerability scanning, reproducible source archives,
+  checksums, and GitHub artifact provenance.
+
 ## 1.10.28
 
 - Pin every software, charging, navigation, and lock-secure delivery to the

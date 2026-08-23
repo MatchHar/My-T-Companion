@@ -82,7 +82,7 @@ TeslaMate 未長期保存的真實 MQTT 狀態變化，例如開始充電前已�
 啟動後的第一個保留值只建立基線，不會產生假事件。事件時間代表「TeslaMate／
 Companion 首次觀測時間」，不冒充更精確的實體操作時間。停車事件預設長期保留，
 並以最新 50,000 筆作為容量保護；導航及推送等暫時狀態按各自期限自動清理。
-詳細分類請參閱[資料生命週期](DATA_LIFECYCLE.md)。
+詳細分類請參閱[資料生命週期](DATA_LIFECYCLE.zh-Hant.md)。
 
 若中繼暫時無法使用，或 ActivityKit 尚未登記該工作階段權杖，Companion 只會在
 使用者自己的 VPS 上，以 `0600` 權限暫存完成重試所需的最少簽署事件。重試記錄
@@ -334,7 +334,7 @@ Nginx、Traefik 或容器代理時，必須加入並驗證倉庫提供的路由�
 - HTTP 服務設定讀取、寫入、請求標頭及閒置逾時。
 - API Token 使用固定時間比較。
 
-詳細要求請閱讀 [SECURITY.md](SECURITY.md)。
+詳細要求請閱讀[安全性政策](SECURITY.zh-Hant.md)。
 
 ## 驗證
 
@@ -374,6 +374,9 @@ My T 亦可能顯示類似
 `sudo MY_T_VERSION=<已驗證版本> /opt/my-t-companion/update.sh`
 的指定版本指令。這是刻意設計：App 固定至該 App 版本已驗證相容的最新
 Companion；永久指令則供明確希望跟隨伺服器最新穩定版的管理員使用。
+可信任的部署工具也可設定
+`MY_T_EXPECTED_SHA256=<簽章目錄中的摘要>`；即使 Release 清單也同時被變更，
+更新程式仍會拒絕與簽章目錄不一致的安裝包。
 
 元件沒有獨立資料庫或資料遷移。更新不會改變 TeslaMate 歷史資料。
 
@@ -410,8 +413,10 @@ My T 透過 `/api/v1/capabilities` 自動偵測元件。未安裝或無法使用
 
 ## 相容性與版本記錄
 
-- [相容性與發布驗證](COMPATIBILITY.md)
-- [安全政策](SECURITY.md)
+- [相容性與版本驗證](COMPATIBILITY.zh-Hant.md)
+- [安全性政策](SECURITY.zh-Hant.md)
+- [支援](SUPPORT.zh-Hant.md)
+- [資料生命週期](DATA_LIFECYCLE.zh-Hant.md)
 - [版本更新記錄](CHANGELOG.md)
 - [MIT License](LICENSE)
 

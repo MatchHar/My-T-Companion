@@ -77,6 +77,50 @@ func TestObserveStickyLastKnownGeofence(t *testing.T) {
 	}
 }
 
+func TestExpireStaleNavigationSessionQueuesTerminalEvent(t *testing.T) {
+	tmp := t.TempDir()
+	now := mustParseTime(t, "2026-08-23T12:00:00Z")
+	m := &navigationNotificationMonitor{
+		statePath:     filepath.Join(tmp, "nav.json"),
+		historyPath:   filepath.Join(tmp, "history.json"),
+		queue:         make(chan navigationLiveActivityEvent, 2),
+		priorityQueue: make(chan navigationLiveActivityEvent, 2),
+		pending:       map[int]*time.Timer{},
+		store: navigationNotificationStore{
+			Cars: map[int]carNavigationState{
+				1: {
+					DisplayName:      "My T",
+					Destination:      "Office",
+					Active:           true,
+					SessionID:        "navigation-stale-test",
+					SessionStartedAt: now.Add(-navigationTransientMaximumAge - time.Minute).Format(time.RFC3339),
+					LastObservedAt:   now.Add(-time.Minute).Format(time.RFC3339),
+				},
+			},
+			Delivered: map[string]string{},
+		},
+		history:        navigationPushHistoryStore{},
+		installationID: "install-test",
+		enabled:        true,
+	}
+
+	m.expireStaleSessions(now)
+	m.mu.Lock()
+	state := m.store.Cars[1]
+	m.mu.Unlock()
+	if state.Active {
+		t.Fatal("stale navigation session remained active")
+	}
+	select {
+	case event := <-m.priorityQueue:
+		if event.Type != "navigation_ended" || event.EndReason != "stale" {
+			t.Fatalf("unexpected terminal event: %+v", event)
+		}
+	default:
+		t.Fatal("expected stale navigation terminal event")
+	}
+}
+
 func TestDestinationLabelUpgradeKeepsNavigationSession(t *testing.T) {
 	tmp := t.TempDir()
 	m := &navigationNotificationMonitor{

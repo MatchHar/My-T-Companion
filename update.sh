@@ -6,6 +6,7 @@ REPOSITORY="${MY_T_GITHUB_REPOSITORY:-MatchHar/My-T-Companion}"
 REQUESTED_VERSION="${MY_T_VERSION:-latest}"
 SOURCE_OVERRIDE="${MY_T_UPDATE_SOURCE_DIR:-}"
 RELEASE_BASE_OVERRIDE="${MY_T_RELEASE_BASE_URL:-}"
+EXPECTED_SHA256="${MY_T_EXPECTED_SHA256:-}"
 
 fail() {
   printf '[My T VPS Companion] ERROR: %s\n' "$*" >&2
@@ -38,6 +39,9 @@ if [[ "$REQUESTED_VERSION" == "latest" ]]; then
 fi
 [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || fail "Invalid release version: $REQUESTED_VERSION"
+if [[ -n "$EXPECTED_SHA256" && ! "$EXPECTED_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+  fail "MY_T_EXPECTED_SHA256 must be a lowercase SHA-256 digest."
+fi
 
 archive_name="my-t-companion-${REQUESTED_VERSION}.tar.gz"
 release_base="${RELEASE_BASE_OVERRIDE:-https://github.com/${REPOSITORY}/releases/download/v${REQUESTED_VERSION}}"
@@ -56,6 +60,10 @@ curl --fail --silent --show-error --location \
   cd "$work_dir"
   sha256sum --check "$archive_name.sha256"
 )
+actual_sha256="$(sha256sum "$work_dir/$archive_name" | awk '{print $1}')"
+if [[ -n "$EXPECTED_SHA256" && "$actual_sha256" != "$EXPECTED_SHA256" ]]; then
+  fail "Release archive does not match MY_T_EXPECTED_SHA256."
+fi
 
 mkdir "$work_dir/source"
 tar --extract --gzip --file "$work_dir/$archive_name" \

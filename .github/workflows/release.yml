@@ -7,17 +7,39 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Verify tag matches VERSION
         run: test "${GITHUB_REF_NAME}" = "v$(tr -d '[:space:]' < VERSION)"
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Scan Go dependencies for reachable vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - run: scripts/check-docker-sources.sh
+      - run: scripts/verify-hostbox-catalog.sh
+      - run: scripts/verify-documentation-parity.sh
       - run: docker build --tag myt/companion:${{ github.ref_name }} .
       - run: scripts/build-release.sh
+      - name: Attest release archives and checksums
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

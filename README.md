@@ -479,6 +479,9 @@ My T may instead show a version-pinned command such as
 the App pins the newest Companion version verified with that App build, while
 the permanent command is for administrators who explicitly want the newest
 stable server release.
+Trusted deployment tools may additionally set
+`MY_T_EXPECTED_SHA256=<signed-catalog-digest>`; the updater then rejects an
+archive even when its separately downloaded release manifest also changed.
 
 The service has no private SQL database or migration. Its bounded local state
 volume keeps parking observations and push-delivery state; updating it does

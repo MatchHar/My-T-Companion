@@ -1,5 +1,7 @@
 # Security policy
 
+English · [简体中文](SECURITY.zh-Hans.md) · [繁體中文](SECURITY.zh-Hant.md)
+
 ## Supported versions
 
 Security fixes are provided for the

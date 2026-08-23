@@ -1,5 +1,7 @@
 # Support
 
+English · [简体中文](SUPPORT.zh-Hans.md) · [繁體中文](SUPPORT.zh-Hant.md)
+
 Before opening an issue:
 
 1. Confirm TeslaMate itself is healthy and still recording the expected car.
