@@ -12,6 +12,7 @@ COPY VERSION ./
 COPY *.go ./
 RUN test -f lock_secure_notification.go \
   && test -f push_subscribers.go \
+  && test -f teslamate_version.go \
   && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/states-api .
 
 FROM alpine:3.24

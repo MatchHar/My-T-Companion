@@ -212,6 +212,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.29 | Live TeslaMate version probing with explicit source/time metadata and safe fallback to install metadata |
 | 1.0.0 | Read-only parking state-history endpoint |
 | 1.1.0 | Existing TeslaMate API authentication boundary |
 | 1.2.0 | Timestamped, freshness-limited battery and rated-range observations |

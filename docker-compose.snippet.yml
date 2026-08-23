@@ -1,6 +1,6 @@
   mycarmate-states-api:
     build: /opt/teslamate/my-t-companion
-    image: myt/companion:1.10.28
+    image: myt/companion:1.10.29
     restart: unless-stopped
     init: true
     cpus: 1.0
@@ -20,6 +20,7 @@
       - DATABASE_PASS=${DATABASE_PASS}
       - DATABASE_NAME=teslamate
       - DATABASE_HOST=database
+      - TESLAMATE_WEB_URL=http://teslamate:4000
       - PGOPTIONS=-c default_transaction_read_only=on
       - API_TOKEN=${MY_T_API_TOKEN}
       - AUTH_PROBE_URL=${AUTH_PROBE_URL:-}

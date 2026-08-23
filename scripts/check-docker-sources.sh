@@ -31,6 +31,7 @@ fi
 
 required=(
   main.go
+  teslamate_version.go
   notification.go
   charging_notification.go
   navigation_notification.go
@@ -43,7 +44,7 @@ for f in "${required[@]}"; do
   [[ -f "$repo_dir/$f" ]] || { echo "missing required $f" >&2; exit 1; }
   grep -qE 'test -f '"$f" "$df" || true
 done
-for f in lock_secure_notification.go push_subscribers.go; do
+for f in lock_secure_notification.go push_subscribers.go teslamate_version.go; do
   grep -qF "test -f $f" "$df" || {
     echo "Dockerfile must test -f $f before go build" >&2
     exit 1

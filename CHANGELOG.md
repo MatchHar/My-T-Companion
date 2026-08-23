@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.10.29
+
+- Report the live TeslaMate version from its internal settings page instead of
+  trusting installation-time metadata that can become stale after an upgrade.
+- Expose the version source and observation time so My T can distinguish a
+  current probe from a fallback value.
+- Make installation and updates derive `TESLAMATE_VERSION` from the running
+  TeslaMate container before consulting an older saved value.
+- Include the live-version probe in release completeness and container build
+  checks, with regression tests for live and fallback paths.
 - Let trusted deployment tools provide `MY_T_EXPECTED_SHA256`, so a release
   archive can be checked against a separately signed catalog digest in addition
   to its publisher checksum.

@@ -209,6 +209,7 @@ require_command curl
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || fail "Invalid or missing VERSION file."
 [[ -f "$SOURCE_DIR/Dockerfile" && -f "$SOURCE_DIR/main.go" &&
+   -f "$SOURCE_DIR/teslamate_version.go" &&
    -f "$SOURCE_DIR/notification.go" && -f "$SOURCE_DIR/charging_notification.go" &&
    -f "$SOURCE_DIR/navigation_notification.go" && -f "$SOURCE_DIR/parking_event_monitor.go" &&
    -f "$SOURCE_DIR/storage_policy.go" && -f "$SOURCE_DIR/lock_secure_notification.go" &&
@@ -364,20 +365,26 @@ timezone="$(
   resolve_secret TZ "" || printf 'UTC'
 )"
 
-# TeslaMate app version for My T (avoids HTML scrape of LiveView / :4000 / Access).
-teslamate_version="$(
-  resolve_secret TESLAMATE_VERSION "" || true
-)"
-if [[ -z "$teslamate_version" && -n "${TESLAMATE_CONTAINER:-}" ]]; then
+# TeslaMate app version fallback for My T. Always prefer the currently running
+# container over saved Companion metadata; otherwise upgrades preserve an old
+# TESLAMATE_VERSION forever. Runtime capabilities also probe the private web UI.
+teslamate_version=""
+if [[ -n "${TESLAMATE_CONTAINER:-}" ]]; then
   tm_image="$(docker inspect "$TESLAMATE_CONTAINER" --format '{{.Config.Image}}' 2>/dev/null || true)"
-  if [[ -n "$tm_image" && "$tm_image" == *:* ]]; then
-    teslamate_version="${tm_image##*:}"
-    # Drop digests / latest noise for display
-    if [[ "$teslamate_version" == "latest" || "$teslamate_version" == sha256* ]]; then
-      teslamate_version=""
-    fi
+  tm_tag_ref="${tm_image%@*}"
+  tm_last_component="${tm_tag_ref##*/}"
+  if [[ "$tm_last_component" == *:* ]]; then
+    teslamate_version="${tm_last_component##*:}"
+  fi
+  if [[ ! "$teslamate_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    teslamate_version=""
   fi
 fi
+if [[ -z "$teslamate_version" ]]; then
+  teslamate_version="$(resolve_secret TESLAMATE_VERSION "" || true)"
+fi
+teslamate_web_url="$(resolve_secret TESLAMATE_WEB_URL "" || true)"
+[[ -n "$teslamate_web_url" ]] || teslamate_web_url="http://teslamate:4000"
 
 log "Config source: .env is optional; used compose config / containers / env when present."
 log "DB host=${database_host} user=${database_user} name=${database_name}; MQTT=${mqtt_broker_url}"
@@ -440,6 +447,7 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   # Production sources required by Dockerfile (explicit list + glob so new files are not dropped).
   required_go=(
     main.go
+    teslamate_version.go
     notification.go
     charging_notification.go
     navigation_notification.go
@@ -484,7 +492,7 @@ else
   log "Running from the installed directory; service source files are already current"
 fi
 # Always verify production sources before docker build (covers in-place reinstalls).
-for name in main.go notification.go charging_notification.go navigation_notification.go \
+for name in main.go teslamate_version.go notification.go charging_notification.go navigation_notification.go \
   parking_event_monitor.go storage_policy.go lock_secure_notification.go \
   push_subscribers.go Dockerfile VERSION; do
   [[ -f "$INSTALL_DIR/$name" ]] || fail "Missing build file: $INSTALL_DIR/$name — re-run from a complete release package"
@@ -516,6 +524,7 @@ umask 077
   printf 'TZ=%s\n' "$timezone"
   printf 'TESLAMATE_NETWORK=%s\n' "$database_network"
   printf 'TESLAMATE_VERSION=%s\n' "$teslamate_version"
+  printf 'TESLAMATE_WEB_URL=%s\n' "$teslamate_web_url"
   printf 'PUSH_INSTALLATION_ID=%s\n' "$push_installation_id"
   printf 'PUSH_RELAY_URL=%s\n' "$push_relay_url"
   printf 'PUSH_RELAY_SECRET=%s\n' "$push_relay_secret"
@@ -567,6 +576,7 @@ YAML
       TZ: \${TZ:-UTC}
       MQTT_BROKER_URL: "$(yaml_escape "$mqtt_broker_url")"
       TESLAMATE_VERSION: \${TESLAMATE_VERSION:-}
+      TESLAMATE_WEB_URL: \${TESLAMATE_WEB_URL:-http://teslamate:4000}
       PUSH_INSTALLATION_ID: \${PUSH_INSTALLATION_ID:-}
       PUSH_RELAY_URL: \${PUSH_RELAY_URL:-}
       PUSH_RELAY_SECRET: \${PUSH_RELAY_SECRET:-}

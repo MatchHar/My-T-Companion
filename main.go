@@ -521,10 +521,13 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"updates",
 		},
 	}
-	// Optional: HostBox / installer can set TESLAMATE_VERSION from the running image tag
-	// so My T can show TeslaMate version without scraping the LiveView HTML (:4000 / Access).
-	if tm := strings.TrimSpace(os.Getenv("TESLAMATE_VERSION")); tm != "" {
+	// Prefer a live read on the private TeslaMate network. Static install
+	// metadata is reported explicitly as a fallback so clients never confuse it
+	// with a fresh observation after upgrading TeslaMate independently.
+	if tm, source, checkedAt := currentTeslaMateVersion(r.Context()); tm != "" {
 		payload["teslamate_version"] = tm
+		payload["teslamate_version_source"] = source
+		payload["teslamate_version_checked_at"] = checkedAt.Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, payload)
 }

@@ -42,7 +42,8 @@ if [[ -n "$token" ]]; then
     pass "capabilities OK version=${ver:-?}"
     if echo "$body" | grep -q 'teslamate_version'; then
       tm="$(echo "$body" | sed -n 's/.*"teslamate_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-      pass "teslamate_version=${tm}"
+      tm_source="$(echo "$body" | sed -n 's/.*"teslamate_version_source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+      pass "teslamate_version=${tm} source=${tm_source:-unknown}"
     else
       note "no teslamate_version in capabilities (optional; HostBox/install may set TESLAMATE_VERSION)"
     fi
