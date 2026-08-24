@@ -9,13 +9,13 @@ import (
 
 func floatPointer(value float64) *float64 { return &value }
 
-func TestResolveNavigationStartNamePrefersLiveThenSticky(t *testing.T) {
+func TestResolveNavigationStartNameIgnoresStickyFenceFromOlderDrive(t *testing.T) {
 	// db is nil in unit tests → no SQL fallbacks.
 	if got := resolveNavigationStartName(1, "  Home  ", "Office"); got != "Home" {
 		t.Fatalf("live geofence: got %q", got)
 	}
-	if got := resolveNavigationStartName(1, "", "  Office  "); got != "Office" {
-		t.Fatalf("sticky geofence: got %q", got)
+	if got := resolveNavigationStartName(1, "", "  Office  "); got != "" {
+		t.Fatalf("stale sticky geofence leaked into current drive: got %q", got)
 	}
 	if got := resolveNavigationStartName(1, "   ", ""); got != "" {
 		t.Fatalf("empty: got %q", got)
@@ -54,7 +54,8 @@ func TestObserveStickyLastKnownGeofence(t *testing.T) {
 		t.Fatalf("sticky last known: got %q", state.LastKnownGeofence)
 	}
 
-	// Start navigation after leaving geofence — start_name must still resolve to Home.
+	// Start navigation after leaving geofence. The old Home label remains useful
+	// only as diagnostic state; the active drive database will own start_name.
 	m.observe(1, "active_route", `{"destination":"Airport"}`, now.Add(time.Minute))
 	m.mu.Lock()
 	state = m.store.Cars[1]
@@ -62,18 +63,48 @@ func TestObserveStickyLastKnownGeofence(t *testing.T) {
 	if !state.Active {
 		t.Fatal("expected active navigation session")
 	}
-	if state.StartName != "Home" {
-		t.Fatalf("start_name after leave: got %q want Home", state.StartName)
+	if state.StartName != "" {
+		t.Fatalf("stale start_name after leave: got %q", state.StartName)
 	}
 
 	// Drain queued start so channel doesn't block later tests in same process.
 	select {
 	case event := <-m.queue:
-		if event.StartName != "Home" || event.Destination != "Airport" {
+		if event.StartName != "" || event.Destination != "Airport" {
 			t.Fatalf("queued event start/dest: %+v", event)
 		}
 	default:
 		t.Fatal("expected navigation_started to be queued")
+	}
+}
+
+func TestReplayActiveNavigationTargetsOnlyNewlyEnabledInstallation(t *testing.T) {
+	tmp := t.TempDir()
+	m := &navigationNotificationMonitor{
+		statePath:     filepath.Join(tmp, "nav.json"),
+		historyPath:   filepath.Join(tmp, "history.json"),
+		queue:         make(chan navigationLiveActivityEvent, 2),
+		priorityQueue: make(chan navigationLiveActivityEvent, 2),
+		pending:       map[int]*time.Timer{},
+		store: navigationNotificationStore{
+			Cars: map[int]carNavigationState{1: {
+				DisplayName:      "My T",
+				Destination:      "Airport",
+				Active:           true,
+				SessionID:        "navigation-live-test",
+				SessionStartedAt: "2026-08-24T12:00:00Z",
+			}},
+			Delivered: map[string]string{},
+		},
+		history: navigationPushHistoryStore{},
+	}
+
+	if got := m.replayActiveStarts("new-installation"); got != 1 {
+		t.Fatalf("replayed=%d", got)
+	}
+	event := <-m.queue
+	if event.targetInstallationID != "new-installation" || !event.liveActivityOnly {
+		t.Fatalf("replay scope=%+v", event)
 	}
 }
 

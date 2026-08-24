@@ -236,6 +236,7 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
+	before := pushRegistry.snapshot(req.InstallationID)
 	result, err := pushRegistry.upsert(req)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -246,7 +247,19 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyRegistryToMonitors()
+	if subscriberFeatureBecameActive(before, result, "charging_live_activity") && chargingPush != nil {
+		chargingPush.replayActiveStarts(req.InstallationID)
+	}
+	if subscriberFeatureBecameActive(before, result, "navigation_live_activity") && navigationPush != nil {
+		navigationPush.replayActiveStarts(req.InstallationID)
+	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func subscriberFeatureBecameActive(before, after map[string]any, key string) bool {
+	wasActive := before["self_status"] == string(pushStatusActive) && before[key] == true
+	isActive := after["self_status"] == string(pushStatusActive) && after[key] == true
+	return !wasActive && isActive
 }
 
 func applyRegistryToMonitors() {

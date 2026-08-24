@@ -283,6 +283,50 @@ func TestNavigationCanStartBeforeOptionalMetricsArrive(t *testing.T) {
 	}
 }
 
+func TestSubscriberFeatureBecameActive(t *testing.T) {
+	before := map[string]any{
+		"self_status":              "active",
+		"navigation_live_activity": false,
+	}
+	after := map[string]any{
+		"self_status":              "active",
+		"navigation_live_activity": true,
+	}
+	if !subscriberFeatureBecameActive(before, after, "navigation_live_activity") {
+		t.Fatal("off to on must request an active-session replay")
+	}
+	if subscriberFeatureBecameActive(after, after, "navigation_live_activity") {
+		t.Fatal("unchanged enabled preference must not replay")
+	}
+}
+
+func TestReplayActiveChargingTargetsOnlyNewlyEnabledInstallation(t *testing.T) {
+	tmp := t.TempDir()
+	battery := 55
+	m := &chargingNotificationMonitor{
+		statePath: filepath.Join(tmp, "charging.json"),
+		queue:     make(chan chargingLiveActivityEvent, 2),
+		pending:   map[int]*time.Timer{},
+		store: chargingNotificationStore{
+			Cars: map[int]carChargingState{1: {
+				DisplayName:  "My T",
+				Active:       true,
+				SessionID:    "charge-live-test",
+				BatteryLevel: &battery,
+			}},
+			Delivered: map[string]string{},
+		},
+	}
+
+	if got := m.replayActiveStarts("new-installation"); got != 1 {
+		t.Fatalf("replayed=%d", got)
+	}
+	event := <-m.queue
+	if event.targetInstallationID != "new-installation" || event.Type != "charging_started" {
+		t.Fatalf("replay scope=%+v", event)
+	}
+}
+
 func TestNavigationEndUsesPriorityQueue(t *testing.T) {
 	monitor := &navigationNotificationMonitor{
 		queue:         make(chan navigationLiveActivityEvent, 1),
