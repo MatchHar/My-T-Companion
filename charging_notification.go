@@ -27,23 +27,24 @@ const (
 )
 
 type chargingLiveActivityEvent struct {
-	EventID             string   `json:"event_id"`
-	InstallationID      string   `json:"installation_id"`
-	CarID               int      `json:"car_id"`
-	VehicleName         string   `json:"vehicle_name,omitempty"`
-	Type                string   `json:"type"`
-	SessionID           string   `json:"session_id"`
-	StartBatteryLevel   int      `json:"start_battery_level"`
-	BatteryLevel        int      `json:"battery_level"`
-	AddedBatteryPercent int      `json:"added_battery_percent"`
-	TargetLevel         int      `json:"target_level"`
-	StartRatedRangeKM   *float64 `json:"start_rated_range_km,omitempty"`
-	RatedRangeKM        *float64 `json:"rated_range_km,omitempty"`
-	AddedRangeKM        *float64 `json:"added_range_km,omitempty"`
-	PowerKW             *float64 `json:"power_kw,omitempty"`
-	RemainingSeconds    *int     `json:"remaining_seconds,omitempty"`
-	EstimatedCompleteAt *int64   `json:"estimated_complete_at,omitempty"`
-	ObservedAt          string   `json:"observed_at"`
+	EventID              string   `json:"event_id"`
+	InstallationID       string   `json:"installation_id"`
+	CarID                int      `json:"car_id"`
+	VehicleName          string   `json:"vehicle_name,omitempty"`
+	Type                 string   `json:"type"`
+	SessionID            string   `json:"session_id"`
+	StartBatteryLevel    int      `json:"start_battery_level"`
+	BatteryLevel         int      `json:"battery_level"`
+	AddedBatteryPercent  int      `json:"added_battery_percent"`
+	TargetLevel          int      `json:"target_level"`
+	StartRatedRangeKM    *float64 `json:"start_rated_range_km,omitempty"`
+	RatedRangeKM         *float64 `json:"rated_range_km,omitempty"`
+	AddedRangeKM         *float64 `json:"added_range_km,omitempty"`
+	PowerKW              *float64 `json:"power_kw,omitempty"`
+	RemainingSeconds     *int     `json:"remaining_seconds,omitempty"`
+	EstimatedCompleteAt  *int64   `json:"estimated_complete_at,omitempty"`
+	ObservedAt           string   `json:"observed_at"`
+	targetInstallationID string
 }
 
 type carChargingState struct {
@@ -477,6 +478,33 @@ func (m *chargingNotificationMonitor) enqueue(event chargingLiveActivityEvent) {
 	}
 }
 
+// Replay an in-progress charge only to the installation that just enabled
+// Lock Screen cards. This repairs off→on without waiting for the next charge.
+func (m *chargingNotificationMonitor) replayActiveStarts(installationID string) int {
+	installationID = strings.TrimSpace(installationID)
+	if installationID == "" {
+		return 0
+	}
+	m.mu.Lock()
+	events := make([]chargingLiveActivityEvent, 0, len(m.store.Cars))
+	now := time.Now().UTC()
+	for carID, state := range m.store.Cars {
+		if !state.Active || state.SessionID == "" || state.BatteryLevel == nil {
+			continue
+		}
+		event := m.makeEventLocked(carID, &state, "charging_started", now)
+		event.targetInstallationID = installationID
+		m.store.Cars[carID] = state
+		events = append(events, event)
+	}
+	_ = m.saveLocked()
+	m.mu.Unlock()
+	for _, event := range events {
+		m.enqueue(event)
+	}
+	return len(events)
+}
+
 func (m *chargingNotificationMonitor) deliveryWorker() {
 	for event := range m.queue {
 		m.deliverWithRetry(event)
@@ -521,7 +549,10 @@ func (m *chargingNotificationMonitor) deliverWithRetry(event chargingLiveActivit
 func (m *chargingNotificationMonitor) deliver(event chargingLiveActivityEvent) error {
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
-		subs = pushRegistry.matching(event.CarID, func(s pushSubscriber) bool { return s.ChargingLiveActivity })
+		subs = pushRegistry.matching(event.CarID, func(s pushSubscriber) bool {
+			return s.ChargingLiveActivity &&
+				(event.targetInstallationID == "" || s.InstallationID == event.targetInstallationID)
+		})
 	} else if m.installationID != "" {
 		subs = []pushSubscriber{{
 			InstallationID:       m.installationID,

@@ -7,10 +7,10 @@ signed relay delivery. Version `1.7.1` adds destination-navigation Live Activity
 without changing APIs or deployment. Parking and navigation remain usable
 without pairing.
 
-The 1.10.29 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
-stable line, together with TeslaMateAPI 1.25.0. The live version probe is
-read-only and falls back safely when an older or customized TeslaMate web page
-does not expose a parseable version.
+The 1.10.30 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
+stable line, together with TeslaMateAPI 1.25.0. Targeted Live Activity catch-up
+uses the existing subscriber registry and introduces no database migration or
+pairing change.
 
 ## Required baseline
 

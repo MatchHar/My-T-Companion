@@ -49,6 +49,10 @@ type navigationLiveActivityEvent struct {
 	ObservedAt      string `json:"observed_at"`
 	// Optional history end_reason override (not sent to push relay).
 	endReasonOverride string
+	// Re-pair recovery can replay a start to one installation without sending
+	// another destination banner to every phone.
+	targetInstallationID string
+	liveActivityOnly     bool
 }
 
 type activeRouteMQTT struct {
@@ -435,7 +439,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
 		// New session for the new destination — re-resolve start place for this leg.
-		state.StartName = knownNavigationStartName(state.Geofence, state.LastKnownGeofence)
+		state.StartName = strings.TrimSpace(state.Geofence)
 		sessionID := state.SessionID
 		startEvent := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
@@ -457,7 +461,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.Sequence = 0
 		state.StartDelivered = false
 		state.LastQueuedAt = ""
-		state.StartName = knownNavigationStartName(state.Geofence, state.LastKnownGeofence)
+		state.StartName = strings.TrimSpace(state.Geofence)
 		sessionID := state.SessionID
 		event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
@@ -516,13 +520,11 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	}
 }
 
-func knownNavigationStartName(liveGeofence, lastKnownGeofence string) string {
-	for _, candidate := range []string{liveGeofence, lastKnownGeofence} {
-		if name := strings.TrimSpace(candidate); name != "" {
-			return name
-		}
-	}
-	return ""
+func knownNavigationStartName(liveGeofence, _ string) string {
+	// `lastKnownGeofence` used to leak a previous Home/Office fence into later
+	// drives. Only a geofence still attached to the current MQTT snapshot is an
+	// acceptable immediate label; database enrichment owns the drive boundary.
+	return strings.TrimSpace(liveGeofence)
 }
 
 // Database enrichment never runs while the MQTT state mutex is held. Slow or
@@ -571,8 +573,9 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 			changed = true
 		}
 	}
-	if strings.TrimSpace(state.StartName) == "" && strings.TrimSpace(startName) != "" {
-		state.StartName = strings.TrimSpace(startName)
+	if authoritative := strings.TrimSpace(startName); authoritative != "" && state.StartName != authoritative {
+		state.StartName = authoritative
+		m.replaceHistoryStartNameLocked(sessionID, authoritative)
 		changed = true
 	}
 	if !changed {
@@ -580,6 +583,7 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 	}
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
+	_ = m.saveHistoryLocked()
 	if state.StartDelivered {
 		m.scheduleUpdateLocked(carID, time.Now().UTC())
 	}
@@ -694,9 +698,10 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 	return event
 }
 
-// resolveNavigationStartName prefers (1) live MQTT geofence, (2) sticky last
-// non-empty geofence, (3) open-drive start geofence/address, (4) first position
-// address on the open drive, (5) previous completed drive end place.
+// resolveNavigationStartName prefers (1) the current MQTT geofence, (2) the
+// open-drive start geofence/address, (3) the first addressed position on the
+// open drive, then (4) the previous completed drive end place. A sticky fence
+// is deliberately ignored because it is not scoped to the active drive.
 // Empty string means unknown — App may still fall back to matching a TeslaMate drive.
 func resolveNavigationStartName(carID int, liveGeofence, lastKnownGeofence string) string {
 	if name := knownNavigationStartName(liveGeofence, lastKnownGeofence); name != "" {
@@ -827,6 +832,35 @@ func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEven
 	m.mu.Unlock()
 }
 
+// replayActiveStarts gives a newly enabled iPhone the current card immediately
+// instead of waiting for a new destination. Delivery is scoped to that one
+// installation and intentionally excludes the ordinary trip-start banner.
+func (m *navigationNotificationMonitor) replayActiveStarts(installationID string) int {
+	installationID = strings.TrimSpace(installationID)
+	if installationID == "" {
+		return 0
+	}
+	m.mu.Lock()
+	events := make([]navigationLiveActivityEvent, 0, len(m.store.Cars))
+	now := time.Now().UTC()
+	for carID, state := range m.store.Cars {
+		if !state.Active || state.SessionID == "" || strings.TrimSpace(state.Destination) == "" {
+			continue
+		}
+		event := m.makeEventLocked(carID, &state, "navigation_started", now)
+		event.targetInstallationID = installationID
+		event.liveActivityOnly = true
+		m.store.Cars[carID] = state
+		events = append(events, event)
+	}
+	_ = m.saveLocked()
+	m.mu.Unlock()
+	for _, event := range events {
+		m.enqueue(event)
+	}
+	return len(events)
+}
+
 // enqueueAlreadyLocked records history and enqueues delivery. Caller must hold m.mu.
 func (m *navigationNotificationMonitor) enqueueAlreadyLocked(event navigationLiveActivityEvent) {
 	m.recordHistoryEventLocked(event, "queued")
@@ -955,6 +989,9 @@ func (m *navigationNotificationMonitor) expireStaleSessions(now time.Time) {
 
 func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEvent) error {
 	laErr := m.deliverTo(event, func(s pushSubscriber) bool { return s.NavigationLiveActivity })
+	if event.liveActivityOnly {
+		return laErr
+	}
 	alertType := ""
 	switch event.Type {
 	case "navigation_started":
@@ -983,7 +1020,9 @@ func (m *navigationNotificationMonitor) deliverTo(
 ) error {
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
-		subs = pushRegistry.matching(event.CarID, pred)
+		subs = pushRegistry.matching(event.CarID, func(sub pushSubscriber) bool {
+			return pred(sub) && (event.targetInstallationID == "" || sub.InstallationID == event.targetInstallationID)
+		})
 	} else if m.installationID != "" && pred(pushSubscriber{
 		InstallationID:         m.installationID,
 		NavigationLiveActivity: true,
@@ -1215,6 +1254,20 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		m.history.Sessions = m.history.Sessions[:navigationPushHistoryLimit]
 	}
 	_ = m.saveHistoryLocked()
+}
+
+func (m *navigationNotificationMonitor) replaceHistoryStartNameLocked(sessionID, startName string) {
+	startName = strings.TrimSpace(startName)
+	if sessionID == "" || startName == "" {
+		return
+	}
+	for index := range m.history.Sessions {
+		if m.history.Sessions[index].SessionID == sessionID {
+			m.history.Sessions[index].StartName = startName
+			m.history.Sessions[index].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			return
+		}
+	}
 }
 
 func navigationEndReason(event navigationLiveActivityEvent) string {

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.10.30
+
+- Treat the nearest TeslaMate drive start address as authoritative for
+  destination-trip notifications, preventing an older home geofence from
+  becoming the origin of every trip.
+- Replay an already active charging or destination Live Activity to the one
+  iPhone that has just enabled the feature, without duplicating ordinary trip
+  alerts for other subscribers.
+- Keep replay delivery installation-specific and add regression coverage for
+  preference transitions, charging replay, navigation replay, and stale
+  geofence handling.
+
 ## 1.10.29
 
 - Report the live TeslaMate version from its internal settings page instead of
