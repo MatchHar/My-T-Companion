@@ -212,6 +212,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.31 | Privacy-minimal anonymous vehicle count and first/last-seen reporting, scoped per Companion rather than per phone |
 | 1.10.30 | Authoritative TeslaMate trip origins and targeted catch-up when one iPhone enables an active charging or navigation Live Activity |
 | 1.10.29 | Live TeslaMate version probing with explicit source/time metadata and safe fallback to install metadata |
 | 1.0.0 | Read-only parking state-history endpoint |
@@ -312,6 +313,15 @@ APNs credential. It stores the APNs device token and an opaque installation
 identifier needed for delivery, and receives only the privacy-minimal
 software-update event documented above. Each VPS signs its own events; one
 installation cannot send notifications for another installation.
+
+When push is paired, Companion also reports an anonymous inventory for operator
+counting. It generates and keeps a random namespace in its own data volume and
+HMAC-derives one stable alias per selected TeslaMate car. The relay retains only
+the alias and first/last seen times; it does not persist the alias together with
+an installation ID and does not receive a raw car ID, vehicle name, VIN, server
+address, Apple ID, phone identity, location, route, telemetry, software version,
+or notification content for this statistic. The same car therefore counts once
+across multiple paired iPhones on that Companion.
 
 Authenticated status:
 

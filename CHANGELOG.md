@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.10.31
+
+- Report a privacy-minimal anonymous vehicle inventory to the official relay
+  after push pairing, shortly after startup, and once daily.
+- Derive one stable alias per selected TeslaMate car with HMAC-SHA-256 using a
+  random Companion-local namespace. The namespace, raw car ID, vehicle name,
+  VIN, server address, installation relationship, location, route, telemetry,
+  software version, and notification content never enter this statistic.
+- Count the same TeslaMate car once across multiple paired iPhones while keeping
+  identical local car IDs on different Companion installations distinct.
 
 ## 1.10.30
 

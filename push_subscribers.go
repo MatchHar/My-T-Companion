@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,14 +13,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	maxPushSubscribers = 8
-	maxPushOutboxItems = 256
+	maxPushSubscribers          = 8
+	maxPushOutboxItems          = 256
+	maxVehicleRegistrationItems = 32
 )
 
 type pushSubscriberStatus string
@@ -65,8 +68,14 @@ func (s pushSubscriber) pairing() softwarePushPairing {
 }
 
 type pushSubscriberStore struct {
-	Subscribers []pushSubscriber `json:"subscribers"`
-	Outbox      []queuedPush     `json:"outbox,omitempty"`
+	Subscribers      []pushSubscriber `json:"subscribers"`
+	Outbox           []queuedPush     `json:"outbox,omitempty"`
+	VehicleNamespace string           `json:"vehicle_namespace,omitempty"`
+}
+
+type vehicleRegistrationReport struct {
+	InstallationID string   `json:"installation_id"`
+	VehicleAliases []string `json:"vehicle_aliases"`
 }
 
 type queuedPush struct {
@@ -108,6 +117,11 @@ func newPushSubscriberRegistry() *pushSubscriberRegistry {
 	}
 	r.load()
 	r.migrateLegacyPairingLocked()
+	if r.ensureVehicleNamespaceLocked() {
+		if err := r.saveLocked(); err != nil {
+			log.Printf("[warn] vehicle namespace save: %v", err)
+		}
+	}
 	return r
 }
 
@@ -150,8 +164,9 @@ func (r *pushSubscriberRegistry) load() {
 }
 
 func (r *pushSubscriberRegistry) start() {
-	r.wg.Add(1)
+	r.wg.Add(2)
 	go r.retryLoop()
+	go r.vehicleRegistrationLoop()
 }
 
 func (r *pushSubscriberRegistry) stop() {
@@ -172,6 +187,20 @@ func (r *pushSubscriberRegistry) saveLocked() error {
 		return err
 	}
 	return os.Rename(tmp, r.path)
+}
+
+func (r *pushSubscriberRegistry) ensureVehicleNamespaceLocked() bool {
+	decoded, err := hex.DecodeString(r.store.VehicleNamespace)
+	if err == nil && len(decoded) == 32 {
+		return false
+	}
+	random := make([]byte, 32)
+	if _, err := cryptorand.Read(random); err != nil {
+		log.Printf("[warn] vehicle namespace generation: %v", err)
+		return false
+	}
+	r.store.VehicleNamespace = hex.EncodeToString(random)
+	return true
 }
 
 func (r *pushSubscriberRegistry) migrateLegacyPairingLocked() {
@@ -535,6 +564,138 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	return response.StatusCode, nil
 }
 
+func (r *pushSubscriberRegistry) reportVehicleRegistrations(installationID string) error {
+	if db == nil {
+		return fmt.Errorf("database unavailable")
+	}
+	r.mu.Lock()
+	namespace := r.store.VehicleNamespace
+	subscribers := append([]pushSubscriber(nil), r.store.Subscribers...)
+	r.mu.Unlock()
+
+	var authSubscriber *pushSubscriber
+	for index := range subscribers {
+		if subscribers[index].Status != pushStatusActive {
+			continue
+		}
+		if installationID != "" && subscribers[index].InstallationID == installationID {
+			copy := subscribers[index]
+			authSubscriber = &copy
+			break
+		}
+		if authSubscriber == nil {
+			copy := subscribers[index]
+			authSubscriber = &copy
+		}
+	}
+	if authSubscriber == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(
+		ctx,
+		"SELECT id FROM cars WHERE id > 0 ORDER BY id LIMIT $1",
+		maxVehicleRegistrationItems,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	aliases := make([]string, 0)
+	for rows.Next() {
+		var carID int
+		if err := rows.Scan(&carID); err != nil {
+			return err
+		}
+		if !anyActiveSubscriberWantsCar(subscribers, carID) {
+			continue
+		}
+		alias, err := anonymousVehicleAlias(namespace, carID)
+		if err != nil {
+			return err
+		}
+		aliases = append(aliases, alias)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(aliases) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(vehicleRegistrationReport{
+		InstallationID: authSubscriber.InstallationID,
+		VehicleAliases: aliases,
+	})
+	if err != nil {
+		return err
+	}
+	if len(payload) > 16<<10 {
+		return fmt.Errorf("vehicle registration payload too large")
+	}
+	status, err := r.postVehicleRegistrations(*authSubscriber, payload)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("vehicle registration relay returned HTTP %d", status)
+	}
+	return nil
+}
+
+func anyActiveSubscriberWantsCar(subscribers []pushSubscriber, carID int) bool {
+	for _, sub := range subscribers {
+		if sub.Status == pushStatusActive && sub.wantsCar(carID) {
+			return true
+		}
+	}
+	return false
+}
+
+func anonymousVehicleAlias(namespace string, carID int) (string, error) {
+	key, err := hex.DecodeString(namespace)
+	if err != nil || len(key) != 32 || carID <= 0 {
+		return "", fmt.Errorf("invalid vehicle alias input")
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("my-t-vehicle-v1:" + strconv.Itoa(carID)))
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func (r *pushSubscriberRegistry) postVehicleRegistrations(sub pushSubscriber, payload []byte) (int, error) {
+	if !validPushSubscriber(sub) {
+		return 0, fmt.Errorf("invalid stored push subscriber")
+	}
+	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
+	_, _ = signature.Write(payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		officialVehicleRegistrationURL,
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-My-T-Installation", sub.InstallationID)
+	request.Header.Set("X-My-T-Signature", "sha256="+hex.EncodeToString(signature.Sum(nil)))
+	client := r.http
+	if client == nil {
+		client = http.DefaultClient
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	return response.StatusCode, nil
+}
+
 func (r *pushSubscriberRegistry) enqueue(sub pushSubscriber, metadata pushPayloadMetadata, payload []byte) error {
 	now := time.Now().UTC()
 	id := sub.InstallationID + ":" + metadata.EventID
@@ -572,6 +733,32 @@ func (r *pushSubscriberRegistry) retryLoop() {
 			return
 		case <-ticker.C:
 			r.retryDue(time.Now().UTC())
+		}
+	}
+}
+
+func (r *pushSubscriberRegistry) vehicleRegistrationLoop() {
+	defer r.wg.Done()
+	initial := time.NewTimer(30 * time.Second)
+	defer initial.Stop()
+	select {
+	case <-r.stopCh:
+		return
+	case <-initial.C:
+		if err := r.reportVehicleRegistrations(""); err != nil {
+			log.Printf("[warn] anonymous vehicle statistics: %v", err)
+		}
+	}
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-ticker.C:
+			if err := r.reportVehicleRegistrations(""); err != nil {
+				log.Printf("[warn] anonymous vehicle statistics: %v", err)
+			}
 		}
 	}
 }

@@ -23,6 +23,7 @@ import (
 
 // Official Cloudflare-hosted product push host (primary).
 const officialSoftwarePushRelayURL = "https://push.my-tesla.app/v1/events"
+const officialVehicleRegistrationURL = "https://push.my-tesla.app/v1/vehicle-registrations"
 
 func isTrustedSoftwarePushRelayURL(raw string) bool {
 	return strings.TrimSpace(raw) == officialSoftwarePushRelayURL
