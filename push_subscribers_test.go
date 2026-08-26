@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,47 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestAnonymousVehicleAliasIsStableAndServerScoped(t *testing.T) {
+	firstNamespace := strings.Repeat("11", 32)
+	secondNamespace := strings.Repeat("22", 32)
+	first, err := anonymousVehicleAlias(firstNamespace, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeat, err := anonymousVehicleAlias(firstNamespace, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCar, err := anonymousVehicleAlias(firstNamespace, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherServer, err := anonymousVehicleAlias(secondNamespace, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != repeat || first == otherCar || first == otherServer {
+		t.Fatalf("aliases must be stable per server/car and distinct across scope: %q %q %q %q", first, repeat, otherCar, otherServer)
+	}
+	if len(first) != 64 {
+		t.Fatalf("alias must be a SHA-256 hex digest, got %q", first)
+	}
+}
+
+func TestVehicleNamespacePersistsWithoutExposingCarIdentity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	first := newPushSubscriberRegistry()
+	namespace := first.store.VehicleNamespace
+	if len(namespace) != 64 {
+		t.Fatalf("expected generated namespace, got %q", namespace)
+	}
+	second := newPushSubscriberRegistry()
+	if second.store.VehicleNamespace != namespace {
+		t.Fatalf("vehicle namespace changed across reload: %q != %q", second.store.VehicleNamespace, namespace)
+	}
 }
 
 func testInstallation() (id, secret, url string) {

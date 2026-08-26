@@ -254,6 +254,11 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 		navigationPush.replayActiveStarts(req.InstallationID)
 	}
 	writeJSON(w, http.StatusOK, result)
+	go func(installationID string) {
+		if err := pushRegistry.reportVehicleRegistrations(installationID); err != nil {
+			log.Printf("[warn] anonymous vehicle statistics: %v", err)
+		}
+	}(req.InstallationID)
 }
 
 func subscriberFeatureBecameActive(before, after map[string]any, key string) bool {

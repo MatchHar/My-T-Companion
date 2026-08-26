@@ -52,13 +52,21 @@ Provider credentials belong only in the private Push Relay project and in Cloudf
 
 ## Network boundary
 
-Production push delivery is pinned to:
+Production push delivery and anonymous count reporting are pinned to:
 
 ```text
 https://push.my-tesla.app/v1/events
+https://push.my-tesla.app/v1/vehicle-registrations
 ```
 
 Companion must not follow redirects for relay delivery and must reject subscriber records that reference any other relay URL. This prevents a compromised or misconfigured pairing from exfiltrating signed push payloads to another host.
+
+The vehicle-registration request contains only fixed-length aliases derived
+inside Companion from a random local-only namespace and TeslaMate's local car
+ID. It is signed with an existing active installation secret solely to
+authenticate the request. The relay does not store that authentication identity
+with the alias, and the request contains no raw car ID, name, VIN, server,
+location, route, telemetry, software version, or notification content.
 
 ## Data minimization
 
