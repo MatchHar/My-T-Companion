@@ -24,6 +24,7 @@ import (
 // Keep remote Live Activity content reasonably fresh without hammering APNs.
 const navigationUpdateMinimumInterval = 10 * time.Second
 const navigationPushHistoryLimit = 200
+const navigationMinimumVerifiedDistanceKM = 0.05
 
 type navigationLiveActivityEvent struct {
 	EventID               string   `json:"event_id"`
@@ -149,6 +150,7 @@ type navigationNotificationMonitor struct {
 	priorityQueue  chan navigationLiveActivityEvent
 	pending        map[int]*time.Timer
 	enriching      map[int]string
+	distanceReader func(int) (int64, *float64, bool)
 }
 
 func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMonitor {
@@ -490,9 +492,10 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		m.enqueue(event)
 		return
 	}
-	// TeslaMate may reverse-geocode the drive start only after the first points land.
-	// Keep trying until we freeze a non-empty start_name for push history / App titles.
-	needsEnrichment := state.Active && (state.DriveID == 0 || strings.TrimSpace(state.StartName) == "")
+	// Keep distance enrichment running for the whole navigation session. DriveID
+	// and start_name usually become available before the odometer delta changes;
+	// stopping here used to freeze every later remote update at 0 km.
+	needsEnrichment := state.Active && state.SessionID != ""
 	sessionID := state.SessionID
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
@@ -550,8 +553,24 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 	if sessionID == "" {
 		return
 	}
-	driveID, driven, verified := currentDriveDistances(carID)
-	startName := resolveNavigationStartName(carID, "", "")
+	reader := m.distanceReader
+	if reader == nil {
+		reader = currentDriveDistances
+	}
+	driveID, driven, verified := reader(carID)
+
+	// The start label is immutable once resolved. Avoid repeating the two
+	// address queries on every distance refresh during the same drive.
+	m.mu.Lock()
+	current := m.store.Cars[carID]
+	needsStartName := current.Active && current.SessionID == sessionID &&
+		strings.TrimSpace(current.StartName) == ""
+	m.mu.Unlock()
+	startName := ""
+	if needsStartName {
+		startName = resolveNavigationStartName(carID, "", "")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.enriching[carID] == sessionID {
@@ -566,9 +585,11 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 		state.DriveID = driveID
 		changed = true
 	}
-	if verified && driven != nil {
+	becameVerified := false
+	if verified && driven != nil && *driven > navigationMinimumVerifiedDistanceKM {
 		if state.DrivenDistanceKM == nil || math.Abs(*state.DrivenDistanceKM-*driven) > 0.001 {
 			state.DrivenDistanceKM = cloneFloat(driven)
+			becameVerified = !state.HasVerifiedTrajectory
 			state.HasVerifiedTrajectory = true
 			changed = true
 		}
@@ -584,7 +605,19 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
 	_ = m.saveHistoryLocked()
-	if state.StartDelivered {
+	if state.StartDelivered && becameVerified {
+		// Do not leave the first real progress value waiting behind a zero-value
+		// update. This one transition is sent immediately; normal changes remain
+		// governed by navigationUpdateMinimumInterval.
+		if timer := m.pending[carID]; timer != nil {
+			timer.Stop()
+			delete(m.pending, carID)
+		}
+		event := m.makeEventLocked(carID, &state, "navigation_updated", time.Now().UTC())
+		m.store.Cars[carID] = state
+		_ = m.saveLocked()
+		m.enqueueAlreadyLocked(event)
+	} else if state.StartDelivered {
 		m.scheduleUpdateLocked(carID, time.Now().UTC())
 	}
 }
@@ -819,11 +852,22 @@ func currentDriveDistances(carID int) (int64, *float64, bool) {
 		WHERE d.car_id = $1 AND d.end_date IS NULL
 		ORDER BY d.start_date DESC, d.id DESC
 		LIMIT 1`, carID).Scan(&driveID, &firstOdometer, &latestOdometer, &count)
-	if err != nil || count < 2 || latestOdometer < firstOdometer {
+	if err != nil {
 		return driveID, nil, false
 	}
+	driven, verified := verifiedNavigationDrivenDistance(firstOdometer, latestOdometer, count)
+	return driveID, driven, verified
+}
+
+func verifiedNavigationDrivenDistance(firstOdometer, latestOdometer float64, count int) (*float64, bool) {
+	if count < 2 || latestOdometer < firstOdometer {
+		return nil, false
+	}
 	driven := latestOdometer - firstOdometer
-	return driveID, &driven, true
+	if driven <= navigationMinimumVerifiedDistanceKM {
+		return nil, false
+	}
+	return &driven, true
 }
 
 func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEvent) {

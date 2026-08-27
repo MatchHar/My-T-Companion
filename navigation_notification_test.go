@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -251,6 +252,123 @@ func TestNavigationEndReasonIsSerialized(t *testing.T) {
 	}
 	if decoded["end_reason"] != "arrived" {
 		t.Fatalf("end_reason missing from relay payload: %s", payload)
+	}
+}
+
+func TestVerifiedNavigationDrivenDistanceRejectsStationarySamples(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		first  float64
+		latest float64
+		count  int
+	}{
+		{name: "one sample", first: 100, latest: 100.2, count: 1},
+		{name: "stationary", first: 100, latest: 100, count: 2},
+		{name: "below display threshold", first: 100, latest: 100.04, count: 3},
+		{name: "odometer moved backwards", first: 100, latest: 99.9, count: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if driven, verified := verifiedNavigationDrivenDistance(tc.first, tc.latest, tc.count); verified || driven != nil {
+				t.Fatalf("driven=%v verified=%v", driven, verified)
+			}
+		})
+	}
+
+	driven, verified := verifiedNavigationDrivenDistance(100, 100.7, 4)
+	if !verified || driven == nil || math.Abs(*driven-0.7) > 0.0001 {
+		t.Fatalf("driven=%v verified=%v", driven, verified)
+	}
+}
+
+func TestEnrichmentRefreshesDistanceAfterDriveAndStartNameAreKnown(t *testing.T) {
+	tmp := t.TempDir()
+	m := &navigationNotificationMonitor{
+		statePath:   filepath.Join(tmp, "nav.json"),
+		historyPath: filepath.Join(tmp, "history.json"),
+		queue:       make(chan navigationLiveActivityEvent, 4),
+		pending:     map[int]*time.Timer{},
+		enriching:   map[int]string{1: "navigation-refresh-test"},
+		store: navigationNotificationStore{
+			Cars: map[int]carNavigationState{1: {
+				Active:                true,
+				SessionID:             "navigation-refresh-test",
+				DriveID:               42,
+				StartName:             "Home",
+				DrivenDistanceKM:      floatPointer(0.2),
+				HasVerifiedTrajectory: true,
+			}},
+			Delivered: map[string]string{},
+		},
+		distanceReader: func(carID int) (int64, *float64, bool) {
+			if carID != 1 {
+				t.Fatalf("carID=%d", carID)
+			}
+			return 42, floatPointer(1.1), true
+		},
+	}
+
+	m.enrichNavigationSession(1, "navigation-refresh-test")
+	m.mu.Lock()
+	state := m.store.Cars[1]
+	m.mu.Unlock()
+	if state.DriveID != 42 || state.StartName != "Home" {
+		t.Fatalf("identity changed: %+v", state)
+	}
+	if state.DrivenDistanceKM == nil || math.Abs(*state.DrivenDistanceKM-1.1) > 0.0001 {
+		t.Fatalf("distance did not refresh: %+v", state)
+	}
+}
+
+func TestFirstVerifiedDistanceQueuesImmediateNavigationUpdate(t *testing.T) {
+	tmp := t.TempDir()
+	m := &navigationNotificationMonitor{
+		statePath:     filepath.Join(tmp, "nav.json"),
+		historyPath:   filepath.Join(tmp, "history.json"),
+		queue:         make(chan navigationLiveActivityEvent, 4),
+		priorityQueue: make(chan navigationLiveActivityEvent, 2),
+		pending:       map[int]*time.Timer{1: time.AfterFunc(time.Hour, func() {})},
+		enriching:     map[int]string{1: "navigation-first-distance-test"},
+		store: navigationNotificationStore{
+			Cars: map[int]carNavigationState{1: {
+				Active:              true,
+				SessionID:           "navigation-first-distance-test",
+				SessionStartedAt:    time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+				Destination:         "Office",
+				RemainingDistanceKM: floatPointer(4.2),
+				StartDelivered:      true,
+				LastQueuedAt:        time.Now().UTC().Format(time.RFC3339),
+			}},
+			Delivered: map[string]string{},
+		},
+		history: navigationPushHistoryStore{},
+		distanceReader: func(int) (int64, *float64, bool) {
+			return 42, floatPointer(0.8), true
+		},
+	}
+	t.Cleanup(func() {
+		if timer := m.pending[1]; timer != nil {
+			timer.Stop()
+		}
+	})
+
+	m.enrichNavigationSession(1, "navigation-first-distance-test")
+
+	select {
+	case event := <-m.queue:
+		if event.Type != "navigation_updated" || !event.HasVerifiedTrajectory {
+			t.Fatalf("unexpected event: %+v", event)
+		}
+		if event.DrivenDistanceKM == nil || math.Abs(*event.DrivenDistanceKM-0.8) > 0.0001 {
+			t.Fatalf("driven distance missing from immediate event: %+v", event)
+		}
+		if event.TotalDistanceKM == nil || math.Abs(*event.TotalDistanceKM-5.0) > 0.0001 {
+			t.Fatalf("total distance missing from immediate event: %+v", event)
+		}
+	default:
+		t.Fatal("first verified distance did not queue an immediate update")
+	}
+	if _, exists := m.pending[1]; exists {
+		t.Fatal("stale throttled update timer was not cancelled")
 	}
 }
 
