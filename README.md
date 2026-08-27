@@ -23,6 +23,8 @@
 Install My T first if you are looking for the app that uses these enhanced
 TeslaMate features.
 
+**Need to deploy the server stack? [Download HostBox on the App Store](https://apps.apple.com/us/app/hostbox/id6798103086).** Its [product guide and launch video](https://my-tesla.app/hostbox/en/) cover guided VPS deployment from iPhone.
+
 For the complete My T product overview, TeslaMateAPI setup, connection
 security, and troubleshooting, see the
 [My T documentation repository](https://github.com/MatchHar/My-T-App).
@@ -65,7 +67,7 @@ not a replacement for TeslaMate or TeslaMateAPI.
 
 | Path | Who | What happens |
 | --- | --- | --- |
-| **[HostBox](https://my-tesla.app/hostbox/)** (recommended for most phone users) | iOS deploy app (TestFlight) | Installs TeslaMate + TeslaMateAPI + this companion, tries to wire a **unified entry** (edge on temporary IP, or Tunnel paths), MQTT `host.docker.internal`, and health checks. You still paste **one** base_url + Token into My T. |
+| **[HostBox](https://apps.apple.com/us/app/hostbox/id6798103086)** (recommended for most phone users) | iOS deploy app on the App Store | Installs TeslaMate + TeslaMateAPI + this companion, tries to wire a **unified entry** (edge on temporary IP, or Tunnel paths), MQTT `host.docker.internal`, and health checks. You still paste **one** base_url + Token into My T. See the [product guide](https://my-tesla.app/hostbox/en/). |
 | **Self-install** (this repo) | You run Docker / `install.sh` | Follow the verified release install below, then ensure gateway routes (see ports table). Same My T connection rules. |
 
 HostBox is the **deploy layer**; My T is the car UI. Neither app replaces the other.
