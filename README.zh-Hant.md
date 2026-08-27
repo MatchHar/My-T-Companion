@@ -22,6 +22,8 @@
 [My T iPhone App 開發，可於 App Store 下載](https://apps.apple.com/us/app/my-t/id6780299502)。**
 如果您是從 TeslaMate 專案找到這裡，請先透過此連結確認並下載配套的 My T App。
 
+**需要部署伺服器堆疊？[從 App Store 下載 HostBox](https://apps.apple.com/us/app/hostbox/id6798103086)。** [產品說明與上線影片](https://my-tesla.app/hostbox/zh-hant/)介紹如何直接在 iPhone 引導部署 VPS。
+
 ## 導航鎖屏即時活動
 
 1.7.0 讀取 TeslaMate MQTT 真實回報的目的地導航及車輛行駛狀態。相容的 My T
@@ -96,7 +98,7 @@ Companion 首次觀測時間」，不冒充更精確的實體操作時間。停�
 
 | 路徑 | 對象 | 說明 |
 | --- | --- | --- |
-| **[HostBox](https://my-tesla.app/hostbox/)**（多數手機使用者推薦） | iOS 部署 App（TestFlight） | 安裝 TeslaMate + API + 本元件，盡量配置**統一入口**（臨時 IP 的 edge，或 Tunnel 路徑）、MQTT `host.docker.internal` 與健康檢查。完成後在 My T 只填**一個** base_url + Token。 |
+| **[HostBox](https://apps.apple.com/us/app/hostbox/id6798103086)**（多數手機使用者推薦） | App Store 上的 iOS 部署 App | 安裝 TeslaMate + API + 本元件，盡量配置**統一入口**（臨時 IP 的 edge，或 Tunnel 路徑）、MQTT `host.docker.internal` 與健康檢查。完成後在 My T 只填**一個** base_url + Token；詳見[產品說明](https://my-tesla.app/hostbox/zh-hant/)。 |
 | **本倉庫自建** | 自己跑 Docker / `install.sh` | 依下方校驗版安裝，並配置閘道分流（見連接埠說明）。My T 連線規則相同。 |
 
 HostBox 是**部署層**；My T 是看車 App。二者不互相替代。

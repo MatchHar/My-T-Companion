@@ -22,6 +22,8 @@
 [My T iPhone App 开发，可在 App Store 下载](https://apps.apple.com/us/app/my-t/id6780299502)。**
 如果您是从 TeslaMate 项目找到这里，请先通过此链接确认并下载配套的 My T App。
 
+**需要部署服务器栈？[从 App Store 下载 HostBox](https://apps.apple.com/us/app/hostbox/id6798103086)。** [产品说明与上线视频](https://my-tesla.app/hostbox/)介绍了如何直接在 iPhone 引导部署 VPS。
+
 ## 导航锁屏实时活动
 
 1.7.0 读取 TeslaMate MQTT 真实上报的目的地导航与车辆行驶状态。兼容的 My T
@@ -96,7 +98,7 @@ TeslaMate 未长期保存的真实 MQTT 状态变化，例如开始充电前已�
 
 | 路径 | 对象 | 说明 |
 | --- | --- | --- |
-| **[HostBox](https://my-tesla.app/hostbox/)**（多数手机用户推荐） | iOS 部署 App（TestFlight） | 安装 TeslaMate + API + 本组件，尽量配置**统一入口**（临时 IP 的 edge，或 Tunnel 路径）、MQTT `host.docker.internal` 与健康检查。完成后在 My T 只填**一个** base_url + Token。 |
+| **[HostBox](https://apps.apple.com/us/app/hostbox/id6798103086)**（多数手机用户推荐） | App Store 上的 iOS 部署 App | 安装 TeslaMate + API + 本组件，尽量配置**统一入口**（临时 IP 的 edge，或 Tunnel 路径）、MQTT `host.docker.internal` 与健康检查。完成后在 My T 只填**一个** base_url + Token；详见[产品说明](https://my-tesla.app/hostbox/)。 |
 | **本仓库自建** | 自己跑 Docker / `install.sh` | 按下方校验版安装，并配置网关分流（见端口说明）。My T 连接规则相同。 |
 
 HostBox 是**部署层**；My T 是看车 App。二者不互相替代。
