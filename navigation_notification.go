@@ -127,30 +127,31 @@ type navigationPushHistoryStore struct {
 }
 
 type navigationNotificationMonitor struct {
-	mu             sync.Mutex
-	store          navigationNotificationStore
-	history        navigationPushHistoryStore
-	statePath      string
-	historyPath    string
-	installationID string
-	relayURL       string
-	relaySecret    string
-	mqttBroker     string
-	mqttUsername   string
-	mqttPassword   string
-	client         mqtt.Client
-	httpClient     *http.Client
-	enabled        bool
-	connected      bool
-	started        bool
-	workerStarted  bool
-	lastEventAt    *time.Time
-	lastError      string
-	queue          chan navigationLiveActivityEvent
-	priorityQueue  chan navigationLiveActivityEvent
-	pending        map[int]*time.Timer
-	enriching      map[int]string
-	distanceReader func(int) (int64, *float64, bool)
+	mu              sync.Mutex
+	store           navigationNotificationStore
+	history         navigationPushHistoryStore
+	statePath       string
+	historyPath     string
+	installationID  string
+	relayURL        string
+	relaySecret     string
+	mqttBroker      string
+	mqttUsername    string
+	mqttPassword    string
+	client          mqtt.Client
+	httpClient      *http.Client
+	enabled         bool
+	connected       bool
+	started         bool
+	workerStarted   bool
+	lastEventAt     *time.Time
+	lastError       string
+	queue           chan navigationLiveActivityEvent
+	priorityQueue   chan navigationLiveActivityEvent
+	pending         map[int]*time.Timer
+	enriching       map[int]string
+	distanceReader  func(int) (int64, *float64, bool)
+	startNameReader func(int) string
 }
 
 func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMonitor {
@@ -568,7 +569,13 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 	m.mu.Unlock()
 	startName := ""
 	if needsStartName {
-		startName = resolveNavigationStartName(carID, "", "")
+		reader := m.startNameReader
+		if reader == nil {
+			reader = func(id int) string {
+				return resolveNavigationStartName(id, "", "")
+			}
+		}
+		startName = reader(carID)
 	}
 
 	m.mu.Lock()
@@ -594,9 +601,11 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 			changed = true
 		}
 	}
+	startNameChanged := false
 	if authoritative := strings.TrimSpace(startName); authoritative != "" && state.StartName != authoritative {
 		state.StartName = authoritative
 		m.replaceHistoryStartNameLocked(sessionID, authoritative)
+		startNameChanged = true
 		changed = true
 	}
 	if !changed {
@@ -605,10 +614,10 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
 	_ = m.saveHistoryLocked()
-	if state.StartDelivered && becameVerified {
-		// Do not leave the first real progress value waiting behind a zero-value
-		// update. This one transition is sent immediately; normal changes remain
-		// governed by navigationUpdateMinimumInterval.
+	if state.StartDelivered && (becameVerified || startNameChanged) {
+		// Do not leave the first real origin/progress value behind the normal
+		// update throttle. The initial card may be sent before PostgreSQL has the
+		// active drive; the first authoritative enrichment must follow immediately.
 		if timer := m.pending[carID]; timer != nil {
 			timer.Stop()
 			delete(m.pending, carID)
