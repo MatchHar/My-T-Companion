@@ -42,6 +42,7 @@ var (
 	navigationPush        *navigationNotificationMonitor
 	parkingEvents         *parkingEventMonitor
 	lockSecurePush        *lockSecureNotificationMonitor
+	lowBatteryPush        *lowBatteryNotificationMonitor
 	pushRegistry          *pushSubscriberRegistry
 )
 
@@ -156,6 +157,9 @@ func main() {
 	lockSecurePush = newLockSecureNotificationMonitorFromEnvironment()
 	lockSecurePush.start()
 	defer lockSecurePush.stop()
+	lowBatteryPush = newLowBatteryNotificationMonitorFromEnvironment()
+	lowBatteryPush.start()
+	defer lowBatteryPush.stop()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", handlePing)
@@ -166,6 +170,7 @@ func main() {
 	mux.HandleFunc("/api/v1/notifications/charging-live-activity/status", handleChargingNotificationStatus)
 	mux.HandleFunc("/api/v1/notifications/navigation-live-activity/status", handleNavigationNotificationStatus)
 	mux.HandleFunc("/api/v1/notifications/lock-secure", handleLockSecurePreferences)
+	mux.HandleFunc("/api/v1/notifications/low-battery/action", handleLowBatteryAction)
 	mux.HandleFunc("/", handleStates)
 
 	addr := ":8080"
@@ -521,6 +526,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"parking_security_events",
 			"parking_climate_events",
 			"lock_secure_push",
+			"low_battery_push",
 			"push_subscribers",
 			"vehicle_detail_status",
 			"window_detail_status",

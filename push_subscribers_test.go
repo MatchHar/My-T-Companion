@@ -3,18 +3,30 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type capturedPushDelivery struct {
+	headerInstallation string
+	installationID     string
+	eventID            string
+	eventType          string
 }
 
 func TestAnonymousVehicleAliasIsStableAndServerScoped(t *testing.T) {
@@ -287,5 +299,175 @@ func TestPushDeliveryPausesInvalidInstallation(t *testing.T) {
 	}
 	if got := reg.snapshot(id)["self_status"]; got != "paused" {
 		t.Fatalf("status=%v", got)
+	}
+}
+
+func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	firstID, firstSecret, relayURL := testInstallation()
+	secondID, secondSecret, _ := testInstallation()
+	on := true
+	for _, pairing := range []pushPairRequest{
+		{
+			InstallationID:         firstID,
+			RelayURL:               relayURL,
+			RelaySecret:            firstSecret,
+			ChargingLiveActivity:   &on,
+			NavigationLiveActivity: &on,
+			NavigationTripAlerts:   &on,
+		},
+		{
+			InstallationID:         secondID,
+			RelayURL:               relayURL,
+			RelaySecret:            secondSecret,
+			ChargingLiveActivity:   &on,
+			NavigationLiveActivity: &on,
+			NavigationTripAlerts:   &on,
+		},
+	} {
+		if _, err := reg.upsert(pairing); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var captureMu sync.Mutex
+	captured := make([]capturedPushDelivery, 0, 4)
+	reg.http = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		payload, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var event struct {
+			InstallationID string `json:"installation_id"`
+			EventID        string `json:"event_id"`
+			Type           string `json:"type"`
+		}
+		if err := json.Unmarshal(payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		captureMu.Lock()
+		captured = append(captured, capturedPushDelivery{
+			headerInstallation: request.Header.Get("X-My-T-Installation"),
+			installationID:     event.InstallationID,
+			eventID:            event.EventID,
+			eventType:          event.Type,
+		})
+		captureMu.Unlock()
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	})}
+
+	previousRegistry := pushRegistry
+	pushRegistry = reg
+	t.Cleanup(func() { pushRegistry = previousRegistry })
+
+	baseEventID := strings.Repeat("a", 32)
+	charging := &chargingNotificationMonitor{}
+	if err := charging.deliver(chargingLiveActivityEvent{
+		EventID:   baseEventID,
+		CarID:     1,
+		Type:      "charging_updated",
+		SessionID: "charge-test-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertPerInstallationDeliveries(t, captured, baseEventID, "charging_updated", firstID, secondID)
+
+	captureMu.Lock()
+	captured = captured[:0]
+	captureMu.Unlock()
+	navigation := &navigationNotificationMonitor{}
+	if err := navigation.deliver(navigationLiveActivityEvent{
+		EventID:     baseEventID,
+		CarID:       1,
+		Type:        "navigation_started",
+		SessionID:   "navigation-test-session",
+		Destination: "Home",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	byType := map[string][]capturedPushDelivery{}
+	for _, delivery := range captured {
+		byType[delivery.eventType] = append(byType[delivery.eventType], delivery)
+	}
+	assertPerInstallationDeliveries(t, byType["navigation_started"], baseEventID, "navigation_started", firstID, secondID)
+	alertBaseID := baseEventID + ":destination_trip_started"
+	assertPerInstallationDeliveries(t, byType["destination_trip_started"], alertBaseID, "destination_trip_started", firstID, secondID)
+	for _, installationID := range []string{firstID, secondID} {
+		liveID := targetPushEventID(baseEventID, installationID, "navigation_started")
+		alertID := targetPushEventID(alertBaseID, installationID, "destination_trip_started")
+		if liveID == alertID {
+			t.Fatalf("live activity and trip banner share event_id for %s", installationID)
+		}
+	}
+}
+
+func assertPerInstallationDeliveries(
+	t *testing.T,
+	captured []capturedPushDelivery,
+	baseEventID, eventType, firstID, secondID string,
+) {
+	t.Helper()
+	if len(captured) != 2 {
+		t.Fatalf("captured=%d deliveries=%+v", len(captured), captured)
+	}
+	ids := map[string]string{}
+	for _, delivery := range captured {
+		if delivery.headerInstallation != delivery.installationID {
+			t.Fatalf("header/body installation mismatch: %+v", delivery)
+		}
+		if delivery.eventType != eventType {
+			t.Fatalf("type=%q want=%q", delivery.eventType, eventType)
+		}
+		if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(delivery.eventID) {
+			t.Fatalf("event_id=%q", delivery.eventID)
+		}
+		want := targetPushEventID(baseEventID, delivery.installationID, eventType)
+		if delivery.eventID != want {
+			t.Fatalf("event_id=%q want=%q", delivery.eventID, want)
+		}
+		ids[delivery.installationID] = delivery.eventID
+	}
+	if ids[firstID] == "" || ids[secondID] == "" || ids[firstID] == ids[secondID] {
+		t.Fatalf("per-installation IDs must both exist and differ: %+v", ids)
+	}
+}
+
+func TestRelayRetryAfterDefersDurableOutboxRetry(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, relayURL := testInstallation()
+	sub := pushSubscriber{
+		InstallationID: id,
+		RelayURL:       relayURL,
+		RelaySecret:    secret,
+		Status:         pushStatusActive,
+	}
+	reg.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusConflict,
+			Header:     http.Header{"Retry-After": []string{"90"}},
+			Body:       http.NoBody,
+		}, nil
+	})}
+	payload := []byte(`{"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"vehicle_lock_secure"}`)
+	started := time.Now().UTC()
+	if err := reg.deliverJSON(sub, payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.store.Outbox) != 1 {
+		t.Fatalf("outbox=%+v", reg.store.Outbox)
+	}
+	next, err := time.Parse(time.RFC3339, reg.store.Outbox[0].NextAttemptAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Before(started.Add(89 * time.Second)) {
+		t.Fatalf("next retry %s did not honor 90-second lease hint", next)
+	}
+	if got := relayRetryAfter("999999"); got != maxPushRetryDelay {
+		t.Fatalf("retry-after cap=%s want=%s", got, maxPushRetryDelay)
 	}
 }

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.10.35
+
+- Add an opt-in, per-iPhone low-battery notification for a selected TeslaMate
+  vehicle that is parked, not charging, and strictly below 20 percent.
+- Treat the first complete retained MQTT snapshot as baseline-only, settle
+  transitions for five seconds, rearm only at 25 percent, and send one stronger
+  escalation when a latched episode later falls strictly below 10 percent.
+- Keep acknowledge and four-hour snooze state per installation on the user's
+  Companion. Charging cancels a pending snooze, and reminders remain one-shot.
+- Persist only the minimum episode/action state on the VPS and continue to use
+  TeslaMate-reported MQTT data without polling Tesla or waking the vehicle.
+
+## 1.10.34
+
+- Derive charging and navigation delivery IDs separately for every target
+  installation while keeping retries for that installation deterministic.
+- Prevent two paired iPhones from sharing one relay event identity, including
+  separate destination-trip banner deliveries.
+- Honor the relay's bounded `Retry-After` lease hint in the durable outbox so
+  an in-flight event is not polled repeatedly before it can be reserved again.
+
 ## 1.10.33
 
 - Send an immediate navigation update when TeslaMate first resolves the

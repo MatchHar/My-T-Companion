@@ -23,6 +23,8 @@ const (
 	maxPushSubscribers          = 8
 	maxPushOutboxItems          = 256
 	maxVehicleRegistrationItems = 32
+	defaultPushRetryDelay       = 2 * time.Second
+	maxPushRetryDelay           = 15 * time.Minute
 )
 
 type pushSubscriberStatus string
@@ -34,6 +36,7 @@ const (
 
 type pushSubscriber struct {
 	InstallationID         string               `json:"installation_id"`
+	SourceID               string               `json:"source_id,omitempty"`
 	RelayURL               string               `json:"relay_url"`
 	RelaySecret            string               `json:"relay_secret"`
 	Status                 pushSubscriberStatus `json:"status"`
@@ -42,6 +45,7 @@ type pushSubscriber struct {
 	ChargingLiveActivity   bool                 `json:"charging_live_activity"`
 	NavigationLiveActivity bool                 `json:"navigation_live_activity"`
 	NavigationTripAlerts   bool                 `json:"navigation_trip_alerts"`
+	LowBattery             bool                 `json:"low_battery"`
 	CarIDs                 []int                `json:"car_ids,omitempty"`
 	UpdatedAt              string               `json:"updated_at,omitempty"`
 	LastSeenAt             string               `json:"last_seen_at,omitempty"`
@@ -92,6 +96,21 @@ type queuedPush struct {
 type pushPayloadMetadata struct {
 	EventID string `json:"event_id"`
 	Type    string `json:"type"`
+}
+
+// targetPushEventID turns one logical Companion event into a stable delivery
+// identity for one iPhone. Retries for the same target keep the same ID, while
+// a second installation (or a second delivery surface such as a trip banner)
+// cannot collide with the first installation at the relay.
+func targetPushEventID(baseEventID, installationID, eventType string) string {
+	input := strings.Join([]string{
+		"my-t-target-push-event-v1",
+		strings.TrimSpace(baseEventID),
+		strings.ToLower(strings.TrimSpace(installationID)),
+		strings.TrimSpace(eventType),
+	}, ":")
+	digest := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(digest[:16])
 }
 
 type pushSubscriberRegistry struct {
@@ -245,6 +264,7 @@ func (r *pushSubscriberRegistry) migrateLegacyPairingLocked() {
 
 type pushPairRequest struct {
 	InstallationID         string `json:"installation_id"`
+	SourceID               string `json:"source_id,omitempty"`
 	RelayURL               string `json:"relay_url"`
 	RelaySecret            string `json:"relay_secret"`
 	Status                 string `json:"status,omitempty"`
@@ -254,6 +274,7 @@ type pushPairRequest struct {
 	ChargingLiveActivity   *bool  `json:"charging_live_activity,omitempty"`
 	NavigationLiveActivity *bool  `json:"navigation_live_activity,omitempty"`
 	NavigationTripAlerts   *bool  `json:"navigation_trip_alerts,omitempty"`
+	LowBattery             *bool  `json:"low_battery,omitempty"`
 	CarIDs                 []int  `json:"car_ids,omitempty"`
 }
 
@@ -270,6 +291,10 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 	}
 	if !isTrustedSoftwarePushRelayURL(req.RelayURL) {
 		return nil, fmt.Errorf("untrusted relay URL")
+	}
+	sourceID := strings.TrimSpace(req.SourceID)
+	if len(sourceID) > 80 {
+		return nil, fmt.Errorf("invalid source ID")
 	}
 	status := pushStatusActive
 	if strings.EqualFold(strings.TrimSpace(req.Status), string(pushStatusPaused)) {
@@ -300,6 +325,7 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 	}
 	sub.RelayURL = req.RelayURL
 	sub.RelaySecret = req.RelaySecret
+	sub.SourceID = sourceID
 	sub.Status = status
 	sub.UpdatedAt = now
 	sub.LastSeenAt = now
@@ -322,6 +348,9 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 	}
 	if req.NavigationTripAlerts != nil {
 		sub.NavigationTripAlerts = *req.NavigationTripAlerts
+	}
+	if req.LowBattery != nil {
+		sub.LowBattery = *req.LowBattery
 	}
 	if req.CarIDs != nil {
 		sub.CarIDs = append([]int(nil), req.CarIDs...)
@@ -454,6 +483,7 @@ func (r *pushSubscriberRegistry) snapshotLocked(installationID string) map[strin
 		result["charging_live_activity"] = prefs.ChargingLiveActivity
 		result["navigation_live_activity"] = prefs.NavigationLiveActivity
 		result["navigation_trip_alerts"] = prefs.NavigationTripAlerts
+		result["low_battery"] = prefs.LowBattery
 		result["car_ids"] = prefs.CarIDs
 	}
 	return result
@@ -521,12 +551,12 @@ func (r *pushSubscriberRegistry) deliverJSON(sub pushSubscriber, payload []byte)
 		strings.TrimSpace(metadata.EventID) == "" || strings.TrimSpace(metadata.Type) == "" {
 		return fmt.Errorf("invalid push event payload")
 	}
-	status, err := r.postJSON(sub, payload)
+	status, retryAfter, err := r.postJSON(sub, payload)
 	if err == nil && status >= 200 && status < 300 {
 		return nil
 	}
 	if err != nil || retryableRelayStatus(status) {
-		if queueErr := r.enqueue(sub, metadata, payload); queueErr != nil {
+		if queueErr := r.enqueue(sub, metadata, payload, retryAfter); queueErr != nil {
 			if err != nil {
 				return fmt.Errorf("relay delivery failed (%v); durable queue failed: %w", err, queueErr)
 			}
@@ -540,14 +570,14 @@ func (r *pushSubscriberRegistry) deliverJSON(sub pushSubscriber, payload []byte)
 	return fmt.Errorf("relay returned HTTP %d", status)
 }
 
-func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (int, error) {
+func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (int, time.Duration, error) {
 	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-My-T-Installation", sub.InstallationID)
@@ -558,10 +588,22 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer response.Body.Close()
-	return response.StatusCode, nil
+	return response.StatusCode, relayRetryAfter(response.Header.Get("Retry-After")), nil
+}
+
+func relayRetryAfter(raw string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	if seconds >= int(maxPushRetryDelay/time.Second) {
+		return maxPushRetryDelay
+	}
+	delay := time.Duration(seconds) * time.Second
+	return delay
 }
 
 func (r *pushSubscriberRegistry) reportVehicleRegistrations(installationID string) error {
@@ -696,8 +738,14 @@ func (r *pushSubscriberRegistry) postVehicleRegistrations(sub pushSubscriber, pa
 	return response.StatusCode, nil
 }
 
-func (r *pushSubscriberRegistry) enqueue(sub pushSubscriber, metadata pushPayloadMetadata, payload []byte) error {
+func (r *pushSubscriberRegistry) enqueue(
+	sub pushSubscriber,
+	metadata pushPayloadMetadata,
+	payload []byte,
+	retryAfter time.Duration,
+) error {
 	now := time.Now().UTC()
+	delay := max(defaultPushRetryDelay, retryAfter)
 	id := sub.InstallationID + ":" + metadata.EventID
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -705,6 +753,11 @@ func (r *pushSubscriberRegistry) enqueue(sub pushSubscriber, metadata pushPayloa
 		if r.store.Outbox[index].ID == id {
 			r.store.Outbox[index].Payload = append(json.RawMessage(nil), payload...)
 			r.store.Outbox[index].EventType = metadata.Type
+			next := now.Add(delay)
+			current, err := time.Parse(time.RFC3339, r.store.Outbox[index].NextAttemptAt)
+			if err != nil || current.Before(next) {
+				r.store.Outbox[index].NextAttemptAt = next.Format(time.RFC3339)
+			}
 			return r.saveLocked()
 		}
 	}
@@ -717,7 +770,7 @@ func (r *pushSubscriberRegistry) enqueue(sub pushSubscriber, metadata pushPayloa
 		Payload:        append(json.RawMessage(nil), payload...),
 		EventType:      metadata.Type,
 		CreatedAt:      now.Format(time.RFC3339),
-		NextAttemptAt:  now.Add(2 * time.Second).Format(time.RFC3339),
+		NextAttemptAt:  now.Add(delay).Format(time.RFC3339),
 		ExpiresAt:      now.Add(pushEventTTL(metadata.Type)).Format(time.RFC3339),
 	})
 	return r.saveLocked()
@@ -789,7 +842,7 @@ func (r *pushSubscriberRegistry) retryDue(now time.Time) {
 			r.removeOutboxItem(item.ID)
 			continue
 		}
-		status, err := r.postJSON(sub, item.Payload)
+		status, retryAfter, err := r.postJSON(sub, item.Payload)
 		if err == nil && status >= 200 && status < 300 {
 			r.removeOutboxItem(item.ID)
 			continue
@@ -803,11 +856,11 @@ func (r *pushSubscriberRegistry) retryDue(now time.Time) {
 			r.removeOutboxItem(item.ID)
 			continue
 		}
-		r.rescheduleOutboxItem(item.ID, now)
+		r.rescheduleOutboxItem(item.ID, now, retryAfter)
 	}
 }
 
-func (r *pushSubscriberRegistry) rescheduleOutboxItem(id string, now time.Time) {
+func (r *pushSubscriberRegistry) rescheduleOutboxItem(id string, now time.Time, retryAfter time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for index := range r.store.Outbox {
@@ -817,8 +870,11 @@ func (r *pushSubscriberRegistry) rescheduleOutboxItem(id string, now time.Time) 
 		r.store.Outbox[index].Attempts++
 		attempt := r.store.Outbox[index].Attempts
 		delay := time.Duration(1<<min(attempt, 8)) * 2 * time.Second
-		if delay > 15*time.Minute {
-			delay = 15 * time.Minute
+		if retryAfter > delay {
+			delay = retryAfter
+		}
+		if delay > maxPushRetryDelay {
+			delay = maxPushRetryDelay
 		}
 		r.store.Outbox[index].NextAttemptAt = now.Add(delay).Format(time.RFC3339)
 		_ = r.saveLocked()
@@ -881,7 +937,8 @@ func pushEventTTL(eventType string) time.Duration {
 		return 10 * time.Minute
 	case "charging_started", "navigation_started":
 		return 30 * time.Minute
-	case "destination_trip_started", "destination_trip_arrived", "vehicle_lock_secure":
+	case "destination_trip_started", "destination_trip_arrived", "vehicle_lock_secure",
+		"vehicle_low_battery", "vehicle_low_battery_reminder", "vehicle_low_battery_severe":
 		return time.Hour
 	case "charging_ended", "navigation_ended":
 		return 2 * time.Hour
@@ -891,7 +948,7 @@ func pushEventTTL(eventType string) time.Duration {
 }
 
 func validPushSubscriber(sub pushSubscriber) bool {
-	if len(sub.InstallationID) != 48 || !isTrustedSoftwarePushRelayURL(sub.RelayURL) {
+	if len(sub.InstallationID) != 48 || len(strings.TrimSpace(sub.SourceID)) > 80 || !isTrustedSoftwarePushRelayURL(sub.RelayURL) {
 		return false
 	}
 	if _, err := hex.DecodeString(sub.InstallationID); err != nil {

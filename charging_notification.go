@@ -570,6 +570,7 @@ func (m *chargingNotificationMonitor) deliver(event chargingLiveActivityEvent) e
 	for _, sub := range subs {
 		copy := event
 		copy.InstallationID = sub.InstallationID
+		copy.EventID = targetPushEventID(event.EventID, sub.InstallationID, event.Type)
 		payload, err := json.Marshal(copy)
 		if err != nil {
 			last = err
