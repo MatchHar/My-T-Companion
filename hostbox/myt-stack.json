@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "template_id": "myt-stack",
-  "revision": "2026.08.27.1",
-  "updated_at": "2026-08-27T21:44:35Z",
+  "revision": "2026.08.30.1",
+  "updated_at": "2026-08-30T00:12:34Z",
   "min_app_version": "1.0.0",
   "channel": "stable",
   "title": "My T Server",
-  "notes_zh": "已验证稳定目录：TeslaMate / Grafana 固定为 4.2.0，TeslaMateAPI 固定为 1.25.0，Companion 固定为 1.10.32；上游新版本只提示，不会自动部署。",
-  "notes_zh_hant": "已驗證穩定目錄：TeslaMate / Grafana 固定為 4.2.0，TeslaMateAPI 固定為 1.25.0，Companion 固定為 1.10.32；上游新版本只會提示，不會自動部署。",
-  "notes_en": "Verified stable catalog: TeslaMate and Grafana are pinned to 4.2.0, TeslaMateAPI to 1.25.0, and Companion to 1.10.32. New upstream releases are reported but never deployed automatically.",
+  "notes_zh": "已验证稳定目录：TeslaMate / Grafana 固定为 4.2.0，TeslaMateAPI 固定为 1.25.0，Companion 固定为 1.10.33；上游新版本只提示，不会自动部署。",
+  "notes_zh_hant": "已驗證穩定目錄：TeslaMate / Grafana 固定為 4.2.0，TeslaMateAPI 固定為 1.25.0，Companion 固定為 1.10.33；上游新版本只會提示，不會自動部署。",
+  "notes_en": "Verified stable catalog: TeslaMate and Grafana are pinned to 4.2.0, TeslaMateAPI to 1.25.0, and Companion to 1.10.33. New upstream releases are reported but never deployed automatically.",
   "upstream": {
     "teslamate": {
       "github": "teslamate-org/teslamate",
@@ -34,13 +34,13 @@
     "teslamate": "teslamate/teslamate:4.2.0@sha256:88f4b0eb20802e4dd8518b31045d2c19ce384bd5c85ae7289a921f5221ea2562",
     "grafana": "teslamate/grafana:4.2.0@sha256:4e6fe5ded7d614bf22d0297f9565ff00d8db36d18c73395a06bc040a1ffa05af",
     "teslamateapi": "tobiasehlert/teslamateapi:1.25.0@sha256:6f7eea55c6475c2bc4639ee582dfec01d5cf618d30b0c7444020274a4786704e",
-    "companion": "myt/companion:1.10.32",
+    "companion": "myt/companion:1.10.33",
     "postgres": "postgres:16.15@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5",
     "mosquitto": "eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c",
     "caddy": "caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648"
   },
   "artifacts": {
-    "companion_archive_sha256": "76b72fa23010e9e66e2a78b4ba08eed0ac13d03b24260edf46717250b6267d76"
+    "companion_archive_sha256": "35942fe0a8c91bc8dc39c7ac656f35a082ec3f39ece27fb962c47193446ea5c6"
   },
   "ports": {
     "teslamate_web": 4000,
