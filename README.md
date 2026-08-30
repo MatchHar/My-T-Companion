@@ -223,6 +223,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.36 | Server-scoped all-car push subscriptions with automatic migration of obsolete selected-car filters |
 | 1.10.35 | `low_battery_push`: parked/not-charging low-battery alerts with per-iPhone acknowledge and four-hour snooze |
 | 1.10.33 | Immediate corrected trip-origin delivery when TeslaMate resolves the authoritative start after the navigation card begins |
 | 1.10.32 | Continuous verified destination-navigation distance refresh, with immediate first-progress delivery to remote Live Activities |

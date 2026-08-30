@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.36
+
+- Make every enabled phone subscription cover all vehicles on its TeslaMate
+  server, independently of the vehicle currently selected in My T.
+- Ignore obsolete incoming `car_ids` filters and migrate stored legacy filters
+  to the all-cars rule during Companion startup.
+- Return an empty `car_ids` confirmation so old and new Apps converge on the
+  same server-scoped delivery behavior without re-pairing.
+
 ## 1.10.35
 
 - Add an opt-in, per-iPhone low-battery notification for a selected TeslaMate

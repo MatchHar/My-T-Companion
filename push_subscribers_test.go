@@ -127,6 +127,42 @@ func TestPushSubscriberUpsertDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+func TestPushSubscriberLegacyCarFilterIsIgnoredAndCleared(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	on := true
+	snapshot, err := reg.upsert(pushPairRequest{
+		InstallationID: id,
+		RelayURL:       url,
+		RelaySecret:    secret,
+		SoftwareUpdate: &on,
+		CarIDs:         []int{7},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reg.store.Subscribers[0].wantsCar(7) || !reg.store.Subscribers[0].wantsCar(8) {
+		t.Fatal("subscriber must receive enabled events for every car on the server")
+	}
+	carIDs, ok := snapshot["car_ids"].([]int)
+	if !ok || len(carIDs) != 0 {
+		t.Fatalf("snapshot must confirm all-cars semantics, got %#v", snapshot["car_ids"])
+	}
+
+	// Simulate a pre-1.10.36 record already stored on disk and verify startup
+	// migration clears it durably.
+	reg.store.Subscribers[0].CarIDs = []int{7}
+	if err := reg.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := newPushSubscriberRegistry()
+	if len(reloaded.store.Subscribers[0].CarIDs) != 0 {
+		t.Fatalf("legacy filter survived reload: %#v", reloaded.store.Subscribers[0].CarIDs)
+	}
+}
+
 func TestPushSubscriberStoresTripAlertsSeparatelyFromLiveActivity(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))

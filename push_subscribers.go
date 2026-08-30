@@ -52,15 +52,10 @@ type pushSubscriber struct {
 }
 
 func (s pushSubscriber) wantsCar(carID int) bool {
-	if len(s.CarIDs) == 0 {
-		return true
-	}
-	for _, id := range s.CarIDs {
-		if id == carID {
-			return true
-		}
-	}
-	return false
+	// A phone subscribes to one TeslaMate server, not to the vehicle that was
+	// selected when it paired. Keep the field only for wire compatibility with
+	// older Apps and treat every subscriber as all-cars.
+	return true
 }
 
 func (s pushSubscriber) pairing() softwarePushPairing {
@@ -135,13 +130,26 @@ func newPushSubscriberRegistry() *pushSubscriberRegistry {
 		stopCh: make(chan struct{}),
 	}
 	r.load()
+	allCarsMigrated := r.migrateStoredCarFiltersLocked()
 	r.migrateLegacyPairingLocked()
-	if r.ensureVehicleNamespaceLocked() {
+	if r.ensureVehicleNamespaceLocked() || allCarsMigrated {
 		if err := r.saveLocked(); err != nil {
 			log.Printf("[warn] vehicle namespace save: %v", err)
 		}
 	}
 	return r
+}
+
+func (r *pushSubscriberRegistry) migrateStoredCarFiltersLocked() bool {
+	changed := false
+	for i := range r.store.Subscribers {
+		if len(r.store.Subscribers[i].CarIDs) == 0 {
+			continue
+		}
+		r.store.Subscribers[i].CarIDs = nil
+		changed = true
+	}
+	return changed
 }
 
 func (r *pushSubscriberRegistry) load() {
@@ -352,9 +360,9 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 	if req.LowBattery != nil {
 		sub.LowBattery = *req.LowBattery
 	}
-	if req.CarIDs != nil {
-		sub.CarIDs = append([]int(nil), req.CarIDs...)
-	}
+	// `car_ids` is accepted for backward wire compatibility but intentionally
+	// ignored. Every enabled event applies to every car on this server.
+	sub.CarIDs = nil
 
 	if mode == "replace" {
 		kept := make([]pushSubscriber, 0, 1)
@@ -484,7 +492,7 @@ func (r *pushSubscriberRegistry) snapshotLocked(installationID string) map[strin
 		result["navigation_live_activity"] = prefs.NavigationLiveActivity
 		result["navigation_trip_alerts"] = prefs.NavigationTripAlerts
 		result["low_battery"] = prefs.LowBattery
-		result["car_ids"] = prefs.CarIDs
+		result["car_ids"] = []int{}
 	}
 	return result
 }
