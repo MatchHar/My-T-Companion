@@ -24,6 +24,10 @@ My T on iPhone
 
 The Companion is responsible for observing TeslaMate/MQTT state, deciding when a notification or Live Activity event should be emitted, signing that event with the paired installation secret, retrying temporary delivery failures, and sending the event only to the pinned official relay.
 
+Each fan-out delivery has a deterministic event ID derived from the logical
+event, target installation, and event type. Retrying one iPhone therefore keeps
+the same identity, while another paired iPhone cannot collide with it.
+
 The developer-operated relay is responsible for validating installation signatures, rate limiting, delivery audit/metrics, APNs token/provider authentication, and talking to Apple APNs.
 
 ## Secrets allowed in this repository/runtime
@@ -71,6 +75,12 @@ location, route, telemetry, software version, or notification content.
 ## Data minimization
 
 Push events should contain only the fields required to render the notification or Live Activity. Do not send Tesla account credentials, TeslaMate credentials, VIN, raw location history, trip trajectories, or database contents to the developer relay.
+
+Low-battery alerts include only the target installation, Companion source ID,
+local car ID, display name, episode ID, reported percentage, event type, and
+observation time. Acknowledge/snooze state remains on the user's VPS and is not
+stored by the relay. The monitor consumes TeslaMate MQTT and never calls Tesla
+or wakes the vehicle.
 
 ## Repository guard
 

@@ -53,6 +53,14 @@ selected vehicle is observed locked and unoccupied. Companion sends only the
 signed event; the visible alert sound is selected locally on that iPhone.
 Imported audio, filenames, and the silent/default choice never reach Companion.
 
+Each iPhone can independently opt into a low-battery alert when its selected
+vehicle is parked, not charging, and strictly below 20 percent. The first
+complete retained MQTT snapshot is baseline-only, the episode rearms at 25
+percent, and a fall below 10 percent can issue one stronger escalation. My T
+offers acknowledge or one four-hour snooze; action state stays on that user's
+VPS and is scoped to the responding installation. Companion uses only
+TeslaMate-reported MQTT values and never wakes or polls the vehicle.
+
 If a relay is temporarily unavailable or ActivityKit has not registered the
 session token yet, Companion keeps only the minimum signed event in its local
 `0600` data store and retries it. Retry rows expire by event type (10 minutes
@@ -109,6 +117,7 @@ views when `/api/v1/capabilities` is available.
 | Plug/security/climate events | No durable history while My T is closed | Long-term genuine MQTT transitions, with battery/range only when reported |
 | Active-drive map | Real current position and speed only when the true route start is unavailable | Immutable true start plus incremental real trajectory |
 | Locked-and-unoccupied alert | No server-side observation while the App is suspended | Optional per-iPhone signed event; My T applies the visible message and device-local sound |
+| Parked low-battery alert | No server-side observation while the App is suspended | Optional per-iPhone alert below 20%, one severe escalation below 10%, and acknowledge/four-hour snooze actions |
 
 The component is optional. My T detects it automatically; users do not add a
 second server, account, or vehicle connection in the app.
@@ -214,6 +223,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.35 | `low_battery_push`: parked/not-charging low-battery alerts with per-iPhone acknowledge and four-hour snooze |
 | 1.10.33 | Immediate corrected trip-origin delivery when TeslaMate resolves the authoritative start after the navigation card begins |
 | 1.10.32 | Continuous verified destination-navigation distance refresh, with immediate first-progress delivery to remote Live Activities |
 | 1.10.31 | Privacy-minimal anonymous vehicle count and first/last-seen reporting, scoped per Companion rather than per phone |
