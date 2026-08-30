@@ -214,6 +214,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.33 | Immediate corrected trip-origin delivery when TeslaMate resolves the authoritative start after the navigation card begins |
 | 1.10.32 | Continuous verified destination-navigation distance refresh, with immediate first-progress delivery to remote Live Activities |
 | 1.10.31 | Privacy-minimal anonymous vehicle count and first/last-seen reporting, scoped per Companion rather than per phone |
 | 1.10.30 | Authoritative TeslaMate trip origins and targeted catch-up when one iPhone enables an active charging or navigation Live Activity |

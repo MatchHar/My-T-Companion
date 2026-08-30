@@ -372,6 +372,61 @@ func TestFirstVerifiedDistanceQueuesImmediateNavigationUpdate(t *testing.T) {
 	}
 }
 
+func TestFirstResolvedStartNameQueuesImmediateNavigationUpdate(t *testing.T) {
+	tmp := t.TempDir()
+	m := &navigationNotificationMonitor{
+		statePath:     filepath.Join(tmp, "nav.json"),
+		historyPath:   filepath.Join(tmp, "history.json"),
+		queue:         make(chan navigationLiveActivityEvent, 4),
+		priorityQueue: make(chan navigationLiveActivityEvent, 2),
+		pending:       map[int]*time.Timer{1: time.AfterFunc(time.Hour, func() {})},
+		enriching:     map[int]string{1: "navigation-first-origin-test"},
+		startNameReader: func(carID int) string {
+			if carID != 1 {
+				t.Fatalf("carID=%d", carID)
+			}
+			return "McNicoll Avenue, Milliken, Scarborough"
+		},
+		store: navigationNotificationStore{
+			Cars: map[int]carNavigationState{1: {
+				Active:           true,
+				SessionID:        "navigation-first-origin-test",
+				SessionStartedAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+				Destination:      "Supermarket",
+				StartDelivered:   true,
+				LastQueuedAt:     time.Now().UTC().Format(time.RFC3339),
+			}},
+			Delivered: map[string]string{},
+		},
+		history: navigationPushHistoryStore{},
+		distanceReader: func(int) (int64, *float64, bool) {
+			return 0, nil, false
+		},
+	}
+	t.Cleanup(func() {
+		if timer := m.pending[1]; timer != nil {
+			timer.Stop()
+		}
+	})
+
+	m.enrichNavigationSession(1, "navigation-first-origin-test")
+
+	select {
+	case event := <-m.queue:
+		if event.Type != "navigation_updated" {
+			t.Fatalf("unexpected event: %+v", event)
+		}
+		if event.StartName != "McNicoll Avenue, Milliken, Scarborough" {
+			t.Fatalf("resolved start name missing from immediate event: %+v", event)
+		}
+	default:
+		t.Fatal("first resolved start name did not queue an immediate update")
+	}
+	if _, exists := m.pending[1]; exists {
+		t.Fatal("stale throttled update timer was not cancelled")
+	}
+}
+
 func mustParseTime(t *testing.T, raw string) time.Time {
 	t.Helper()
 	ts, err := time.Parse(time.RFC3339, raw)

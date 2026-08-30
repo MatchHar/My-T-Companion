@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.33
+
+- Send an immediate navigation update when TeslaMate first resolves the
+  authoritative trip origin after the initial Live Activity has already been
+  delivered, instead of leaving the corrected origin behind the normal
+  throttle timer.
+- Keep the existing immediate first verified-distance update and subsequent
+  ten-second navigation update throttle unchanged.
+
+## 1.10.32
+
+- Keep refreshing verified driven distance throughout an active destination
+  navigation session and immediately deliver its first meaningful value.
+- Ignore incomplete or stationary distance samples at or below 0.05 km and
+  stop repeating origin database lookups after the authoritative name resolves.
+
 ## 1.10.31
 
 - Report a privacy-minimal anonymous vehicle inventory to the official relay
