@@ -351,7 +351,7 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 
 func (m *lockSecureNotificationMonitor) hasLockSecureTargets(carID int) bool {
 	if pushRegistry != nil {
-		return len(pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.LockSecure })) > 0
+		return len(pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.wantsLockSecure(carID) })) > 0
 	}
 	return m.prefs.Enabled && m.paired && m.installationID != ""
 }
@@ -368,7 +368,7 @@ func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID 
 	}()
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
-		subs = pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.LockSecure })
+		subs = pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.wantsLockSecure(carID) })
 	} else if m.installationID != "" {
 		subs = []pushSubscriber{{
 			InstallationID: m.installationID,

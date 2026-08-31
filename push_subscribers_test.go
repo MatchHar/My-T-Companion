@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -124,6 +125,304 @@ func TestPushSubscriberUpsertDoesNotDuplicate(t *testing.T) {
 	}
 	if resumed["subscriber_count"] != 1 || resumed["self_status"] != "active" {
 		t.Fatalf("resume=%v", resumed)
+	}
+}
+
+func TestPushSubscriberVehiclePreferencesOverrideEachCategoryIndependently(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	on, off := true, false
+	overrides := []vehiclePushPreferences{
+		{
+			CarID:                  1,
+			SoftwareUpdate:         true,
+			LockSecure:             false,
+			ChargingLiveActivity:   true,
+			NavigationLiveActivity: true,
+			NavigationTripAlerts:   false,
+			LowBattery:             true,
+		},
+		{
+			CarID:                  2,
+			SoftwareUpdate:         true,
+			LockSecure:             true,
+			ChargingLiveActivity:   false,
+			NavigationLiveActivity: false,
+			NavigationTripAlerts:   true,
+			LowBattery:             false,
+		},
+	}
+	snapshot, err := reg.upsert(pushPairRequest{
+		InstallationID:         id,
+		RelayURL:               url,
+		RelaySecret:            secret,
+		SoftwareUpdate:         &on,
+		LockSecure:             &off,
+		ChargingLiveActivity:   &off,
+		NavigationLiveActivity: &off,
+		NavigationTripAlerts:   &off,
+		LowBattery:             &off,
+		VehiclePreferences:     &overrides,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriber := reg.store.Subscribers[0]
+	if !subscriber.wantsSoftwareUpdate(1) || !subscriber.wantsLowBattery(1) || subscriber.wantsLockSecure(1) {
+		t.Fatalf("car 1 preferences not applied: %+v", subscriber.preferencesForCar(1))
+	}
+	if !subscriber.wantsLockSecure(2) || !subscriber.wantsNavigationTripAlerts(2) || subscriber.wantsLowBattery(2) {
+		t.Fatalf("car 2 preferences not applied: %+v", subscriber.preferencesForCar(2))
+	}
+	if !subscriber.wantsSoftwareUpdate(3) || subscriber.wantsLockSecure(3) || subscriber.wantsLowBattery(3) {
+		t.Fatalf("unconfigured car must inherit server defaults: %+v", subscriber.preferencesForCar(3))
+	}
+	if snapshot["charging_live_activity_any"] != true || snapshot["navigation_live_activity_any"] != true {
+		t.Fatalf("aggregate live activity flags missing: %v", snapshot)
+	}
+
+	reloaded := newPushSubscriberRegistry()
+	if !reloaded.store.Subscribers[0].wantsLowBattery(1) || reloaded.store.Subscribers[0].wantsLowBattery(2) {
+		t.Fatal("vehicle preferences did not persist across registry reload")
+	}
+}
+
+func TestPushSubscriberOldClientPreservesVehicleOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	on := true
+	overrides := []vehiclePushPreferences{{CarID: 1, LockSecure: true}}
+	if _, err := reg.upsert(pushPairRequest{
+		InstallationID:     id,
+		RelayURL:           url,
+		RelaySecret:        secret,
+		VehiclePreferences: &overrides,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.upsert(pushPairRequest{
+		InstallationID: id,
+		RelayURL:       url,
+		RelaySecret:    secret,
+		LockSecure:     &on,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.store.Subscribers[0].VehiclePreferences) != 1 {
+		t.Fatal("request without vehicle_preferences must preserve settings owned by a newer App")
+	}
+	if !reg.store.Subscribers[0].wantsLockSecure(1) || !reg.store.Subscribers[0].wantsLockSecure(2) {
+		t.Fatal("preserved override and updated server-wide fallback must both remain effective")
+	}
+}
+
+func TestPushSubscriberExplicitEmptyVehiclePreferencesClearsOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	off := false
+	overrides := []vehiclePushPreferences{{CarID: 1, LockSecure: true}}
+	if _, err := reg.upsert(pushPairRequest{
+		InstallationID:     id,
+		RelayURL:           url,
+		RelaySecret:        secret,
+		LockSecure:         &off,
+		VehiclePreferences: &overrides,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	empty := []vehiclePushPreferences{}
+	if _, err := reg.upsert(pushPairRequest{
+		InstallationID:     id,
+		RelayURL:           url,
+		RelaySecret:        secret,
+		LockSecure:         &off,
+		VehiclePreferences: &empty,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.store.Subscribers[0].VehiclePreferences) != 0 {
+		t.Fatal("explicit empty vehicle_preferences must clear every override")
+	}
+	if reg.store.Subscribers[0].wantsLockSecure(1) {
+		t.Fatal("car must return to the disabled server-wide fallback")
+	}
+	encodedSnapshot, err := json.Marshal(reg.snapshot(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encodedSnapshot, []byte(`"vehicle_preferences":[]`)) {
+		t.Fatalf("cleared override confirmation must encode an empty array: %s", encodedSnapshot)
+	}
+}
+
+func TestPushPairRequestDistinguishesMissingAndExplicitEmptyVehiclePreferences(t *testing.T) {
+	var missing pushPairRequest
+	if err := json.Unmarshal([]byte(`{"installation_id":"ignored"}`), &missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing.VehiclePreferences != nil {
+		t.Fatal("missing vehicle_preferences must remain nil")
+	}
+
+	var empty pushPairRequest
+	if err := json.Unmarshal([]byte(`{"vehicle_preferences":[]}`), &empty); err != nil {
+		t.Fatal(err)
+	}
+	if empty.VehiclePreferences == nil || len(*empty.VehiclePreferences) != 0 {
+		t.Fatal("explicit empty vehicle_preferences must decode as a present empty list")
+	}
+}
+
+func TestPushSubscriberRejectsInvalidVehiclePreferencesWithoutChangingRegistry(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	id, secret, url := testInstallation()
+	invalid := []vehiclePushPreferences{{CarID: 1}, {CarID: 1}}
+	if _, err := reg.upsert(pushPairRequest{
+		InstallationID:     id,
+		RelayURL:           url,
+		RelaySecret:        secret,
+		VehiclePreferences: &invalid,
+	}); err == nil || err.Error() != "invalid_vehicle_preferences" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reg.snapshot(id)["subscriber_count"] != 0 {
+		t.Fatal("invalid vehicle preferences changed the subscriber registry")
+	}
+}
+
+func TestPushSubscriberAtCapacityEvictsOnlyOldestPaused(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	on := true
+	activeID, activeSecret, url := testInstallation()
+	if _, err := reg.upsert(pushPairRequest{InstallationID: activeID, RelayURL: url, RelaySecret: activeSecret, SoftwareUpdate: &on}); err != nil {
+		t.Fatal(err)
+	}
+	pausedIDs := make([]string, 0, maxPushSubscribers-1)
+	base := time.Now().UTC().Add(-24 * time.Hour)
+	for index := 0; index < maxPushSubscribers-1; index++ {
+		id, secret, _ := testInstallation()
+		if _, err := reg.upsert(pushPairRequest{InstallationID: id, RelayURL: url, RelaySecret: secret, SoftwareUpdate: &on}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reg.pause(id); err != nil {
+			t.Fatal(err)
+		}
+		pausedIDs = append(pausedIDs, id)
+		reg.mu.Lock()
+		position := reg.indexLocked(id)
+		stamp := base.Add(time.Duration(index) * time.Hour).Format(time.RFC3339)
+		reg.store.Subscribers[position].LastSeenAt = stamp
+		reg.store.Subscribers[position].UpdatedAt = stamp
+		reg.mu.Unlock()
+	}
+	expires := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	reg.mu.Lock()
+	reg.store.Outbox = append(reg.store.Outbox,
+		queuedPush{ID: "oldest", InstallationID: pausedIDs[0], Payload: json.RawMessage(`{"type":"test"}`), ExpiresAt: expires},
+		queuedPush{ID: "newer", InstallationID: pausedIDs[1], Payload: json.RawMessage(`{"type":"test"}`), ExpiresAt: expires},
+	)
+	reg.mu.Unlock()
+	newID, newSecret, _ := testInstallation()
+	snapshot, err := reg.upsert(pushPairRequest{InstallationID: newID, RelayURL: url, RelaySecret: newSecret, SoftwareUpdate: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot["subscriber_count"] != maxPushSubscribers || snapshot["active_count"] != 2 {
+		t.Fatalf("unexpected snapshot after paused eviction: %v", snapshot)
+	}
+	if reg.snapshot(activeID)["self_status"] != "active" || reg.snapshot(pausedIDs[0])["self_status"] != "absent" || reg.snapshot(pausedIDs[1])["self_status"] != "paused" {
+		t.Fatal("capacity eviction did not preserve active/newer paused phones")
+	}
+	if snapshot["pending_deliveries"] != 1 {
+		t.Fatalf("only evicted phone outbox should be removed: %v", snapshot)
+	}
+}
+
+func TestPushSubscriberAtCapacityRejectsOnlyWhenAllPhonesActive(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	on := true
+	var url string
+	for index := 0; index < maxPushSubscribers; index++ {
+		id, secret, relayURL := testInstallation()
+		url = relayURL
+		if _, err := reg.upsert(pushPairRequest{InstallationID: id, RelayURL: url, RelaySecret: secret, SoftwareUpdate: &on}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newID, newSecret, _ := testInstallation()
+	if _, err := reg.upsert(pushPairRequest{InstallationID: newID, RelayURL: url, RelaySecret: newSecret, SoftwareUpdate: &on}); err == nil || err.Error() != "subscriber_limit" {
+		t.Fatalf("expected subscriber_limit with eight active phones, got %v", err)
+	}
+}
+
+func TestPushSubscriberKnownPausedReactivatesAtCapacity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	on := true
+	ids := make([]string, 0, maxPushSubscribers)
+	secrets := make([]string, 0, maxPushSubscribers)
+	var url string
+	for index := 0; index < maxPushSubscribers; index++ {
+		id, secret, relayURL := testInstallation()
+		url = relayURL
+		ids = append(ids, id)
+		secrets = append(secrets, secret)
+		if _, err := reg.upsert(pushPairRequest{InstallationID: id, RelayURL: url, RelaySecret: secret, SoftwareUpdate: &on}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := reg.pause(ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := reg.upsert(pushPairRequest{InstallationID: ids[0], RelayURL: url, RelaySecret: secrets[0], Status: "active", SoftwareUpdate: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot["subscriber_count"] != maxPushSubscribers || snapshot["active_count"] != maxPushSubscribers {
+		t.Fatalf("known paused phone should reactivate in place: %v", snapshot)
+	}
+}
+
+func TestPushSubscriberReloadPrunesExpiredPausedPhone(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PUSH_STATE_PATH", filepath.Join(dir, "software-notifications.json"))
+	reg := newPushSubscriberRegistry()
+	on := true
+	activeID, activeSecret, url := testInstallation()
+	pausedID, pausedSecret, _ := testInstallation()
+	_, _ = reg.upsert(pushPairRequest{InstallationID: activeID, RelayURL: url, RelaySecret: activeSecret, SoftwareUpdate: &on})
+	_, _ = reg.upsert(pushPairRequest{InstallationID: pausedID, RelayURL: url, RelaySecret: pausedSecret, SoftwareUpdate: &on})
+	_, _ = reg.pause(pausedID)
+	reg.mu.Lock()
+	position := reg.indexLocked(pausedID)
+	expired := time.Now().UTC().Add(-pausedPushSubscriberRetention - time.Hour).Format(time.RFC3339)
+	reg.store.Subscribers[position].LastSeenAt = expired
+	reg.store.Subscribers[position].UpdatedAt = expired
+	reg.store.Outbox = append(reg.store.Outbox, queuedPush{ID: "expired", InstallationID: pausedID, Payload: json.RawMessage(`{"type":"test"}`), ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)})
+	if err := reg.saveLocked(); err != nil {
+		reg.mu.Unlock()
+		t.Fatal(err)
+	}
+	reg.mu.Unlock()
+	reloaded := newPushSubscriberRegistry()
+	if reloaded.snapshot(activeID)["self_status"] != "active" {
+		t.Fatal("retention cleanup removed active phone")
+	}
+	if snapshot := reloaded.snapshot(pausedID); snapshot["self_status"] != "absent" || snapshot["pending_deliveries"] != 0 {
+		t.Fatalf("expired paused phone survived reload: %v", snapshot)
 	}
 }
 
