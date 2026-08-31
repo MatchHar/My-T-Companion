@@ -8,7 +8,7 @@
 > 提供安全配對前保持關閉。
 >
 > **My T：** App Store 公開可下載版本以
-> [Apple 產品頁](https://apps.apple.com/us/app/my-t/id6780299502)為準。
+> [Apple 產品頁](https://apps.apple.com/app/id6780299502)為準。
 > 較新版本可能正在審查中，本儲存庫不寫死版本號，也不聲明非公開審查版本。
 > 停車流水、觀測事件、軌跡及目的地行程記錄在可存取 `/api/v1/capabilities` 時
 > 可用；推播及即時動態仍需完成配對。詳見
@@ -29,10 +29,10 @@ MQTT 保留快照只建立基線，不會在安裝或重啟時誤報。通知可
 只讀 TeslaMate 已回報的資料，不輪詢 Tesla，也不會喚醒車輛。
 
 **本元件專為
-[My T iPhone App 開發，可於 App Store 下載](https://apps.apple.com/us/app/my-t/id6780299502)。**
+[My T iPhone App 開發，可於 App Store 下載](https://apps.apple.com/app/id6780299502)。**
 如果您是從 TeslaMate 專案找到這裡，請先透過此連結確認並下載配套的 My T App。
 
-**需要部署伺服器堆疊？[從 App Store 下載 HostBox](https://apps.apple.com/us/app/hostbox/id6798103086)。** [產品說明與上線影片](https://my-tesla.app/hostbox/zh-hant/)介紹如何直接在 iPhone 引導部署 VPS。
+**需要部署伺服器堆疊？[從 App Store 下載 HostBox](https://apps.apple.com/app/id6798103086)。** [產品說明與上線影片](https://my-tesla.app/hostbox/zh-hant/)介紹如何直接在 iPhone 引導部署 VPS。
 
 ## 導航鎖屏即時活動
 
@@ -120,14 +120,14 @@ Companion 首次觀測時間」，不冒充更精確的實體操作時間。停�
 
 | 路徑 | 對象 | 說明 |
 | --- | --- | --- |
-| **[HostBox](https://apps.apple.com/us/app/hostbox/id6798103086)**（多數手機使用者推薦） | App Store 上的 iOS 部署 App | 安裝 TeslaMate + API + 本元件，盡量配置**統一入口**（臨時 IP 的 edge，或 Tunnel 路徑）、MQTT `host.docker.internal` 與健康檢查。完成後在 My T 只填**一個** base_url + Token；詳見[產品說明](https://my-tesla.app/hostbox/zh-hant/)。 |
+| **[HostBox](https://apps.apple.com/app/id6798103086)**（多數手機使用者推薦） | App Store 上的 iOS 部署 App | 安裝 TeslaMate + API + 本元件，盡量配置**統一入口**（臨時 IP 的 edge，或 Tunnel 路徑）、MQTT `host.docker.internal` 與健康檢查。完成後在 My T 只填**一個** base_url + Token；詳見[產品說明](https://my-tesla.app/hostbox/zh-hant/)。 |
 | **本倉庫自建** | 自己跑 Docker / `install.sh` | 依下方校驗版安裝，並配置閘道分流（見連接埠說明）。My T 連線規則相同。 |
 
 HostBox 是**部署層**；My T 是看車 App。二者不互相替代。
 
 ## 為什麼 My T 需要這個補充元件
 
-[My T](https://apps.apple.com/us/app/my-t/id6780299502) 是用於查看使用者自建
+[My T](https://apps.apple.com/app/id6780299502) 是用於查看使用者自建
 TeslaMate 資料的 iPhone App。一般行程、充電、統計及目前車輛資訊繼續由標準
 TeslaMate/TeslaMateAPI 提供，此元件只補充三個手機端無法可靠還原的情境：
 
