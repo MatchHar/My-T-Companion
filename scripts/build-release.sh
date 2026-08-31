@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 "$repo_dir/scripts/check-docker-sources.sh"
+"$repo_dir/scripts/check-network-boundary.sh"
+"$repo_dir/scripts/check-push-secret-boundary.sh"
 version="$(tr -d '[:space:]' < "$repo_dir/VERSION")"
 output_dir="${1:-$repo_dir/dist}"
 archive_name="my-t-companion-${version}.tar.gz"

@@ -1,8 +1,7 @@
 # Contributing
 
-Bug reports and focused pull requests are welcome after the repository becomes
-public. Never include credentials, `.env` files, VINs, vehicle locations,
-database exports, or production logs.
+Bug reports and focused pull requests are welcome. Never include credentials,
+`.env` files, VINs, vehicle locations, database exports, or production logs.
 
 Before opening a pull request:
 

@@ -79,6 +79,13 @@ TeslaMate 行程驗證的進度。中繼不會接收座標、軌跡、VIN、Tesl
 裝置權杖與不透明安裝 ID，並只接收上文所述的最少軟體更新事件。每個 VPS 使用
 自己的獨立簽章，一個安裝不能代替另一個安裝傳送通知。
 
+完成推送配對後，Companion 亦會提交供營運統計使用的匿名車輛清單。它在自己的
+資料卷中產生並保存隨機命名空間，再為該已配對伺服器上的每輛 TeslaMate 車輛
+透過 HMAC 衍生一個穩定別名。中繼只保留別名及首次／最後出現時間，不會把別名
+與安裝 ID 一起保存，也不會接收原始車輛 ID、車輛名稱、VIN、伺服器位址、Apple
+ID、手機身分、位置、路線、遙測、軟體版本或通知內容。同一輛車在一個 Companion
+配對多支 iPhone 時仍只計算一次。
+
 My T 的完整產品介紹、TeslaMateAPI 部署、連線安全及故障排查，請查看
 [My T 公開文件倉庫](https://github.com/MatchHar/My-T-App)。
 
@@ -162,9 +169,11 @@ My T 偵測到 `/api/v1/capabilities` 後會自動啟用增強顯示。
 原本直接使用「主機 API 連接埠、無反代」的使用者，需要先增加**統一反向代理（Gateway）**：將 Companion 路徑轉送至 `127.0.0.1:8083`，其餘 TeslaMateAPI 轉送至內部 API 位址，然後在 My T 中只使用這個**統一 base_url**。倉庫內的
 `Caddyfile.snippet` 已列出所需介面。
 
-安裝程式可以自動處理能夠識別的系統 Caddy。Nginx、Traefik、容器版 Caddy 或
-自訂內網閘道需要管理員手動加入路由；只安裝容器、未設定統一入口時，My T
-不會顯示增強功能。
+安裝程式可以自動處理能夠識別的系統 Caddy，也可以處理與 Companion 共用已驗證
+Docker 網路的 TeslaMate 容器版 Caddy。系統閘道轉送至 `127.0.0.1:8083`；容器版
+Caddy 則在不放寬主機 8083 本機綁定的前提下直連 `companion:8080`。Nginx、
+Traefik、無法識別的容器代理或自訂內網閘道仍需要管理員手動加入路由；只安裝
+容器、未設定統一入口時，My T 不會顯示增強功能。
 
 ### 建議順序（方法不變，只是常見三階段）
 
@@ -285,6 +294,14 @@ https://域名
 version="$(gh release view -R MatchHar/My-T-Companion --json tagName --jq '.tagName | ltrimstr("v")')"; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
+官方壓縮檔及校驗檔亦附有 GitHub 建置來源證明。安裝前可獨立驗證已下載檔案：
+
+```sh
+gh attestation verify my-t-companion-X.Y.Z.tar.gz \
+  --repo MatchHar/My-T-Companion \
+  --signer-workflow MatchHar/My-T-Companion/.github/workflows/release.yml
+```
+
 未安裝 GitHub CLI 時：
 
 ```sh
@@ -292,7 +309,7 @@ version="$(curl -fsSL https://api.github.com/repos/MatchHar/My-T-Companion/relea
 ```
 
 只有本機服務和 My T 統一入口都驗證成功，安裝程式才報告完整成功。手動使用
-Nginx、Traefik 或容器代理時，必須加入並驗證倉庫提供的路由。安裝程式還會：
+Nginx、Traefik 或無法識別的容器代理時，必須加入並驗證倉庫提供的路由。安裝程式還會：
 
 - 自動偵測 TeslaMate 資料庫容器及 Docker 網路。
 - 沿用現有資料庫密碼與 API 驗證，不要求在 My T 新增第二組帳號。
@@ -300,8 +317,8 @@ Nginx、Traefik 或容器代理時，必須加入並驗證倉庫提供的路由�
   Service Token。
 - 修改反向代理前建立備份。
 - 檢查現有 `/api/ping` 是否受到驗證保護；若公開可存取則拒絕安裝。
-- 自動處理可識別的系統 Caddy 設定。
-- 對無法安全識別的 Nginx、Traefik、容器化 Caddy 或自訂配置停止自動修改，
+- 自動處理可識別的系統 Caddy，或共用已驗證 TeslaMate 網路的容器化 Caddy。
+- 對無法安全識別的 Nginx、Traefik、其他容器代理或自訂配置停止自動修改，
   並提示手動加入 `Caddyfile.snippet` 內的路由。
 
 ## 提供的功能
@@ -435,6 +452,16 @@ My T 透過 `/api/v1/capabilities` 自動偵測元件。未安裝或無法使用
 - [資料生命週期](DATA_LIFECYCLE.zh-Hant.md)
 - [版本更新記錄](CHANGELOG.md)
 - [MIT License](LICENSE)
+
+## 專案、授權與品牌邊界
+
+本儲存庫原始碼依 [MIT License](LICENSE) 公開，可按授權自行託管、修改及再散布。
+My T iOS 原始碼、開發者營運的中繼實作與 APNs 提供者憑證、HostBox App 與部署
+原始碼，以及 HostBox 目錄簽署私鑰，均為不包含在本儲存庫內的獨立私有元件。
+
+MIT 授權不會令衍生版本成為 My T 或 HostBox 官方版本。再散布的衍生版本應採用
+清楚不同的產品品牌，不得以暗示官方認可或官方建置的方式使用 My T／HostBox 的
+名稱、圖示或整體呈現。
 
 ## 專案範圍與獨立性聲明
 
