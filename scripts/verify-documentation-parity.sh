@@ -21,4 +21,23 @@ for base in "${documents[@]}"; do
   }
 done
 
+rg -Uq 'every[[:space:]]+vehicle on that paired TeslaMate server' README.md || {
+  echo 'English README must state the all-vehicle notification scope' >&2
+  exit 1
+}
+rg -Uq '该[[:space:]]+iPhone 所配对 TeslaMate 服务器上的全部车辆' README.zh-Hans.md || {
+  echo 'Simplified Chinese README must state the all-vehicle notification scope' >&2
+  exit 1
+}
+rg -Uq 'iPhone 所配對 TeslaMate 伺服器上的全部車輛' README.zh-Hant.md || {
+  echo 'Traditional Chinese README must state the all-vehicle notification scope' >&2
+  exit 1
+}
+
+if rg -n 'selected vehicle is observed|its selected vehicle|指定车辆|指定車輛' \
+  README.md README.zh-Hans.md README.zh-Hant.md; then
+  echo 'Companion notification docs must not imply selected-vehicle filtering' >&2
+  exit 1
+fi
+
 echo "Required Companion documentation is present in all three languages"

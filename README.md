@@ -49,12 +49,15 @@ existing companion data volume. Temporary navigation and push-delivery state
 expires independently. See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
 
 After secure pairing, each iPhone can also opt into a notification when a
-selected vehicle is observed locked and unoccupied. Companion sends only the
-signed event; the visible alert sound is selected locally on that iPhone.
+vehicle is observed locked and unoccupied. That preference covers every
+vehicle on that paired TeslaMate server; changing the vehicle selected in My T
+never filters server-side notifications. Companion sends only the signed
+event; the visible alert sound is selected locally on that iPhone.
 Imported audio, filenames, and the silent/default choice never reach Companion.
 
-Each iPhone can independently opt into a low-battery alert when its selected
-vehicle is parked, not charging, and strictly below 20 percent. The first
+Each iPhone can independently opt into a low-battery alert for every vehicle on
+that paired TeslaMate server when it is parked, not charging, and strictly
+below 20 percent. The first
 complete retained MQTT snapshot is baseline-only, the episode rearms at 25
 percent, and a fall below 10 percent can issue one stronger escalation. My T
 offers acknowledge or one four-hour snooze; action state stays on that user's
