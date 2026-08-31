@@ -93,6 +93,10 @@ if [[ "$is_draft" == "false" ]]; then
     printf '  %s\n' "${missing_assets[@]}" >&2
     exit 1
   fi
+  if [[ "$is_immutable" != "true" ]]; then
+    echo "published release $tag is not immutable" >&2
+    exit 1
+  fi
   printf 'published release %s already matches all local assets (immutable=%s)\n' "$tag" "$is_immutable"
   exit 0
 fi
@@ -128,6 +132,10 @@ gh release edit "$tag" \
 published_state="$(gh release view "$tag" --json isDraft,isImmutable --jq '[.isDraft, .isImmutable] | @tsv')"
 if [[ "$(printf '%s\n' "$published_state" | awk -F '\t' '{print $1}')" != "false" ]]; then
   echo "release $tag did not leave draft state" >&2
+  exit 1
+fi
+if [[ "$(printf '%s\n' "$published_state" | awk -F '\t' '{print $2}')" != "true" ]]; then
+  echo "release $tag was published without immutable-release protection" >&2
   exit 1
 fi
 printf 'published verified release %s (created=%s, immutable=%s)\n' \
