@@ -27,6 +27,14 @@ if [[ "${1:-} ${2:-}" == "release view" ]]; then
     fi
     exit 0
   fi
+  if [[ "${TEST_GH_MODE:-new}" == "mutable" ]]; then
+    if [[ " $* " == *" --json isDraft,isImmutable "* ]]; then
+      printf 'false\tfalse\n'
+    elif [[ " $* " == *" --json assets "* ]] && [[ -f "$assets_file" ]]; then
+      cat "$assets_file"
+    fi
+    exit 0
+  fi
   if [[ "$state" == "absent" ]]; then
     exit 1
   fi
@@ -34,7 +42,7 @@ if [[ "${1:-} ${2:-}" == "release view" ]]; then
     if [[ "$state" == "draft" ]]; then
       printf 'true\tfalse\n'
     else
-      printf 'false\tfalse\n'
+      printf 'false\ttrue\n'
     fi
   elif [[ " $* " == *" --json assets "* ]] && [[ -f "$assets_file" ]]; then
     cat "$assets_file"
@@ -108,6 +116,23 @@ if grep -F 'release create' "$published_log" >/dev/null || \
    grep -F 'release edit' "$published_log" >/dev/null || \
    grep -F 'release upload' "$published_log" >/dev/null; then
   echo 'matching published release was mutated' >&2
+  exit 1
+fi
+
+mutable_log="$test_dir/mutable.log"
+if (
+  cd "$case_dir"
+  PATH="$test_dir/bin:$PATH" TEST_GH_LOG="$mutable_log" TEST_GH_MODE=mutable \
+    TEST_GH_STATE_DIR="$test_dir/gh-state" \
+    "$repo_dir/scripts/publish-release.sh" v9.9.9
+); then
+  echo 'expected a mutable published release to fail' >&2
+  exit 1
+fi
+if grep -F 'release create' "$mutable_log" >/dev/null || \
+   grep -F 'release edit' "$mutable_log" >/dev/null || \
+   grep -F 'release upload' "$mutable_log" >/dev/null; then
+  echo 'mutable published release was modified' >&2
   exit 1
 fi
 
