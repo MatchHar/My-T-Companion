@@ -49,35 +49,30 @@ for localized_notes in "RELEASE_NOTES_${version}".*.md; do
   assets+=("$localized_notes")
 done
 
+release_exists=true
 if ! gh release view "$tag" >/dev/null 2>&1; then
-  create_args=("$tag" "${assets[@]}" --verify-tag --title "$title")
-  if [[ -f "$notes_file" ]]; then
-    create_args+=(--notes-file "$notes_file")
-  else
-    create_args+=(--generate-notes)
-  fi
-  gh release create "${create_args[@]}"
-  exit 0
+  release_exists=false
+  # Keep the release non-public until every asset is uploaded and its GitHub
+  # digest matches the locally verified file. Failed jobs leave a safe draft.
+  gh release create "$tag" \
+    --draft \
+    --verify-tag \
+    --title "$title" \
+    --notes-file "$notes_file"
 fi
 
-# A manual release may win the race with the tag workflow. Reuse it only when
-# every existing same-named asset has the exact local digest; never delete a
-# valid published asset merely to make a retry green.
+release_state="$(gh release view "$tag" --json isDraft,isImmutable --jq '[.isDraft, .isImmutable] | @tsv')"
+is_draft="$(printf '%s\n' "$release_state" | awk -F '\t' '{print $1}')"
+is_immutable="$(printf '%s\n' "$release_state" | awk -F '\t' '{print $2}')"
+if [[ "$is_draft" != "true" && "$is_draft" != "false" ]]; then
+  echo "unable to determine draft state for $tag" >&2
+  exit 1
+fi
+
+# A manual draft may win the race with the tag workflow. Reuse it only when
+# every existing same-named asset has the exact local digest. Once public,
+# never edit the release or upload a missing file.
 remote_assets="$(gh release view "$tag" --json assets --jq '.assets[] | [.name, .digest] | @tsv')"
-
-verification_dir="$(mktemp -d)"
-trap 'rm -rf "$verification_dir"' EXIT
-archive_name="$(basename "$archive")"
-checksum_name="$(basename "$checksum")"
-if printf '%s\n' "$remote_assets" | awk -F '\t' -v name="$archive_name" '$1 == name { found=1 } END { exit !found }' &&
-   printf '%s\n' "$remote_assets" | awk -F '\t' -v name="$checksum_name" '$1 == name { found=1 } END { exit !found }'; then
-  gh release download "$tag" \
-    --pattern "$archive_name" \
-    --pattern "$checksum_name" \
-    --dir "$verification_dir"
-  check_sha256 "$verification_dir/$checksum_name"
-fi
-
 missing_assets=()
 for asset in "${assets[@]}"; do
   name="$(basename "$asset")"
@@ -87,16 +82,54 @@ for asset in "${assets[@]}"; do
   if [[ -z "$remote_digest" ]]; then
     missing_assets+=("$asset")
   elif [[ "$remote_digest" != "$local_digest" ]]; then
-    echo "existing immutable asset digest mismatch: $name ($remote_digest != $local_digest)" >&2
+    echo "existing release asset digest mismatch: $name ($remote_digest != $local_digest)" >&2
     exit 1
   fi
 done
 
-if [[ -f "$notes_file" ]]; then
-  gh release edit "$tag" --verify-tag --title "$title" --notes-file "$notes_file"
-else
-  gh release edit "$tag" --verify-tag --title "$title"
+if [[ "$is_draft" == "false" ]]; then
+  if ((${#missing_assets[@]})); then
+    printf 'published release %s is missing immutable assets:\n' "$tag" >&2
+    printf '  %s\n' "${missing_assets[@]}" >&2
+    exit 1
+  fi
+  printf 'published release %s already matches all local assets (immutable=%s)\n' "$tag" "$is_immutable"
+  exit 0
 fi
+
 if ((${#missing_assets[@]})); then
   gh release upload "$tag" "${missing_assets[@]}"
 fi
+
+# Re-read GitHub's digests after upload; do not publish on a partial or changed
+# asset set even when the upload command itself returned success.
+remote_assets="$(gh release view "$tag" --json assets --jq '.assets[] | [.name, .digest] | @tsv')"
+for asset in "${assets[@]}"; do
+  name="$(basename "$asset")"
+  local_digest="sha256:$(sha256_of "$asset")"
+  remote_digest="$(printf '%s\n' "$remote_assets" | awk -F '\t' -v asset_name="$name" \
+    '$1 == asset_name { print $2; exit }')"
+  if [[ -z "$remote_digest" ]]; then
+    echo "draft release asset is missing after upload: $name" >&2
+    exit 1
+  fi
+  if [[ "$remote_digest" != "$local_digest" ]]; then
+    echo "draft release asset digest mismatch: $name ($remote_digest != $local_digest)" >&2
+    exit 1
+  fi
+done
+
+gh release edit "$tag" \
+  --verify-tag \
+  --title "$title" \
+  --notes-file "$notes_file" \
+  --draft=false
+
+published_state="$(gh release view "$tag" --json isDraft,isImmutable --jq '[.isDraft, .isImmutable] | @tsv')"
+if [[ "$(printf '%s\n' "$published_state" | awk -F '\t' '{print $1}')" != "false" ]]; then
+  echo "release $tag did not leave draft state" >&2
+  exit 1
+fi
+printf 'published verified release %s (created=%s, immutable=%s)\n' \
+  "$tag" "$([[ "$release_exists" == false ]] && printf true || printf false)" \
+  "$(printf '%s\n' "$published_state" | awk -F '\t' '{print $2}')"

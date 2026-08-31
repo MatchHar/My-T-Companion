@@ -84,4 +84,8 @@ or wakes the vehicle.
 
 ## Repository guard
 
-`scripts/check-push-secret-boundary.sh` is intended to run in CI and fail if common APNs provider-secret patterns appear in tracked source. This is a guardrail, not a substitute for Cloudflare Secrets, key rotation, branch protection, and normal secret-scanning controls.
+`scripts/check-push-secret-boundary.sh` runs in CI, the tag release workflow,
+and local release-archive builds. It fails if common APNs provider-secret
+patterns appear in tracked source. This is a guardrail, not a substitute for
+Cloudflare Secrets, key rotation, branch protection, and normal secret-scanning
+controls.

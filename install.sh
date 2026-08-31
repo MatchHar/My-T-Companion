@@ -778,55 +778,121 @@ setup_docker_teslamate_caddy_routes() {
   local caddyfile="$TESLAMATE_DIR/Caddyfile"
   [[ -f "$caddyfile" ]] || return 1
   grep -qE 'teslamateapi|/api/\*' "$caddyfile" 2>/dev/null || return 1
-  if grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null; then
-    log "TeslaMate docker Caddyfile already has Companion routes"
+  local caddy_id
+  caddy_id="$(find_compose_service_id caddy || true)"
+  if [[ -z "$caddy_id" ]]; then
+    log "TeslaMate docker Caddy is not running; leaving port 8083 loopback-only"
+    return 1
+  fi
+  if ! docker inspect "$caddy_id" \
+    --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' 2>/dev/null \
+    | grep -qx "$database_network"; then
+    log "TeslaMate docker Caddy does not share $database_network; refusing to expose port 8083"
+    return 1
+  fi
+
+  local needs_capabilities=true
+  local needs_parking=true
+  local needs_navigation=true
+  local needs_notifications=true
+  local needs_upstream_migration=false
+  grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null && needs_capabilities=false
+  grep -qE 'my_t_parking|parking-events' "$caddyfile" 2>/dev/null && needs_parking=false
+  grep -qE 'my_t_nav|navigation/current-drive' "$caddyfile" 2>/dev/null && needs_navigation=false
+  grep -qE 'my_t_push|api/v1/notifications/' "$caddyfile" 2>/dev/null && needs_notifications=false
+  if grep -qF 'host.docker.internal:8083' "$caddyfile" 2>/dev/null; then
+    needs_upstream_migration=true
+  fi
+  if [[ "$needs_capabilities" == false && "$needs_parking" == false &&
+        "$needs_navigation" == false && "$needs_notifications" == false &&
+        "$needs_upstream_migration" == false ]]; then
+    log "TeslaMate docker Caddyfile already has Companion routes on the shared Docker network"
     return 0
   fi
+
   local backup="$caddyfile.before-my-t-companion.$(date +%Y%m%d-%H%M%S)"
   cp "$caddyfile" "$backup"
-  # Insert companion path rules before first reverse_proxy /api (HostBox / generic docker Caddy).
+  if [[ "$needs_upstream_migration" == true ]]; then
+    sed -i.bak 's#host\.docker\.internal:8083#companion:8080#g' "$caddyfile"
+    rm -f "$caddyfile.bak"
+    log "Migrated docker Caddy Companion upstream to the shared Docker network"
+  fi
+
+  # Insert Companion path rules before first reverse_proxy /api (HostBox / generic docker Caddy).
   local insert
   insert="$(mktemp)"
-  cat > "$insert" <<'CADDY'
-  # BEGIN MY T VPS COMPANION (docker edge → host loopback companion)
+  : > "$insert"
+  if [[ "$needs_capabilities" == true || "$needs_parking" == true ||
+        "$needs_navigation" == true || "$needs_notifications" == true ]]; then
+    cat >> "$insert" <<'CADDY'
+  # BEGIN MY T VPS COMPANION (docker edge → shared-network companion)
+CADDY
+  fi
+  if [[ "$needs_capabilities" == true ]]; then
+    cat >> "$insert" <<'CADDY'
   @my_t_capabilities path /api/v1/capabilities
   handle @my_t_capabilities {
-    reverse_proxy host.docker.internal:8083
+    reverse_proxy companion:8080
   }
+CADDY
+  fi
+  if [[ "$needs_parking" == true ]]; then
+    cat >> "$insert" <<'CADDY'
   @my_t_parking path_regexp my_t_park ^/api/v1/cars/[0-9]+/(states|parking-events)$
   handle @my_t_parking {
-    reverse_proxy host.docker.internal:8083
+    reverse_proxy companion:8080
   }
+CADDY
+  fi
+  if [[ "$needs_navigation" == true ]]; then
+    cat >> "$insert" <<'CADDY'
   @my_t_nav path_regexp my_t_nav ^/api/v1/cars/[0-9]+/navigation/(current-drive|push-history)$
   handle @my_t_nav {
-    reverse_proxy host.docker.internal:8083
+    reverse_proxy companion:8080
   }
+CADDY
+  fi
+  if [[ "$needs_notifications" == true ]]; then
+    cat >> "$insert" <<'CADDY'
   @my_t_push path_regexp my_t_push ^/api/v1/notifications/
   handle @my_t_push {
-    reverse_proxy host.docker.internal:8083
+    reverse_proxy companion:8080
   }
+CADDY
+  fi
+  if [[ -s "$insert" ]]; then
+    cat >> "$insert" <<'CADDY'
   # END MY T VPS COMPANION
 
 CADDY
-  # Companion on 127.0.0.1 is invisible from docker Caddy; publish 8083 on all interfaces.
-  if grep -q '127.0.0.1:8083:8080' "$COMPOSE_FILE" 2>/dev/null; then
-    sed -i.bak 's/127\.0\.0\.1:8083:8080/8083:8080/g' "$COMPOSE_FILE"
-    rm -f "$COMPOSE_FILE.bak"
-    docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" --file "$COMPOSE_FILE" up -d
+    awk -v insert="$insert" '
+      BEGIN { inserted=0 }
+      /reverse_proxy \/api/ && !inserted {
+        while ((getline line < insert) > 0) print line
+        close(insert)
+        inserted=1
+      }
+      { print }
+    ' "$caddyfile" > "$caddyfile.new"
+    mv "$caddyfile.new" "$caddyfile"
   fi
-  awk -v insert="$insert" '
-    BEGIN { inserted=0 }
-    /reverse_proxy \/api/ && !inserted {
-      while ((getline line < insert) > 0) print line
-      close(insert)
-      inserted=1
-    }
-    { print }
-  ' "$caddyfile" > "$caddyfile.new"
-  mv "$caddyfile.new" "$caddyfile"
   rm -f "$insert"
-  (cd "$TESLAMATE_DIR" && docker compose up -d caddy 2>/dev/null; docker compose restart caddy 2>/dev/null) || true
-  log "Patched $caddyfile (backup $backup); companion reachable via host.docker.internal:8083"
+  if ! grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null ||
+     ! grep -qE 'my_t_parking|parking-events' "$caddyfile" 2>/dev/null ||
+     ! grep -qE 'my_t_nav|navigation/current-drive' "$caddyfile" 2>/dev/null ||
+     ! grep -qE 'my_t_push|api/v1/notifications/' "$caddyfile" 2>/dev/null ||
+     grep -qF 'reverse_proxy host.docker.internal:8083' "$caddyfile" 2>/dev/null; then
+    cp "$backup" "$caddyfile"
+    log "Docker Caddy routes could not be patched safely; restored $backup"
+    return 1
+  fi
+  if ! (cd "$TESLAMATE_DIR" && docker compose up -d caddy >/dev/null && docker compose restart caddy >/dev/null); then
+    cp "$backup" "$caddyfile"
+    (cd "$TESLAMATE_DIR" && docker compose restart caddy >/dev/null 2>&1) || true
+    log "Docker Caddy restart failed; restored $backup"
+    return 1
+  fi
+  log "Patched $caddyfile (backup $backup); Companion stays loopback-only on port 8083 and Caddy uses companion:8080"
   return 0
 }
 

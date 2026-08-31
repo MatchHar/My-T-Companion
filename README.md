@@ -153,11 +153,14 @@ sends the companion routes to `127.0.0.1:8083` and ordinary TeslaMateAPI routes 
 the **internal** API address (often `127.0.0.1:<host-api-port>` or `127.0.0.1:18081` when the gateway took over the public host port). Then set My T to that **single** gateway URL.
 The supplied `Caddyfile.snippet` contains the required companion routes.
 
-The installer can update a recognized system Caddy configuration automatically.
-For Nginx, Traefik, containerized Caddy, or a custom LAN gateway, it deliberately
-leaves the proxy unchanged and requires the administrator to add the routes.
-Installation of the container alone does not make the enhanced features
-reachable from My T.
+The installer can update a recognized system Caddy configuration or a
+compatible TeslaMate containerized Caddy automatically. System gateways route
+to loopback `127.0.0.1:8083`; containerized Caddy is accepted only after the
+installer verifies the shared Docker network, then routes directly to
+`companion:8080`. Nginx, Traefik, an unrecognized container proxy, or a custom
+LAN gateway remains unchanged and requires the administrator to add the
+routes. Installation of the container alone does not make the enhanced
+features reachable from My T.
 
 ### Recommended order (same method, three stages)
 
@@ -334,9 +337,10 @@ installation cannot send notifications for another installation.
 
 When push is paired, Companion also reports an anonymous inventory for operator
 counting. It generates and keeps a random namespace in its own data volume and
-HMAC-derives one stable alias per selected TeslaMate car. The relay retains only
-the alias and first/last seen times; it does not persist the alias together with
-an installation ID and does not receive a raw car ID, vehicle name, VIN, server
+HMAC-derives one stable alias for every TeslaMate car on the paired server. The
+relay retains only the alias and first/last seen times; it does not persist the
+alias together with an installation ID and does not receive a raw car ID,
+vehicle name, VIN, server
 address, Apple ID, phone identity, location, route, telemetry, software version,
 or notification content for this statistic. The same car therefore counts once
 across multiple paired iPhones on that Companion.
@@ -374,6 +378,16 @@ branch. With GitHub CLI installed:
 version="$(gh release view -R MatchHar/My-T-Companion --json tagName --jq '.tagName | ltrimstr("v")')"; workdir="$(mktemp -d)" && gh release download "v$version" -R MatchHar/My-T-Companion -D "$workdir" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
 ```
 
+Official release archives and checksum files also carry GitHub build
+provenance. Before installation, an operator can independently verify a
+downloaded file with:
+
+```sh
+gh attestation verify my-t-companion-X.Y.Z.tar.gz \
+  --repo MatchHar/My-T-Companion \
+  --signer-workflow MatchHar/My-T-Companion/.github/workflows/release.yml
+```
+
 Without GitHub CLI:
 
 ```sh
@@ -381,8 +395,8 @@ version="$(curl -fsSL https://api.github.com/repos/MatchHar/My-T-Companion/relea
 ```
 
 Full success is reported only after both the local service and the unified My T
-proxy route are verified. Manual Nginx, Traefik, and containerized-proxy setups
-must add and verify the supplied routes.
+proxy route are verified. Manual Nginx, Traefik, and unrecognized container
+proxy setups must add and verify the supplied routes.
 
 The installer keeps My T connection setup unchanged. My T Companion reuses the
 authentication already accepted by the existing TeslaMate API reverse proxy,
@@ -397,9 +411,11 @@ It detects the TeslaMate database container/network, reuses the existing
 database and API credentials, and creates backups before proxy changes.
 
 The installer automatically edits a system Caddy configuration when it can
-identify the existing protected API route. Nginx, Traefik, containerized Caddy,
-and custom TeslaMate layouts require the supplied routes to be added manually.
-The installer stops with an actionable error instead of guessing.
+identify the existing protected API route. It can also edit a TeslaMate Docker
+Caddyfile when Caddy shares the detected TeslaMate network, without widening
+the host's loopback-only 8083 binding. Nginx, Traefik, unrecognized container
+proxies, and custom TeslaMate layouts require the supplied routes to be added
+manually. The installer stops with an actionable error instead of guessing.
 
 ## What it provides
 
@@ -561,6 +577,20 @@ The live-navigation module follows the same rule. Without this capability, My T
 can fall back to the standard TeslaMate API, but it must label a route as
 partial when the real first point is unavailable. It must not promote the
 vehicle location observed when the app opens into a “true start”.
+
+## Project, license, and brand boundary
+
+The source in this repository is public under the [MIT License](LICENSE). It
+may be self-hosted, modified, and redistributed under that license. My T iOS
+source, the developer-operated relay implementation and APNs provider
+credentials, HostBox app and deployment source, and the HostBox catalog signing
+private key are separate private components and are not included in this
+repository.
+
+The MIT license does not make a fork an official My T or HostBox release.
+Redistributed forks should use distinct product branding and must not use the
+My T or HostBox names, icons, or presentation in a way that implies endorsement
+or an official build.
 
 ## Scope and independence
 

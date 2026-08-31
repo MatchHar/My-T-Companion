@@ -34,12 +34,15 @@ jobs:
       - run: go test -race ./...
       - name: Scan Go dependencies for reachable vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-      - run: bash -n install.sh update.sh uninstall.sh backup.sh restore.sh storage-status.sh scripts/build-release.sh scripts/publish-release.sh scripts/test-updater.sh scripts/test-release-publishing.sh scripts/check-docker-sources.sh scripts/verify-hostbox-catalog.sh scripts/verify-documentation-parity.sh
+      - run: bash -n install.sh update.sh uninstall.sh backup.sh restore.sh storage-status.sh scripts/build-release.sh scripts/publish-release.sh scripts/test-updater.sh scripts/test-release-publishing.sh scripts/test-release-source.sh scripts/check-docker-sources.sh scripts/check-network-boundary.sh scripts/check-push-secret-boundary.sh scripts/verify-release-source.sh scripts/verify-hostbox-catalog.sh scripts/verify-documentation-parity.sh
       - run: scripts/check-docker-sources.sh
+      - run: scripts/check-network-boundary.sh
+      - run: scripts/check-push-secret-boundary.sh
       - run: scripts/verify-hostbox-catalog.sh
       - run: scripts/verify-documentation-parity.sh
       - run: sudo scripts/test-updater.sh
       - run: scripts/test-release-publishing.sh
+      - run: scripts/test-release-source.sh
       - run: docker build --tag myt/companion:ci .
 
   codeql:
