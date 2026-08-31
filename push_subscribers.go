@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,11 +21,13 @@ import (
 )
 
 const (
-	maxPushSubscribers          = 8
-	maxPushOutboxItems          = 256
-	maxVehicleRegistrationItems = 32
-	defaultPushRetryDelay       = 2 * time.Second
-	maxPushRetryDelay           = 15 * time.Minute
+	maxPushSubscribers            = 8
+	maxPushOutboxItems            = 256
+	maxVehicleRegistrationItems   = 32
+	maxVehiclePushPreferenceItems = 32
+	pausedPushSubscriberRetention = 365 * 24 * time.Hour
+	defaultPushRetryDelay         = 2 * time.Second
+	maxPushRetryDelay             = 15 * time.Minute
 )
 
 type pushSubscriberStatus string
@@ -35,20 +38,31 @@ const (
 )
 
 type pushSubscriber struct {
-	InstallationID         string               `json:"installation_id"`
-	SourceID               string               `json:"source_id,omitempty"`
-	RelayURL               string               `json:"relay_url"`
-	RelaySecret            string               `json:"relay_secret"`
-	Status                 pushSubscriberStatus `json:"status"`
-	SoftwareUpdate         bool                 `json:"software_update"`
-	LockSecure             bool                 `json:"lock_secure"`
-	ChargingLiveActivity   bool                 `json:"charging_live_activity"`
-	NavigationLiveActivity bool                 `json:"navigation_live_activity"`
-	NavigationTripAlerts   bool                 `json:"navigation_trip_alerts"`
-	LowBattery             bool                 `json:"low_battery"`
-	CarIDs                 []int                `json:"car_ids,omitempty"`
-	UpdatedAt              string               `json:"updated_at,omitempty"`
-	LastSeenAt             string               `json:"last_seen_at,omitempty"`
+	InstallationID         string                   `json:"installation_id"`
+	SourceID               string                   `json:"source_id,omitempty"`
+	RelayURL               string                   `json:"relay_url"`
+	RelaySecret            string                   `json:"relay_secret"`
+	Status                 pushSubscriberStatus     `json:"status"`
+	SoftwareUpdate         bool                     `json:"software_update"`
+	LockSecure             bool                     `json:"lock_secure"`
+	ChargingLiveActivity   bool                     `json:"charging_live_activity"`
+	NavigationLiveActivity bool                     `json:"navigation_live_activity"`
+	NavigationTripAlerts   bool                     `json:"navigation_trip_alerts"`
+	LowBattery             bool                     `json:"low_battery"`
+	CarIDs                 []int                    `json:"car_ids,omitempty"`
+	VehiclePreferences     []vehiclePushPreferences `json:"vehicle_preferences,omitempty"`
+	UpdatedAt              string                   `json:"updated_at,omitempty"`
+	LastSeenAt             string                   `json:"last_seen_at,omitempty"`
+}
+
+type vehiclePushPreferences struct {
+	CarID                  int  `json:"car_id"`
+	SoftwareUpdate         bool `json:"software_update"`
+	LockSecure             bool `json:"lock_secure"`
+	ChargingLiveActivity   bool `json:"charging_live_activity"`
+	NavigationLiveActivity bool `json:"navigation_live_activity"`
+	NavigationTripAlerts   bool `json:"navigation_trip_alerts"`
+	LowBattery             bool `json:"low_battery"`
 }
 
 func (s pushSubscriber) wantsCar(carID int) bool {
@@ -56,6 +70,71 @@ func (s pushSubscriber) wantsCar(carID int) bool {
 	// selected when it paired. Keep the field only for wire compatibility with
 	// older Apps and treat every subscriber as all-cars.
 	return true
+}
+
+func (s pushSubscriber) preferencesForCar(carID int) vehiclePushPreferences {
+	for _, preferences := range s.VehiclePreferences {
+		if preferences.CarID == carID {
+			return preferences
+		}
+	}
+	return vehiclePushPreferences{
+		CarID:                  carID,
+		SoftwareUpdate:         s.SoftwareUpdate,
+		LockSecure:             s.LockSecure,
+		ChargingLiveActivity:   s.ChargingLiveActivity,
+		NavigationLiveActivity: s.NavigationLiveActivity,
+		NavigationTripAlerts:   s.NavigationTripAlerts,
+		LowBattery:             s.LowBattery,
+	}
+}
+
+func (s pushSubscriber) wantsSoftwareUpdate(carID int) bool {
+	return s.preferencesForCar(carID).SoftwareUpdate
+}
+
+func (s pushSubscriber) wantsLockSecure(carID int) bool {
+	return s.preferencesForCar(carID).LockSecure
+}
+
+func (s pushSubscriber) wantsChargingLiveActivity(carID int) bool {
+	return s.preferencesForCar(carID).ChargingLiveActivity
+}
+
+func (s pushSubscriber) wantsNavigationLiveActivity(carID int) bool {
+	return s.preferencesForCar(carID).NavigationLiveActivity
+}
+
+func (s pushSubscriber) wantsNavigationTripAlerts(carID int) bool {
+	return s.preferencesForCar(carID).NavigationTripAlerts
+}
+
+func (s pushSubscriber) wantsLowBattery(carID int) bool {
+	return s.preferencesForCar(carID).LowBattery
+}
+
+func (s pushSubscriber) anyChargingLiveActivity() bool {
+	if s.ChargingLiveActivity {
+		return true
+	}
+	for _, preferences := range s.VehiclePreferences {
+		if preferences.ChargingLiveActivity {
+			return true
+		}
+	}
+	return false
+}
+
+func (s pushSubscriber) anyNavigationLiveActivity() bool {
+	if s.NavigationLiveActivity {
+		return true
+	}
+	for _, preferences := range s.VehiclePreferences {
+		if preferences.NavigationLiveActivity {
+			return true
+		}
+	}
+	return false
 }
 
 func (s pushSubscriber) pairing() softwarePushPairing {
@@ -132,7 +211,11 @@ func newPushSubscriberRegistry() *pushSubscriberRegistry {
 	r.load()
 	allCarsMigrated := r.migrateStoredCarFiltersLocked()
 	r.migrateLegacyPairingLocked()
-	if r.ensureVehicleNamespaceLocked() || allCarsMigrated {
+	prunedPaused := r.pruneExpiredPausedLocked(time.Now().UTC())
+	if prunedPaused {
+		r.syncLegacyPairingLocked()
+	}
+	if r.ensureVehicleNamespaceLocked() || allCarsMigrated || prunedPaused {
 		if err := r.saveLocked(); err != nil {
 			log.Printf("[warn] vehicle namespace save: %v", err)
 		}
@@ -271,19 +354,20 @@ func (r *pushSubscriberRegistry) migrateLegacyPairingLocked() {
 }
 
 type pushPairRequest struct {
-	InstallationID         string `json:"installation_id"`
-	SourceID               string `json:"source_id,omitempty"`
-	RelayURL               string `json:"relay_url"`
-	RelaySecret            string `json:"relay_secret"`
-	Status                 string `json:"status,omitempty"`
-	Mode                   string `json:"mode,omitempty"`
-	SoftwareUpdate         *bool  `json:"software_update,omitempty"`
-	LockSecure             *bool  `json:"lock_secure,omitempty"`
-	ChargingLiveActivity   *bool  `json:"charging_live_activity,omitempty"`
-	NavigationLiveActivity *bool  `json:"navigation_live_activity,omitempty"`
-	NavigationTripAlerts   *bool  `json:"navigation_trip_alerts,omitempty"`
-	LowBattery             *bool  `json:"low_battery,omitempty"`
-	CarIDs                 []int  `json:"car_ids,omitempty"`
+	InstallationID         string                    `json:"installation_id"`
+	SourceID               string                    `json:"source_id,omitempty"`
+	RelayURL               string                    `json:"relay_url"`
+	RelaySecret            string                    `json:"relay_secret"`
+	Status                 string                    `json:"status,omitempty"`
+	Mode                   string                    `json:"mode,omitempty"`
+	SoftwareUpdate         *bool                     `json:"software_update,omitempty"`
+	LockSecure             *bool                     `json:"lock_secure,omitempty"`
+	ChargingLiveActivity   *bool                     `json:"charging_live_activity,omitempty"`
+	NavigationLiveActivity *bool                     `json:"navigation_live_activity,omitempty"`
+	NavigationTripAlerts   *bool                     `json:"navigation_trip_alerts,omitempty"`
+	LowBattery             *bool                     `json:"low_battery,omitempty"`
+	CarIDs                 []int                     `json:"car_ids,omitempty"`
+	VehiclePreferences     *[]vehiclePushPreferences `json:"vehicle_preferences,omitempty"`
 }
 
 func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, error) {
@@ -312,14 +396,27 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 	if mode != "replace" {
 		mode = "join"
 	}
+	var normalizedVehiclePreferences []vehiclePushPreferences
+	if req.VehiclePreferences != nil {
+		var err error
+		normalizedVehiclePreferences, err = normalizeVehiclePushPreferences(*req.VehiclePreferences)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.pruneExpiredPausedLocked(time.Now().UTC())
 	idx := r.indexLocked(req.InstallationID)
 	known := idx >= 0
-	if !known && len(r.store.Subscribers) >= maxPushSubscribers {
-		return nil, fmt.Errorf("subscriber_limit")
+	if !known && mode != "replace" && len(r.store.Subscribers) >= maxPushSubscribers {
+		pausedIdx := r.oldestPausedSubscriberIndexLocked()
+		if pausedIdx < 0 {
+			return nil, fmt.Errorf("subscriber_limit")
+		}
+		r.removeSubscriberAtLocked(pausedIdx, "capacity")
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -363,6 +460,9 @@ func (r *pushSubscriberRegistry) upsert(req pushPairRequest) (map[string]any, er
 	// `car_ids` is accepted for backward wire compatibility but intentionally
 	// ignored. Every enabled event applies to every car on this server.
 	sub.CarIDs = nil
+	if req.VehiclePreferences != nil {
+		sub.VehiclePreferences = normalizedVehiclePreferences
+	}
 
 	if mode == "replace" {
 		kept := make([]pushSubscriber, 0, 1)
@@ -493,6 +593,11 @@ func (r *pushSubscriberRegistry) snapshotLocked(installationID string) map[strin
 		result["navigation_trip_alerts"] = prefs.NavigationTripAlerts
 		result["low_battery"] = prefs.LowBattery
 		result["car_ids"] = []int{}
+		// Keep an explicit empty list as [] (not JSON null) so the App can
+		// confirm that clearing every override reached Companion.
+		result["vehicle_preferences"] = append([]vehiclePushPreferences{}, prefs.VehiclePreferences...)
+		result["charging_live_activity_any"] = prefs.anyChargingLiveActivity()
+		result["navigation_live_activity_any"] = prefs.anyNavigationLiveActivity()
 	}
 	return result
 }
@@ -504,6 +609,84 @@ func (r *pushSubscriberRegistry) indexLocked(id string) int {
 		}
 	}
 	return -1
+}
+
+func normalizeVehiclePushPreferences(values []vehiclePushPreferences) ([]vehiclePushPreferences, error) {
+	if len(values) > maxVehiclePushPreferenceItems {
+		return nil, fmt.Errorf("too_many_vehicle_preferences")
+	}
+	seen := make(map[int]bool, len(values))
+	normalized := make([]vehiclePushPreferences, 0, len(values))
+	for _, preferences := range values {
+		if preferences.CarID <= 0 || seen[preferences.CarID] {
+			return nil, fmt.Errorf("invalid_vehicle_preferences")
+		}
+		seen[preferences.CarID] = true
+		normalized = append(normalized, preferences)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i].CarID < normalized[j].CarID
+	})
+	return normalized, nil
+}
+
+func (r *pushSubscriberRegistry) oldestPausedSubscriberIndexLocked() int {
+	oldestIdx := -1
+	var oldestActivity time.Time
+	for index, subscriber := range r.store.Subscribers {
+		if subscriber.Status != pushStatusPaused {
+			continue
+		}
+		activity := pushSubscriberActivityTime(subscriber)
+		if oldestIdx < 0 || activity.Before(oldestActivity) {
+			oldestIdx = index
+			oldestActivity = activity
+		}
+	}
+	return oldestIdx
+}
+
+func pushSubscriberActivityTime(subscriber pushSubscriber) time.Time {
+	var latest time.Time
+	for _, raw := range []string{subscriber.LastSeenAt, subscriber.UpdatedAt} {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err == nil && parsed.After(latest) {
+			latest = parsed
+		}
+	}
+	return latest
+}
+
+func (r *pushSubscriberRegistry) pruneExpiredPausedLocked(now time.Time) bool {
+	changed := false
+	for index := len(r.store.Subscribers) - 1; index >= 0; index-- {
+		subscriber := r.store.Subscribers[index]
+		if subscriber.Status != pushStatusPaused {
+			continue
+		}
+		activity := pushSubscriberActivityTime(subscriber)
+		if !activity.IsZero() && now.Sub(activity) <= pausedPushSubscriberRetention {
+			continue
+		}
+		r.removeSubscriberAtLocked(index, "retention")
+		changed = true
+	}
+	return changed
+}
+
+func (r *pushSubscriberRegistry) removeSubscriberAtLocked(index int, reason string) {
+	if index < 0 || index >= len(r.store.Subscribers) {
+		return
+	}
+	installationID := r.store.Subscribers[index].InstallationID
+	copy(r.store.Subscribers[index:], r.store.Subscribers[index+1:])
+	r.store.Subscribers = r.store.Subscribers[:len(r.store.Subscribers)-1]
+	r.removeOutboxForLocked(installationID)
+	prefix := installationID
+	if len(prefix) > 8 {
+		prefix = prefix[:8]
+	}
+	log.Printf("[info] removed paused push subscriber installation=%s reason=%s", prefix, reason)
 }
 
 func (r *pushSubscriberRegistry) syncLegacyPairingLocked() {

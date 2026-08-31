@@ -109,6 +109,35 @@ func TestReplayActiveNavigationTargetsOnlyNewlyEnabledInstallation(t *testing.T)
 	}
 }
 
+func TestReplayActiveNavigationCanTargetOnlyNewlyEnabledVehicle(t *testing.T) {
+	tmp := t.TempDir()
+	m := &navigationNotificationMonitor{
+		statePath:     filepath.Join(tmp, "nav.json"),
+		historyPath:   filepath.Join(tmp, "history.json"),
+		queue:         make(chan navigationLiveActivityEvent, 2),
+		priorityQueue: make(chan navigationLiveActivityEvent, 2),
+		pending:       map[int]*time.Timer{},
+		store: navigationNotificationStore{
+			Cars: map[int]carNavigationState{
+				1: {Destination: "Office", Active: true, SessionID: "nav-1"},
+				2: {Destination: "Airport", Active: true, SessionID: "nav-2"},
+			},
+			Delivered: map[string]string{},
+		},
+		history: navigationPushHistoryStore{},
+	}
+
+	if got := m.replayActiveStartsMatching("new-installation", func(carID int) bool {
+		return carID == 2
+	}); got != 1 {
+		t.Fatalf("replayed=%d", got)
+	}
+	event := <-m.queue
+	if event.CarID != 2 || event.targetInstallationID != "new-installation" || !event.liveActivityOnly {
+		t.Fatalf("replay scope=%+v", event)
+	}
+}
+
 func TestExpireStaleNavigationSessionQueuesTerminalEvent(t *testing.T) {
 	tmp := t.TempDir()
 	now := mustParseTime(t, "2026-08-23T12:00:00Z")

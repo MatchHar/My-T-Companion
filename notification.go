@@ -381,7 +381,7 @@ func (m *softwareNotificationMonitor) fanOutSoftware(
 	}()
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
-		subs = pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.SoftwareUpdate })
+		subs = pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.wantsSoftwareUpdate(carID) })
 	} else if m.installationID != "" {
 		subs = []pushSubscriber{{
 			InstallationID: m.installationID,

@@ -252,11 +252,31 @@ func handleSoftwareNotificationPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	applyRegistryToMonitors()
-	if subscriberFeatureBecameActive(before, result, "charging_live_activity") && chargingPush != nil {
-		chargingPush.replayActiveStarts(req.InstallationID)
+	if chargingPush != nil {
+		chargingPush.replayActiveStartsMatching(req.InstallationID, func(carID int) bool {
+			return subscriberCarFeatureBecameActive(
+				before,
+				result,
+				carID,
+				"charging_live_activity",
+				func(preferences vehiclePushPreferences) bool {
+					return preferences.ChargingLiveActivity
+				},
+			)
+		})
 	}
-	if subscriberFeatureBecameActive(before, result, "navigation_live_activity") && navigationPush != nil {
-		navigationPush.replayActiveStarts(req.InstallationID)
+	if navigationPush != nil {
+		navigationPush.replayActiveStartsMatching(req.InstallationID, func(carID int) bool {
+			return subscriberCarFeatureBecameActive(
+				before,
+				result,
+				carID,
+				"navigation_live_activity",
+				func(preferences vehiclePushPreferences) bool {
+					return preferences.NavigationLiveActivity
+				},
+			)
+		})
 	}
 	writeJSON(w, http.StatusOK, result)
 	go func(installationID string) {
@@ -270,6 +290,45 @@ func subscriberFeatureBecameActive(before, after map[string]any, key string) boo
 	wasActive := before["self_status"] == string(pushStatusActive) && before[key] == true
 	isActive := after["self_status"] == string(pushStatusActive) && after[key] == true
 	return !wasActive && isActive
+}
+
+func subscriberCarFeatureBecameActive(
+	before, after map[string]any,
+	carID int,
+	defaultKey string,
+	vehicleValue func(vehiclePushPreferences) bool,
+) bool {
+	return !subscriberCarFeatureActive(before, carID, defaultKey, vehicleValue) &&
+		subscriberCarFeatureActive(after, carID, defaultKey, vehicleValue)
+}
+
+func subscriberCarFeatureActive(
+	snapshot map[string]any,
+	carID int,
+	defaultKey string,
+	vehicleValue func(vehiclePushPreferences) bool,
+) bool {
+	if snapshot["self_status"] != string(pushStatusActive) {
+		return false
+	}
+	for _, preferences := range vehiclePreferencesFromSnapshot(snapshot) {
+		if preferences.CarID == carID {
+			return vehicleValue(preferences)
+		}
+	}
+	enabled, _ := snapshot[defaultKey].(bool)
+	return enabled
+}
+
+func vehiclePreferencesFromSnapshot(snapshot map[string]any) []vehiclePushPreferences {
+	switch values := snapshot["vehicle_preferences"].(type) {
+	case []vehiclePushPreferences:
+		return values
+	case nil:
+		return nil
+	default:
+		return nil
+	}
 }
 
 func applyRegistryToMonitors() {
@@ -528,6 +587,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"lock_secure_push",
 			"low_battery_push",
 			"push_subscribers",
+			"per_vehicle_push_preferences",
 			"vehicle_detail_status",
 			"window_detail_status",
 			"service_mode_status",

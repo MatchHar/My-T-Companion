@@ -29,16 +29,29 @@ contains_flattened() {
   grep -Fq "$expected" <<<"$flattened"
 }
 
-contains_flattened README.md 'every vehicle on that paired TeslaMate server' || {
-  echo 'English README must state the all-vehicle notification scope' >&2
+contains_flattened README.md 'server-wide choices are defaults for every vehicle' || {
+  echo 'English README must state the all-vehicle-default notification scope' >&2
   exit 1
 }
-contains_flattened README.zh-Hans.md '该 iPhone 所配对 TeslaMate 服务器上的全部车辆' || {
-  echo 'Simplified Chinese README must state the all-vehicle notification scope' >&2
+contains_flattened README.zh-Hans.md '服务器上的选择是 全部车辆的预设' || {
+  echo 'Simplified Chinese README must state the all-vehicle-default notification scope' >&2
   exit 1
 }
-contains_flattened README.zh-Hant.md 'iPhone 所配對 TeslaMate 伺服器上的全部車輛' || {
-  echo 'Traditional Chinese README must state the all-vehicle notification scope' >&2
+contains_flattened README.zh-Hant.md '伺服器上的選擇是 所有車輛的預設' || {
+  echo 'Traditional Chinese README must state the all-vehicle-default notification scope' >&2
+  exit 1
+}
+
+contains_flattened README.md 'override every notification category for a named vehicle' || {
+  echo 'English README must state the per-vehicle override scope' >&2
+  exit 1
+}
+contains_flattened README.zh-Hans.md '为每一类通知分别建立覆盖' || {
+  echo 'Simplified Chinese README must state the per-vehicle override scope' >&2
+  exit 1
+}
+contains_flattened README.zh-Hant.md '為每一類通知分別建立覆寫' || {
+  echo 'Traditional Chinese README must state the per-vehicle override scope' >&2
   exit 1
 }
 

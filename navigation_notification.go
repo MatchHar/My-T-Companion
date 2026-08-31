@@ -885,10 +885,18 @@ func (m *navigationNotificationMonitor) enqueue(event navigationLiveActivityEven
 	m.mu.Unlock()
 }
 
-// replayActiveStarts gives a newly enabled iPhone the current card immediately
-// instead of waiting for a new destination. Delivery is scoped to that one
-// installation and intentionally excludes the ordinary trip-start banner.
+// replayActiveStarts gives a newly enabled installation/vehicle scope the
+// current card immediately instead of waiting for a new destination. Delivery
+// is scoped to that iPhone and intentionally excludes the ordinary trip-start
+// banner.
 func (m *navigationNotificationMonitor) replayActiveStarts(installationID string) int {
+	return m.replayActiveStartsMatching(installationID, nil)
+}
+
+func (m *navigationNotificationMonitor) replayActiveStartsMatching(
+	installationID string,
+	shouldReplay func(carID int) bool,
+) int {
 	installationID = strings.TrimSpace(installationID)
 	if installationID == "" {
 		return 0
@@ -897,6 +905,9 @@ func (m *navigationNotificationMonitor) replayActiveStarts(installationID string
 	events := make([]navigationLiveActivityEvent, 0, len(m.store.Cars))
 	now := time.Now().UTC()
 	for carID, state := range m.store.Cars {
+		if shouldReplay != nil && !shouldReplay(carID) {
+			continue
+		}
 		if !state.Active || state.SessionID == "" || strings.TrimSpace(state.Destination) == "" {
 			continue
 		}
@@ -1041,7 +1052,7 @@ func (m *navigationNotificationMonitor) expireStaleSessions(now time.Time) {
 }
 
 func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEvent) error {
-	laErr := m.deliverTo(event, func(s pushSubscriber) bool { return s.NavigationLiveActivity })
+	laErr := m.deliverTo(event, func(s pushSubscriber) bool { return s.wantsNavigationLiveActivity(event.CarID) })
 	if event.liveActivityOnly {
 		return laErr
 	}
@@ -1059,7 +1070,7 @@ func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEven
 		alertEvent := event
 		alertEvent.Type = alertType
 		alertEvent.EventID = event.EventID + ":" + alertType
-		alertErr = m.deliverTo(alertEvent, func(s pushSubscriber) bool { return s.NavigationTripAlerts })
+		alertErr = m.deliverTo(alertEvent, func(s pushSubscriber) bool { return s.wantsNavigationTripAlerts(event.CarID) })
 	}
 	if laErr != nil {
 		return laErr

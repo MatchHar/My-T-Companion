@@ -327,6 +327,63 @@ func TestReplayActiveChargingTargetsOnlyNewlyEnabledInstallation(t *testing.T) {
 	}
 }
 
+func TestReplayActiveChargingCanTargetOnlyNewlyEnabledVehicle(t *testing.T) {
+	tmp := t.TempDir()
+	battery := 55
+	m := &chargingNotificationMonitor{
+		statePath: filepath.Join(tmp, "charging.json"),
+		queue:     make(chan chargingLiveActivityEvent, 2),
+		pending:   map[int]*time.Timer{},
+		store: chargingNotificationStore{
+			Cars: map[int]carChargingState{
+				1: {Active: true, SessionID: "charge-1", BatteryLevel: &battery},
+				2: {Active: true, SessionID: "charge-2", BatteryLevel: &battery},
+			},
+			Delivered: map[string]string{},
+		},
+	}
+
+	if got := m.replayActiveStartsMatching("new-installation", func(carID int) bool {
+		return carID == 2
+	}); got != 1 {
+		t.Fatalf("replayed=%d", got)
+	}
+	event := <-m.queue
+	if event.CarID != 2 || event.targetInstallationID != "new-installation" {
+		t.Fatalf("replay scope=%+v", event)
+	}
+}
+
+func TestSubscriberCarFeatureTransitionUsesVehicleOverrideAndFallback(t *testing.T) {
+	before := map[string]any{
+		"self_status":            "active",
+		"charging_live_activity": false,
+		"vehicle_preferences": []vehiclePushPreferences{
+			{CarID: 1, ChargingLiveActivity: true},
+			{CarID: 2, ChargingLiveActivity: false},
+		},
+	}
+	after := map[string]any{
+		"self_status":            "active",
+		"charging_live_activity": true,
+		"vehicle_preferences": []vehiclePushPreferences{
+			{CarID: 1, ChargingLiveActivity: true},
+		},
+	}
+	value := func(preferences vehiclePushPreferences) bool {
+		return preferences.ChargingLiveActivity
+	}
+	if subscriberCarFeatureBecameActive(before, after, 1, "charging_live_activity", value) {
+		t.Fatal("already enabled car must not receive a duplicate replay")
+	}
+	if !subscriberCarFeatureBecameActive(before, after, 2, "charging_live_activity", value) {
+		t.Fatal("car that removed a disabled override must inherit enabled fallback and replay")
+	}
+	if !subscriberCarFeatureBecameActive(before, after, 3, "charging_live_activity", value) {
+		t.Fatal("unlisted car must follow the newly enabled all-vehicle default")
+	}
+}
+
 func TestNavigationEndUsesPriorityQueue(t *testing.T) {
 	monitor := &navigationNotificationMonitor{
 		queue:         make(chan navigationLiveActivityEvent, 1),

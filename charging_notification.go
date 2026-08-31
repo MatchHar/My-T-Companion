@@ -478,9 +478,17 @@ func (m *chargingNotificationMonitor) enqueue(event chargingLiveActivityEvent) {
 	}
 }
 
-// Replay an in-progress charge only to the installation that just enabled
-// Lock Screen cards. This repairs off→on without waiting for the next charge.
+// Replay an in-progress charge only to the installation/vehicle scope that
+// just enabled Lock Screen cards. This repairs off→on without waiting for the
+// next charge and avoids duplicating cards for already-enabled vehicles.
 func (m *chargingNotificationMonitor) replayActiveStarts(installationID string) int {
+	return m.replayActiveStartsMatching(installationID, nil)
+}
+
+func (m *chargingNotificationMonitor) replayActiveStartsMatching(
+	installationID string,
+	shouldReplay func(carID int) bool,
+) int {
 	installationID = strings.TrimSpace(installationID)
 	if installationID == "" {
 		return 0
@@ -489,6 +497,9 @@ func (m *chargingNotificationMonitor) replayActiveStarts(installationID string) 
 	events := make([]chargingLiveActivityEvent, 0, len(m.store.Cars))
 	now := time.Now().UTC()
 	for carID, state := range m.store.Cars {
+		if shouldReplay != nil && !shouldReplay(carID) {
+			continue
+		}
 		if !state.Active || state.SessionID == "" || state.BatteryLevel == nil {
 			continue
 		}
@@ -550,7 +561,7 @@ func (m *chargingNotificationMonitor) deliver(event chargingLiveActivityEvent) e
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
 		subs = pushRegistry.matching(event.CarID, func(s pushSubscriber) bool {
-			return s.ChargingLiveActivity &&
+			return s.wantsChargingLiveActivity(event.CarID) &&
 				(event.targetInstallationID == "" || s.InstallationID == event.targetInstallationID)
 		})
 	} else if m.installationID != "" {

@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.37
+
+- Add category-specific per-vehicle notification preferences while preserving
+  the existing per-iPhone, per-server switches as defaults for every vehicle.
+- Keep new vehicles on the server defaults automatically, identify overrides
+  by stable TeslaMate car ID, and leave the vehicle selected in My T completely
+  independent from notification delivery scope.
+- Preserve old App behavior on existing installations and do not let an older
+  App silently erase overrides it cannot display. A compatible App can send an
+  explicit empty override list to restore inheritance for every vehicle.
+- Replay an already active charging or navigation card only for the vehicle
+  whose Lock Screen preference has just changed from off to on.
+- At the eight-phone registry limit, preserve every active phone and evict only
+  the oldest paused installation. Known paused phones resume in place, paused
+  rows expire after 365 days, and their queued deliveries are removed.
+
 ## 1.10.36
 
 - Make every enabled phone subscription cover all vehicles on its TeslaMate

@@ -49,15 +49,17 @@ existing companion data volume. Temporary navigation and push-delivery state
 expires independently. See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
 
 After secure pairing, each iPhone can also opt into a notification when a
-vehicle is observed locked and unoccupied. That preference covers every
-vehicle on that paired TeslaMate server; changing the vehicle selected in My T
-never filters server-side notifications. Companion sends only the signed
-event; the visible alert sound is selected locally on that iPhone.
+vehicle is observed locked and unoccupied. The server-wide choices are defaults
+for every vehicle. A compatible My T build can independently override every
+notification category for a named vehicle; new vehicles inherit the defaults.
+Changing the vehicle selected in My T never changes server-side notification
+scope. Companion sends only the signed event; the visible alert sound is
+selected locally on that iPhone.
 Imported audio, filenames, and the silent/default choice never reach Companion.
 
 Each iPhone can independently opt into a low-battery alert for every vehicle on
-that paired TeslaMate server when it is parked, not charging, and strictly
-below 20 percent. The first
+that paired TeslaMate server, or override that category for individual
+vehicles, when it is parked, not charging, and strictly below 20 percent. The first
 complete retained MQTT snapshot is baseline-only, the episode rearms at 25
 percent, and a fall below 10 percent can issue one stronger escalation. My T
 offers acknowledge or one four-hour snooze; action state stays on that user's
@@ -229,6 +231,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.37 | Per-iPhone all-vehicle defaults plus category-specific vehicle overrides; paused-phone capacity recovery |
 | 1.10.36 | Server-scoped all-car push subscriptions with automatic migration of obsolete selected-car filters |
 | 1.10.35 | `low_battery_push`: parked/not-charging low-battery alerts with per-iPhone acknowledge and four-hour snooze |
 | 1.10.33 | Immediate corrected trip-origin delivery when TeslaMate resolves the authoritative start after the navigation card begins |
@@ -319,6 +322,13 @@ Preferences and status are scoped to that iPhone's installation ID:
 ```text
 POST /api/v1/notifications/software-update/pair
 ```
+
+From 1.10.37, a compatible App may include the optional
+vehicle_preferences array. Each item contains one positive TeslaMate car_id
+and a complete set of category switches. Cars not in that array use the
+top-level all-vehicle defaults. Omitting the field preserves any stored
+overrides so an older App cannot erase settings it cannot display; sending an
+empty array explicitly removes all overrides.
 
 For SSRF protection, the Companion accepts only My T's official relay URL.
 

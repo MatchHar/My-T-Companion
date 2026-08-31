@@ -348,7 +348,7 @@ func (m *lowBatteryNotificationMonitor) fanOut(carID int, state lowBatteryCarSta
 		return
 	}
 	subs := pushRegistry.matching(carID, func(sub pushSubscriber) bool {
-		return sub.LowBattery && (onlyInstallation == "" || sub.InstallationID == onlyInstallation)
+		return sub.wantsLowBattery(carID) && (onlyInstallation == "" || sub.InstallationID == onlyInstallation)
 	})
 	for _, sub := range subs {
 		baseID := fmt.Sprintf("%d:%s:%s", carID, state.EpisodeID, eventType)
@@ -379,7 +379,7 @@ func (m *lowBatteryNotificationMonitor) applyAction(body lowBatteryActionRequest
 		return fmt.Errorf("invalid_action")
 	}
 	if len(pushRegistry.matching(body.CarID, func(sub pushSubscriber) bool {
-		return sub.InstallationID == body.InstallationID && sub.LowBattery
+		return sub.InstallationID == body.InstallationID && sub.wantsLowBattery(body.CarID)
 	})) == 0 {
 		return fmt.Errorf("not_paired")
 	}
