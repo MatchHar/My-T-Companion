@@ -589,6 +589,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"push_subscribers",
 			"per_vehicle_push_preferences",
 			"vehicle_detail_status",
+			"door_detail_status",
 			"window_detail_status",
 			"service_mode_status",
 		},
@@ -757,6 +758,12 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"car_id":                      carID,
+			"locked":                      mqttBool(values, "locked"),
+			"doors_open":                  mqttBool(values, "doors_open"),
+			"driver_front_door_open":      mqttBool(values, "driver_front_door_open"),
+			"driver_rear_door_open":       mqttBool(values, "driver_rear_door_open"),
+			"passenger_front_door_open":   mqttBool(values, "passenger_front_door_open"),
+			"passenger_rear_door_open":    mqttBool(values, "passenger_rear_door_open"),
 			"service_mode":                mqttBool(values, "service_mode"),
 			"windows_open":                mqttBool(values, "windows_open"),
 			"driver_front_window_open":    mqttBool(values, "driver_front_window_open"),
@@ -1074,10 +1081,7 @@ func authorizedByExistingAPI(r *http.Request) bool {
 	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 
-func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (responseData, error) {
-	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
-	defer cancel()
-	const query = `
+const fetchStatesQuery = `
 		SELECT
 			s.state,
 			s.start_date,
@@ -1108,9 +1112,8 @@ func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (
 			SELECT p.date, p.battery_level, p.rated_battery_range_km
 			FROM positions p
 			WHERE p.car_id = s.car_id
-			  AND s.end_date IS NOT NULL
-			  AND p.date <= s.end_date
-			  AND p.date >= s.end_date - INTERVAL '30 minutes'
+			  AND p.date <= COALESCE(s.end_date, LEAST($3, NOW()))
+			  AND p.date >= COALESCE(s.end_date, LEAST($3, NOW())) - INTERVAL '30 minutes'
 			  AND (p.battery_level IS NOT NULL OR p.rated_battery_range_km IS NOT NULL)
 			ORDER BY p.date DESC
 			LIMIT 1
@@ -1131,7 +1134,11 @@ func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (
 		  AND COALESCE(s.end_date, NOW()) > $2
 		ORDER BY s.start_date ASC`
 
-	rows, err := db.QueryContext(ctx, query, carID, startDate.UTC(), endDate.UTC())
+func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (responseData, error) {
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(ctx, fetchStatesQuery, carID, startDate.UTC(), endDate.UTC())
 	if err != nil {
 		return responseData{}, err
 	}

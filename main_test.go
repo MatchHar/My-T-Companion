@@ -56,6 +56,9 @@ func TestInstallerIncludesParkingEventMonitor(t *testing.T) {
 		`install -m 0755 "$SOURCE_DIR/backup.sh" "$INSTALL_DIR/backup.sh"`,
 		`install -m 0755 "$SOURCE_DIR/restore.sh" "$INSTALL_DIR/restore.sh"`,
 		`install -m 0755 "$SOURCE_DIR/storage-status.sh" "$INSTALL_DIR/storage-status.sh"`,
+		`missing_companion_status=true`,
+		`needs_companion_status=true`,
+		`^/api/v1/cars/[0-9]+/companion-status$`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("installer is missing required handling: %s", required)
@@ -65,6 +68,23 @@ func TestInstallerIncludesParkingEventMonitor(t *testing.T) {
 	parkingRouteWrite := strings.Index(text, `if [[ "$missing_parking_events" == true ]]; then`)
 	if routeFileInitialization < 0 || parkingRouteWrite < 0 || routeFileInitialization > parkingRouteWrite {
 		t.Fatal("parking event route must be written only after route_file is initialized")
+	}
+	companionStatusRouteWrite := strings.Index(text, `if [[ "$missing_companion_status" == true ]]; then`)
+	if companionStatusRouteWrite < 0 || routeFileInitialization > companionStatusRouteWrite {
+		t.Fatal("companion status route must be written only after route_file is initialized")
+	}
+}
+
+func TestCompanionStatusRouteCoverage(t *testing.T) {
+	t.Parallel()
+	for _, file := range []string{"Caddyfile.snippet", "Caddyfile.lan.example", "nginx.snippet.conf", "install.sh"} {
+		contents, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if !strings.Contains(string(contents), "companion-status") {
+			t.Fatalf("%s does not route companion-status", file)
+		}
 	}
 }
 
@@ -114,6 +134,7 @@ func TestSoftwareNotificationRelaySignatureAndPrivacy(t *testing.T) {
 	event := softwareNotificationEvent{
 		EventID:        "event-1",
 		InstallationID: "installation-1",
+		SourceID:       "source-1",
 		CarID:          1,
 		VehicleName:    "MY CAR",
 		Type:           "update_available",
@@ -128,8 +149,29 @@ func TestSoftwareNotificationRelaySignatureAndPrivacy(t *testing.T) {
 	}, event); err != nil {
 		t.Fatal(err)
 	}
-	if received.UpdateVersion != event.UpdateVersion || received.InstallationID != event.InstallationID {
+	if received.UpdateVersion != event.UpdateVersion || received.InstallationID != event.InstallationID ||
+		received.SourceID != event.SourceID {
 		t.Fatalf("unexpected relay event: %+v", received)
+	}
+}
+
+func TestSoftwareNotificationEventIsScopedToSavedSource(t *testing.T) {
+	t.Parallel()
+	monitor := &softwareNotificationMonitor{}
+	state := carSoftwareState{
+		DisplayName:     "My Model 3",
+		Version:         "2026.21.6",
+		UpdateAvailable: true,
+		UpdateVersion:   "2026.26.6.5",
+	}
+	at := time.Date(2026, 8, 31, 20, 0, 0, 0, time.UTC)
+	first := monitor.makeEvent("installation-1", "source-a", 1, state, "update_available", state.UpdateVersion, at)
+	second := monitor.makeEvent("installation-1", "source-b", 1, state, "update_available", state.UpdateVersion, at)
+	if first.SourceID != "source-a" || second.SourceID != "source-b" {
+		t.Fatalf("source IDs were not preserved: first=%+v second=%+v", first, second)
+	}
+	if first.EventID == second.EventID {
+		t.Fatal("equal local car IDs on different saved sources must not share an event ID")
 	}
 }
 
@@ -585,7 +627,9 @@ func TestParkingSecurityAndClimateTransitions(t *testing.T) {
 	}
 	at := time.Date(2026, 7, 28, 22, 0, 0, 0, time.UTC)
 	fields := []string{
-		"locked", "sentry_mode", "doors_open", "windows_open",
+		"locked", "sentry_mode", "doors_open", "driver_front_door_open",
+		"driver_rear_door_open", "passenger_front_door_open",
+		"passenger_rear_door_open", "windows_open",
 		"trunk_open", "frunk_open", "is_climate_on",
 		"is_preconditioning", "battery_heater",
 	}
@@ -597,6 +641,10 @@ func TestParkingSecurityAndClimateTransitions(t *testing.T) {
 		"vehicle_locked",
 		"sentry_enabled",
 		"doors_opened",
+		"driver_front_door_opened",
+		"driver_rear_door_opened",
+		"passenger_front_door_opened",
+		"passenger_rear_door_opened",
 		"windows_opened",
 		"trunk_opened",
 		"frunk_opened",
@@ -611,6 +659,103 @@ func TestParkingSecurityAndClimateTransitions(t *testing.T) {
 		if monitor.store.Events[index].Type != eventType {
 			t.Fatalf("event %d=%q, want %q", index, monitor.store.Events[index].Type, eventType)
 		}
+	}
+}
+
+func TestNamedDoorTopicsAreSubscribedAndMapped(t *testing.T) {
+	t.Parallel()
+	subscribed := make(map[string]bool, len(parkingEventMQTTFields))
+	for _, field := range parkingEventMQTTFields {
+		subscribed[field] = true
+	}
+	for field, events := range map[string][2]string{
+		"driver_front_door_open":    {"driver_front_door_opened", "driver_front_door_closed"},
+		"driver_rear_door_open":     {"driver_rear_door_opened", "driver_rear_door_closed"},
+		"passenger_front_door_open": {"passenger_front_door_opened", "passenger_front_door_closed"},
+		"passenger_rear_door_open":  {"passenger_rear_door_opened", "passenger_rear_door_closed"},
+	} {
+		if !subscribed[field] {
+			t.Errorf("named door MQTT field %s is not subscribed", field)
+		}
+		if got := parkingEventType(field, "true"); got != events[0] {
+			t.Errorf("%s open mapping=%q, want %q", field, got, events[0])
+		}
+		if got := parkingEventType(field, "false"); got != events[1] {
+			t.Errorf("%s close mapping=%q, want %q", field, got, events[1])
+		}
+	}
+}
+
+func TestCompanionStatusReturnsObservedLockDoorsAndWindows(t *testing.T) {
+	oldToken, oldProbe, oldParkingEvents := apiToken, authProbeURL, parkingEvents
+	apiToken, authProbeURL = "test-token", ""
+	monitor := &parkingEventMonitor{
+		statePath: filepath.Join(t.TempDir(), "parking-events.json"),
+		store: parkingEventStore{
+			Cars:   map[int]parkingEventCarState{},
+			Events: []parkingObservedEvent{},
+		},
+	}
+	at := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	for field, value := range map[string]string{
+		"locked": "false", "doors_open": "true",
+		"driver_front_door_open": "true", "driver_rear_door_open": "false",
+		"passenger_front_door_open": "false", "passenger_rear_door_open": "false",
+		"windows_open": "true", "driver_front_window_open": "true",
+	} {
+		monitor.observe(2, field, value, at)
+	}
+	parkingEvents = monitor
+	t.Cleanup(func() {
+		apiToken, authProbeURL, parkingEvents = oldToken, oldProbe, oldParkingEvents
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/cars/2/companion-status", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+	handleCompanionStatus(recorder, request, "2")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", recorder.Code)
+	}
+	var payload struct {
+		Data struct {
+			Locked                 *bool `json:"locked"`
+			DoorsOpen              *bool `json:"doors_open"`
+			DriverFrontDoorOpen    *bool `json:"driver_front_door_open"`
+			DriverRearDoorOpen     *bool `json:"driver_rear_door_open"`
+			PassengerFrontDoorOpen *bool `json:"passenger_front_door_open"`
+			PassengerRearDoorOpen  *bool `json:"passenger_rear_door_open"`
+			WindowsOpen            *bool `json:"windows_open"`
+			DriverFrontWindowOpen  *bool `json:"driver_front_window_open"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode companion status: %v", err)
+	}
+	if payload.Data.Locked == nil || *payload.Data.Locked ||
+		payload.Data.DoorsOpen == nil || !*payload.Data.DoorsOpen ||
+		payload.Data.DriverFrontDoorOpen == nil || !*payload.Data.DriverFrontDoorOpen ||
+		payload.Data.DriverRearDoorOpen == nil || *payload.Data.DriverRearDoorOpen ||
+		payload.Data.PassengerFrontDoorOpen == nil || *payload.Data.PassengerFrontDoorOpen ||
+		payload.Data.PassengerRearDoorOpen == nil || *payload.Data.PassengerRearDoorOpen ||
+		payload.Data.WindowsOpen == nil || !*payload.Data.WindowsOpen ||
+		payload.Data.DriverFrontWindowOpen == nil || !*payload.Data.DriverFrontWindowOpen {
+		t.Fatalf("unexpected companion security payload: %+v", payload.Data)
+	}
+}
+
+func TestFetchStatesUsesLatestBoundedObservationForOpenIntervals(t *testing.T) {
+	t.Parallel()
+	for _, required := range []string{
+		"p.date <= COALESCE(s.end_date, LEAST($3, NOW()))",
+		"p.date >= COALESCE(s.end_date, LEAST($3, NOW())) - INTERVAL '30 minutes'",
+	} {
+		if !strings.Contains(fetchStatesQuery, required) {
+			t.Fatalf("open parking boundary query is missing %q", required)
+		}
+	}
+	if strings.Contains(fetchStatesQuery, "AND s.end_date IS NOT NULL\n\t\t\t  AND p.date <= s.end_date") {
+		t.Fatal("end-before observation still requires a completed state")
 	}
 }
 
@@ -704,6 +849,7 @@ func TestCapabilitiesRequiresAuthentication(t *testing.T) {
 		t.Fatalf("got status %d, want 200", recorder.Code)
 	}
 	var payload struct {
+		Capabilities     []string `json:"capabilities"`
 		AppCompatibility struct {
 			MinimumVersion     string `json:"minimum_version"`
 			RecommendedVersion string `json:"recommended_version"`
@@ -714,6 +860,16 @@ func TestCapabilitiesRequiresAuthentication(t *testing.T) {
 	}
 	if payload.AppCompatibility.MinimumVersion != "3.10" || payload.AppCompatibility.RecommendedVersion != "3.30" {
 		t.Fatalf("unexpected app compatibility: %+v", payload.AppCompatibility)
+	}
+	foundDoorDetail := false
+	for _, capability := range payload.Capabilities {
+		if capability == "door_detail_status" {
+			foundDoorDetail = true
+			break
+		}
+	}
+	if !foundDoorDetail {
+		t.Fatal("door_detail_status capability is missing")
 	}
 }
 

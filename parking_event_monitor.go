@@ -170,6 +170,10 @@ var parkingEventMQTTFields = []string{
 	"sun_roof_percent_open",
 	"service_mode",
 	"doors_open",
+	"driver_front_door_open",
+	"driver_rear_door_open",
+	"passenger_front_door_open",
+	"passenger_rear_door_open",
 	"trunk_open",
 	"frunk_open",
 	"is_climate_on",
@@ -295,6 +299,14 @@ func parkingEventType(field, value string) string {
 		}
 	case "doors_open":
 		return boolEvent(value, "doors_opened", "doors_closed")
+	case "driver_front_door_open":
+		return boolEvent(value, "driver_front_door_opened", "driver_front_door_closed")
+	case "driver_rear_door_open":
+		return boolEvent(value, "driver_rear_door_opened", "driver_rear_door_closed")
+	case "passenger_front_door_open":
+		return boolEvent(value, "passenger_front_door_opened", "passenger_front_door_closed")
+	case "passenger_rear_door_open":
+		return boolEvent(value, "passenger_rear_door_opened", "passenger_rear_door_closed")
 	case "trunk_open":
 		return boolEvent(value, "trunk_opened", "trunk_closed")
 	case "frunk_open":
