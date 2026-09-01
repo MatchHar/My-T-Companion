@@ -187,6 +187,44 @@ func targetPushEventID(baseEventID, installationID, eventType string) string {
 	return hex.EncodeToString(digest[:16])
 }
 
+// targetScopedPushEventID adds the saved My T connection identity to the
+// delivery identity. Two Companion servers can legitimately pair the same
+// iPhone and expose the same TeslaMate-local car ID; their events must still
+// remain distinct at the relay.
+func targetScopedPushEventID(baseEventID, installationID, sourceID, eventType string) string {
+	sourceID = strings.ToLower(strings.TrimSpace(sourceID))
+	if sourceID == "" {
+		return targetPushEventID(baseEventID, installationID, eventType)
+	}
+	return targetPushEventID(strings.Join([]string{
+		strings.TrimSpace(baseEventID),
+		sourceID,
+	}, ":"), installationID, eventType)
+}
+
+// scopedLiveActivitySessionID keeps retries and terminal events stable while
+// ensuring equal local session IDs on two TeslaMate servers cannot address the
+// same ActivityKit session on one phone. Legacy pairings without source_id keep
+// their original session ID until the App refreshes the registration.
+func scopedLiveActivitySessionID(sessionID, sourceID, kind string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	sourceID = strings.ToLower(strings.TrimSpace(sourceID))
+	if sessionID == "" || sourceID == "" {
+		return sessionID
+	}
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		"my-t-live-activity-session-v1",
+		strings.TrimSpace(kind),
+		sourceID,
+		sessionID,
+	}, ":")))
+	prefix := strings.TrimSpace(kind)
+	if prefix == "" {
+		prefix = "activity"
+	}
+	return prefix + "-" + hex.EncodeToString(digest[:16])
+}
+
 type pushSubscriberRegistry struct {
 	mu       sync.Mutex
 	path     string

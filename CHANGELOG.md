@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.39
+
+- Carry the paired My T saved-source identifier on charging, navigation, and
+  Lock Secure deliveries, matching the existing software-update and low-battery
+  event contract.
+- Scope remote charging/navigation session IDs and per-phone relay event IDs by
+  saved source so one iPhone can safely pair two TeslaMate servers that expose
+  the same local car ID.
+- Preserve legacy pairings without `source_id` until the App refreshes their
+  registration; no TeslaMate migration, token change, or vehicle wake is needed.
+
 ## 1.10.38
 
 - Capture future open/close transitions for all four named doors while keeping

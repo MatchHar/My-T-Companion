@@ -29,6 +29,7 @@ const navigationMinimumVerifiedDistanceKM = 0.05
 type navigationLiveActivityEvent struct {
 	EventID               string   `json:"event_id"`
 	InstallationID        string   `json:"installation_id"`
+	SourceID              string   `json:"source_id,omitempty"`
 	CarID                 int      `json:"car_id"`
 	VehicleName           string   `json:"vehicle_name,omitempty"`
 	Type                  string   `json:"type"`
@@ -1108,7 +1109,9 @@ func (m *navigationNotificationMonitor) deliverTo(
 	for _, sub := range subs {
 		copy := event
 		copy.InstallationID = sub.InstallationID
-		copy.EventID = targetPushEventID(event.EventID, sub.InstallationID, event.Type)
+		copy.SourceID = sub.SourceID
+		copy.SessionID = scopedLiveActivitySessionID(event.SessionID, sub.SourceID, "navigation")
+		copy.EventID = targetScopedPushEventID(event.EventID, sub.InstallationID, sub.SourceID, event.Type)
 		payload, err := json.Marshal(copy)
 		if err != nil {
 			last = err

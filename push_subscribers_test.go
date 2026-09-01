@@ -26,8 +26,10 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 type capturedPushDelivery struct {
 	headerInstallation string
 	installationID     string
+	sourceID           string
 	eventID            string
 	eventType          string
+	sessionID          string
 }
 
 func TestAnonymousVehicleAliasIsStableAndServerScoped(t *testing.T) {
@@ -643,10 +645,13 @@ func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
 	reg := newPushSubscriberRegistry()
 	firstID, firstSecret, relayURL := testInstallation()
 	secondID, secondSecret, _ := testInstallation()
+	firstSource := "00000000-0000-4000-8000-000000000001"
+	secondSource := "00000000-0000-4000-8000-000000000002"
 	on := true
 	for _, pairing := range []pushPairRequest{
 		{
 			InstallationID:         firstID,
+			SourceID:               firstSource,
 			RelayURL:               relayURL,
 			RelaySecret:            firstSecret,
 			ChargingLiveActivity:   &on,
@@ -655,6 +660,7 @@ func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
 		},
 		{
 			InstallationID:         secondID,
+			SourceID:               secondSource,
 			RelayURL:               relayURL,
 			RelaySecret:            secondSecret,
 			ChargingLiveActivity:   &on,
@@ -676,8 +682,10 @@ func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
 		}
 		var event struct {
 			InstallationID string `json:"installation_id"`
+			SourceID       string `json:"source_id"`
 			EventID        string `json:"event_id"`
 			Type           string `json:"type"`
+			SessionID      string `json:"session_id"`
 		}
 		if err := json.Unmarshal(payload, &event); err != nil {
 			t.Fatal(err)
@@ -686,8 +694,10 @@ func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
 		captured = append(captured, capturedPushDelivery{
 			headerInstallation: request.Header.Get("X-My-T-Installation"),
 			installationID:     event.InstallationID,
+			sourceID:           event.SourceID,
 			eventID:            event.EventID,
 			eventType:          event.Type,
+			sessionID:          event.SessionID,
 		})
 		captureMu.Unlock()
 		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
@@ -707,7 +717,9 @@ func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	assertPerInstallationDeliveries(t, captured, baseEventID, "charging_updated", firstID, secondID)
+	assertScopedDeliveries(t, captured, baseEventID, "charging_updated", "charge-test-session", "charge", map[string]string{
+		firstID: firstSource, secondID: secondSource,
+	})
 
 	captureMu.Lock()
 	captured = captured[:0]
@@ -726,22 +738,28 @@ func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
 	for _, delivery := range captured {
 		byType[delivery.eventType] = append(byType[delivery.eventType], delivery)
 	}
-	assertPerInstallationDeliveries(t, byType["navigation_started"], baseEventID, "navigation_started", firstID, secondID)
+	assertScopedDeliveries(t, byType["navigation_started"], baseEventID, "navigation_started", "navigation-test-session", "navigation", map[string]string{
+		firstID: firstSource, secondID: secondSource,
+	})
 	alertBaseID := baseEventID + ":destination_trip_started"
-	assertPerInstallationDeliveries(t, byType["destination_trip_started"], alertBaseID, "destination_trip_started", firstID, secondID)
+	assertScopedDeliveries(t, byType["destination_trip_started"], alertBaseID, "destination_trip_started", "navigation-test-session", "navigation", map[string]string{
+		firstID: firstSource, secondID: secondSource,
+	})
 	for _, installationID := range []string{firstID, secondID} {
-		liveID := targetPushEventID(baseEventID, installationID, "navigation_started")
-		alertID := targetPushEventID(alertBaseID, installationID, "destination_trip_started")
+		sourceID := map[string]string{firstID: firstSource, secondID: secondSource}[installationID]
+		liveID := targetScopedPushEventID(baseEventID, installationID, sourceID, "navigation_started")
+		alertID := targetScopedPushEventID(alertBaseID, installationID, sourceID, "destination_trip_started")
 		if liveID == alertID {
 			t.Fatalf("live activity and trip banner share event_id for %s", installationID)
 		}
 	}
 }
 
-func assertPerInstallationDeliveries(
+func assertScopedDeliveries(
 	t *testing.T,
 	captured []capturedPushDelivery,
-	baseEventID, eventType, firstID, secondID string,
+	baseEventID, eventType, baseSessionID, sessionKind string,
+	wantSources map[string]string,
 ) {
 	t.Helper()
 	if len(captured) != 2 {
@@ -755,17 +773,61 @@ func assertPerInstallationDeliveries(
 		if delivery.eventType != eventType {
 			t.Fatalf("type=%q want=%q", delivery.eventType, eventType)
 		}
+		wantSource := wantSources[delivery.installationID]
+		if wantSource == "" || delivery.sourceID != wantSource {
+			t.Fatalf("source_id=%q want=%q delivery=%+v", delivery.sourceID, wantSource, delivery)
+		}
+		wantSession := scopedLiveActivitySessionID(baseSessionID, wantSource, sessionKind)
+		if delivery.sessionID != wantSession {
+			t.Fatalf("session_id=%q want=%q", delivery.sessionID, wantSession)
+		}
 		if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(delivery.eventID) {
 			t.Fatalf("event_id=%q", delivery.eventID)
 		}
-		want := targetPushEventID(baseEventID, delivery.installationID, eventType)
+		want := targetScopedPushEventID(baseEventID, delivery.installationID, wantSource, eventType)
 		if delivery.eventID != want {
 			t.Fatalf("event_id=%q want=%q", delivery.eventID, want)
 		}
 		ids[delivery.installationID] = delivery.eventID
 	}
-	if ids[firstID] == "" || ids[secondID] == "" || ids[firstID] == ids[secondID] {
+	if len(ids) != len(wantSources) {
+		t.Fatalf("missing scoped deliveries: ids=%+v sources=%+v", ids, wantSources)
+	}
+	var first string
+	for _, eventID := range ids {
+		if first != "" && first == eventID {
+			t.Fatalf("per-source event IDs must differ: %+v", ids)
+		}
+		first = eventID
+	}
+	if len(ids) < 2 {
 		t.Fatalf("per-installation IDs must both exist and differ: %+v", ids)
+	}
+}
+
+func TestScopedPushIdentitySeparatesTwoServersForSamePhoneAndCar(t *testing.T) {
+	installationID := strings.Repeat("a", 48)
+	baseEventID := strings.Repeat("b", 32)
+	baseSessionID := "navigation-shared-local-session"
+	firstSource := "00000000-0000-4000-8000-000000000001"
+	secondSource := "00000000-0000-4000-8000-000000000002"
+
+	firstEventID := targetScopedPushEventID(baseEventID, installationID, firstSource, "navigation_updated")
+	secondEventID := targetScopedPushEventID(baseEventID, installationID, secondSource, "navigation_updated")
+	if firstEventID == secondEventID {
+		t.Fatal("two TeslaMate sources produced one relay event identity")
+	}
+	firstSession := scopedLiveActivitySessionID(baseSessionID, firstSource, "navigation")
+	secondSession := scopedLiveActivitySessionID(baseSessionID, secondSource, "navigation")
+	if firstSession == secondSession {
+		t.Fatal("two TeslaMate sources produced one Live Activity session identity")
+	}
+	legacyEventID := targetScopedPushEventID(baseEventID, installationID, "", "navigation_updated")
+	if legacyEventID != targetPushEventID(baseEventID, installationID, "navigation_updated") {
+		t.Fatal("legacy pairing without source_id changed its relay event identity")
+	}
+	if scopedLiveActivitySessionID(baseSessionID, "", "navigation") != baseSessionID {
+		t.Fatal("legacy pairing without source_id changed its Live Activity session identity")
 	}
 }
 

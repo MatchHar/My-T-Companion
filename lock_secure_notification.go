@@ -62,6 +62,7 @@ type lockSecureStore struct {
 type lockSecurePushEvent struct {
 	EventID        string `json:"event_id"`
 	InstallationID string `json:"installation_id"`
+	SourceID       string `json:"source_id,omitempty"`
 	CarID          int    `json:"car_id"`
 	VehicleName    string `json:"vehicle_name,omitempty"`
 	Type           string `json:"type"`
@@ -380,7 +381,7 @@ func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID 
 	}
 	deliveredAll := len(subs) > 0
 	for _, sub := range subs {
-		event := m.makeEventFor(sub.InstallationID, carID, state, observedAt)
+		event := m.makeEventFor(sub.InstallationID, sub.SourceID, carID, state, observedAt)
 		if err := m.deliverTo(sub, *event); err != nil {
 			log.Printf("[warn] lock-secure fan-out installation=%s: %v", sub.InstallationID[:8], err)
 			deliveredAll = false
@@ -442,16 +443,18 @@ func normalizeLockSecureSound(sound string) string {
 
 func (m *lockSecureNotificationMonitor) makeEventFor(
 	installationID string,
+	sourceID string,
 	carID int,
 	state lockSecureCarState,
 	observedAt time.Time,
 ) *lockSecurePushEvent {
 	bucket := observedAt.UTC().Format("200601021504")
-	idInput := fmt.Sprintf("%s:%d:vehicle_lock_secure:%s", installationID, carID, bucket)
+	idInput := fmt.Sprintf("%s:%s:%d:vehicle_lock_secure:%s", installationID, strings.ToLower(strings.TrimSpace(sourceID)), carID, bucket)
 	idHash := sha256.Sum256([]byte(idInput))
 	return &lockSecurePushEvent{
 		EventID:        hex.EncodeToString(idHash[:16]),
 		InstallationID: installationID,
+		SourceID:       sourceID,
 		CarID:          carID,
 		VehicleName:    state.DisplayName,
 		Type:           "vehicle_lock_secure",
