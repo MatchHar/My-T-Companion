@@ -60,6 +60,7 @@ func (m *softwareNotificationMonitor) disable() error {
 type softwareNotificationEvent struct {
 	EventID        string `json:"event_id"`
 	InstallationID string `json:"installation_id"`
+	SourceID       string `json:"source_id,omitempty"`
 	CarID          int    `json:"car_id"`
 	VehicleName    string `json:"vehicle_name,omitempty"`
 	Type           string `json:"type"`
@@ -393,7 +394,7 @@ func (m *softwareNotificationMonitor) fanOutSoftware(
 	}
 	deliveredAll := len(subs) > 0
 	for _, sub := range subs {
-		event := m.makeEvent(sub.InstallationID, carID, state, eventType, eventVersion, observedAt)
+		event := m.makeEvent(sub.InstallationID, sub.SourceID, carID, state, eventType, eventVersion, observedAt)
 		if err := m.deliverTo(sub, *event); err != nil {
 			log.Printf("[warn] software fan-out installation=%s: %v", sub.InstallationID[:8], err)
 			deliveredAll = false
@@ -414,16 +415,18 @@ func (m *softwareNotificationMonitor) fanOutSoftware(
 
 func (m *softwareNotificationMonitor) makeEvent(
 	installationID string,
+	sourceID string,
 	carID int,
 	state carSoftwareState,
 	eventType, eventVersion string,
 	observedAt time.Time,
 ) *softwareNotificationEvent {
-	idInput := fmt.Sprintf("%s:%d:%s:%s", installationID, carID, eventType, eventVersion)
+	idInput := fmt.Sprintf("%s:%s:%d:%s:%s", installationID, sourceID, carID, eventType, eventVersion)
 	idHash := sha256.Sum256([]byte(idInput))
 	return &softwareNotificationEvent{
 		EventID:        hex.EncodeToString(idHash[:16]),
 		InstallationID: installationID,
+		SourceID:       sourceID,
 		CarID:          carID,
 		VehicleName:    state.DisplayName,
 		Type:           eventType,

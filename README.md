@@ -231,6 +231,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.38 | Four named-door history/status, active-parking observations, source-scoped software updates, and route repair |
 | 1.10.37 | Per-iPhone all-vehicle defaults plus category-specific vehicle overrides; paused-phone capacity recovery |
 | 1.10.36 | Server-scoped all-car push subscriptions with automatic migration of obsolete selected-car filters |
 | 1.10.35 | `low_battery_push`: parked/not-charging low-battery alerts with per-iPhone acknowledge and four-hour snooze |
@@ -447,12 +448,15 @@ manually. The installer stops with an actionable error instead of guessing.
 - Explicit `waiting_for_positions` when TeslaMate has opened a drive but has
   not stored a valid point yet. The service never substitutes the phone-open
   vehicle location as the trip start.
+- Future observed history for each named door and window, plus last observed
+  lock/door/window values without waking a sleeping vehicle.
 
 ## Endpoints
 
 - `GET /api/v1/capabilities`
 - `GET /api/v1/cars/{car_id}/states?startDate=...&endDate=...`
 - `GET /api/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
+- `GET /api/v1/cars/{car_id}/companion-status`
 - `GET /api/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
 - `GET /api/v1/cars/{car_id}/navigation/push-history`
 - `GET /api/healthz`

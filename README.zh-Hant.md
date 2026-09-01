@@ -246,6 +246,7 @@ https://域名
 
 | Companion 版本 | 新增能力 |
 | --- | --- |
+| 1.10.38 | 四門獨立歷史與狀態、進行中停車觀測、軟體更新來源隔離及路由修復 |
 | 1.10.37 | 每支 iPhone 的所有車輛預設與依類別分車覆寫；暫停手機容量恢復 |
 | 1.10.36 | 伺服器範圍的所有車輛推播訂閱，並自動遷移舊的目前車輛篩選 |
 | 1.10.33 | 導航卡片開始後，TeslaMate 首次解析出真實行程起點時立即傳送修正，不等待一般節流計時 |
@@ -342,12 +343,15 @@ Nginx、Traefik 或無法識別的容器代理時，必須加入並驗證倉庫�
 - TeslaMate 已建立行程但尚未儲存有效 GPS 點時，明確回傳
   `waiting_for_positions`。
 - 不會把 App 開啟時看到的車輛位置當作真實行程起點。
+- 保存未來觀測到的四門、四窗獨立開關記錄，並在不喚醒休眠車輛的
+  情況下提供最後觀測到的車鎖、車門及車窗狀態。
 
 ## API 介面
 
 - `GET /api/v1/capabilities`
 - `GET /api/v1/cars/{car_id}/states?startDate=...&endDate=...`
 - `GET /api/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
+- `GET /api/v1/cars/{car_id}/companion-status`
 - `GET /api/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
 - `GET /api/healthz`
 

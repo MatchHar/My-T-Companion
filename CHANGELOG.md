@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.10.38
+
+- Capture future open/close transitions for all four named doors while keeping
+  the aggregate door topic as a backward-compatible fallback.
+- Return the last observed vehicle lock, aggregate door, and four named-door
+  values from `companion-status`, alongside the existing individual windows.
+- Repair `companion-status` routing during upgrades across system Caddy,
+  Docker Caddy, the loopback API edge, and the unified LAN example.
+- Return the latest bounded battery/rated-range observation for an active
+  online parking interval instead of waiting for the state to end.
+- Scope software-update events and delivery identities to the paired saved
+  source so equal TeslaMate-local car IDs on different servers cannot collide.
+
 ## 1.10.37
 
 - Add category-specific per-vehicle notification preferences while preserving
