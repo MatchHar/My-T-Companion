@@ -231,6 +231,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.39 | Source-scoped charging, navigation, and Lock Secure delivery plus collision-safe Live Activity sessions |
 | 1.10.38 | Four named-door history/status, active-parking observations, source-scoped software updates, and route repair |
 | 1.10.37 | Per-iPhone all-vehicle defaults plus category-specific vehicle overrides; paused-phone capacity recovery |
 | 1.10.36 | Server-scoped all-car push subscriptions with automatic migration of obsolete selected-car filters |

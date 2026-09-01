@@ -940,9 +940,12 @@ func TestLockSecureSoundWhitelistMatchesAdvertisedSet(t *testing.T) {
 
 func TestLockSecureEventDoesNotSendDeviceSoundPreference(t *testing.T) {
 	monitor := &lockSecureNotificationMonitor{installationID: strings.Repeat("a", 48)}
-	event := monitor.makeEventFor(strings.Repeat("a", 48), 7, lockSecureCarState{DisplayName: "My T"}, time.Now().UTC())
+	event := monitor.makeEventFor(strings.Repeat("a", 48), "source-lock", 7, lockSecureCarState{DisplayName: "My T"}, time.Now().UTC())
 	if event.Sound != "" {
 		t.Fatalf("device-local sound leaked into relay event: %q", event.Sound)
+	}
+	if event.SourceID != "source-lock" {
+		t.Fatalf("source_id=%q", event.SourceID)
 	}
 	payload, err := json.Marshal(event)
 	if err != nil {

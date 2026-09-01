@@ -7,7 +7,7 @@ signed relay delivery. Version `1.7.1` adds destination-navigation Live Activity
 without changing APIs or deployment. Parking and navigation remain usable
 without pairing.
 
-The 1.10.38 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
+The 1.10.39 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
 stable line, together with TeslaMateAPI 1.25.0. Per-vehicle push overrides use
 TeslaMate car IDs already present in notification events and require no
 database migration, Tesla token change, or vehicle wake. Existing installations
