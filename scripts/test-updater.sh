@@ -17,6 +17,7 @@ make_release() {
   printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' "$install_body" \
     > "$source_dir/install.sh"
   chmod +x "$source_dir/install.sh"
+  cp "$repo_dir/install-source-transaction.sh" "$source_dir/install-source-transaction.sh"
   tar -C "$test_dir/source-$version" -czf "$release_dir/$archive" \
     "my-t-companion-$version"
   (
@@ -54,5 +55,26 @@ if INSTALL_DIR="$failure_install" \
   exit 1
 fi
 [[ "$(cat "$failure_install/state")" == "restored" ]]
+
+# The updater itself is unchanged from 1.10.39: the new installer must clean
+# its novel source files BEFORE the older overwrite-only installer runs.
+guarded_install="$test_dir/guarded-install"
+mkdir "$guarded_install"
+printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
+  '[[ ! -e "$INSTALL_DIR/new-source.go" ]]' \
+  'printf restored > "$INSTALL_DIR/state"' > "$guarded_install/install.sh"
+chmod +x "$guarded_install/install.sh"
+printf old > "$guarded_install/state"
+printf user-owned > "$guarded_install/operator-notes"
+make_release "9.9.9" 'source "$(dirname "${BASH_SOURCE[0]}")/install-source-transaction.sh"; myt_begin_source_transaction; printf broken > "$INSTALL_DIR/state"; printf incompatible > "$INSTALL_DIR/new-source.go"; exit 19'
+if INSTALL_DIR="$guarded_install" \
+  MY_T_VERSION="9.9.9" \
+  MY_T_RELEASE_BASE_URL="file://$test_dir/release-9.9.9" \
+    "$repo_dir/update.sh"; then
+  printf 'expected guarded update failure\n' >&2; exit 1
+fi
+[[ "$(cat "$guarded_install/state")" == restored ]]
+[[ "$(cat "$guarded_install/operator-notes")" == user-owned ]]
+[[ ! -e "$guarded_install/new-source.go" ]]
 
 printf 'updater lifecycle tests passed\n'
