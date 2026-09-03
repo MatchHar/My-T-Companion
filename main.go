@@ -755,6 +755,12 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 	if softwarePush != nil {
 		software = softwarePush.carState(carID)
 	}
+	doorDiagnostics := []parkingDoorReceipt{}
+	mqttConnected := false
+	if parkingEvents != nil {
+		doorDiagnostics = parkingEvents.doorDiagnostics(carID)
+		mqttConnected = parkingEvents.mqttConnected()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"car_id":                      carID,
@@ -778,6 +784,8 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 			"software_version":            emptyToNil(software.Version),
 			"download_percent":            software.DownloadPercent,
 			"install_percent":             software.InstallPercent,
+			"mqtt_connected":              mqttConnected,
+			"door_mqtt_diagnostics":       doorDiagnostics,
 		},
 	})
 }

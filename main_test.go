@@ -677,10 +677,10 @@ func TestNamedDoorTopicsAreSubscribedAndMapped(t *testing.T) {
 		if !subscribed[field] {
 			t.Errorf("named door MQTT field %s is not subscribed", field)
 		}
-		if got := parkingEventType(field, "true"); got != events[0] {
+		if got := parkingEventType(field, "false", "true"); got != events[0] {
 			t.Errorf("%s open mapping=%q, want %q", field, got, events[0])
 		}
-		if got := parkingEventType(field, "false"); got != events[1] {
+		if got := parkingEventType(field, "true", "false"); got != events[1] {
 			t.Errorf("%s close mapping=%q, want %q", field, got, events[1])
 		}
 	}

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.10.40
+
+- Preserve each navigation leg while staging incomplete next-stop observations;
+  use destination coordinates and fresh parking evidence to distinguish a new
+  stop, an address alias, rerouting, and a confirmed arrival.
+- Keep queued, awaiting-token, and APNs-accepted delivery outcomes distinct;
+  reconcile durable retries without letting stale updates overwrite ended legs.
+- Emit charging-stop observations only after actual charging, preserving plug,
+  waiting, restart, completion, and unplug transitions without false stops.
+- Add bounded per-door MQTT receipt and persistence diagnostics to investigate
+  missing driver-front observations without inventing historical events or
+  increasing Tesla vehicle polling. Existing pairings and per-car preferences
+  are preserved. Physical phone and deliberate door-cycle acceptance remain
+  necessary; passing automated tests is not proof of device delivery.
+
 ## 1.10.39
 
 - Carry the paired My T saved-source identifier on charging, navigation, and
