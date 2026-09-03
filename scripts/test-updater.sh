@@ -32,7 +32,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf restored > "$INSTALL_DIR/state"' \
   > "$success_install/install.sh"
 chmod +x "$success_install/install.sh"
 printf old > "$success_install/state"
-make_release "9.9.7" 'printf new > "$INSTALL_DIR/state"'
+make_release "9.9.7" 'source "$(dirname "${BASH_SOURCE[0]}")/install-source-transaction.sh"; myt_begin_source_transaction; printf new > "$INSTALL_DIR/state"'
 INSTALL_DIR="$success_install" \
 MY_T_VERSION="9.9.7" \
 MY_T_RELEASE_BASE_URL="file://$test_dir/release-9.9.7" \

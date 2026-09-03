@@ -27,7 +27,9 @@ myt_begin_source_transaction() {
 
 myt_finish_source_transaction() {
   local status="$1"
-  trap - EXIT INT TERM
+  trap - EXIT
+  # A second interrupt must not leave the restored context half-copied.
+  trap '' INT TERM
   if [[ "$status" == 0 ]]; then
     # Only remove our own successful transaction snapshot, never INSTALL_DIR.
     if [[ -d "$MYT_SOURCE_BACKUP" && "$(basename "$MYT_SOURCE_BACKUP")" == .my-t-install-source.* ]]; then
@@ -38,7 +40,10 @@ myt_finish_source_transaction() {
   # Move aside instead of deleting failed sources. This also preserves any
   # operator-owned files for recovery; durable Docker volumes are not touched.
   if [[ -d "$INSTALL_DIR" ]]; then
-    mv -- "$INSTALL_DIR" "$MYT_SOURCE_BACKUP/failed" || exit "$status"
+    if ! mv -- "$INSTALL_DIR" "$MYT_SOURCE_BACKUP/failed"; then
+      printf '[My T Companion] Could not move failed sources aside; manual recovery may be required from %s/before\n' "$MYT_SOURCE_BACKUP" >&2
+      exit "$status"
+    fi
   fi
   if [[ "$MYT_SOURCE_EXISTED" == true ]]; then
     if cp -a "$MYT_SOURCE_BACKUP/before" "$INSTALL_DIR"; then
