@@ -41,6 +41,7 @@ jobs:
       - run: scripts/verify-hostbox-catalog.sh
       - run: scripts/verify-documentation-parity.sh
       - run: sudo scripts/test-updater.sh
+      - run: bash -n install-source-transaction.sh scripts/test-install-source-transaction.sh && bash scripts/test-install-source-transaction.sh
       - run: scripts/test-release-publishing.sh
       - run: scripts/test-release-source.sh
       - run: docker build --tag myt/companion:ci .

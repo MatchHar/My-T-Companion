@@ -437,6 +437,11 @@ if [[ -n "$auth_probe_url" ]]; then
 fi
 
 log "Installing service files in $INSTALL_DIR"
+# Capture the complete previous build context before copying any new files.
+# This must live in the new installer: an older update.sh owns the first upgrade.
+[[ -f "$SOURCE_DIR/install-source-transaction.sh" ]] || fail "Release package missing source rollback guard"
+source "$SOURCE_DIR/install-source-transaction.sh"
+myt_begin_source_transaction
 install -d -m 0755 "$INSTALL_DIR"
 if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   install -m 0644 "$SOURCE_DIR/Dockerfile" "$INSTALL_DIR/Dockerfile"
@@ -472,6 +477,7 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   done
   log "Build context Go sources: $(ls -1 "$INSTALL_DIR"/*.go 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
+  install -m 0644 "$SOURCE_DIR/install-source-transaction.sh" "$INSTALL_DIR/install-source-transaction.sh"
   install -m 0755 "$SOURCE_DIR/update.sh" "$INSTALL_DIR/update.sh"
   if [[ -f "$SOURCE_DIR/uninstall.sh" ]]; then
     install -m 0755 "$SOURCE_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
