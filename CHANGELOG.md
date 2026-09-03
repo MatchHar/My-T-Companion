@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.42
+
+- Preserve the exact pre-install source/configuration on installation failure,
+  including removing newly introduced Go files from the restored build context.
+  This works even when upgrading with the older installed updater. Failed files
+  are retained for recovery; durable notification/parking volumes are untouched.
+- Add failure, successful reinstall and interruption regression coverage. Includes
+  the navigation lifecycle, truthful delivery, charging classification and bounded
+  door receipt diagnostics from 1.10.41. No fabricated historical door events.
+
 ## 1.10.41
 
 Version 1.10.40 was not published: its release gate stopped for missing release
