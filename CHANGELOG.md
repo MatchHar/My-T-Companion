@@ -1,6 +1,10 @@
 # Changelog
 
-## 1.10.40
+## 1.10.41
+
+Version 1.10.40 was not published: its release gate stopped for missing release
+notes. This release includes the same reviewed repairs, complete three-language
+notes, and an earlier archive-stage check for missing release documentation.
 
 - Preserve each navigation leg while staging incomplete next-stop observations;
   use destination coordinates and fresh parking evidence to distinguish a new
