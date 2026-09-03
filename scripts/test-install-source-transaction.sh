@@ -35,5 +35,11 @@ if bash -c 'set -euo pipefail; source "$1"; myt_begin_source_transaction;
   printf 'expected interrupted installer failure\n' >&2; exit 1
 fi
 [[ ! -e "$INSTALL_DIR" ]]
+
+# A fresh nested installation is also supported, not just upgrades.
+export INSTALL_DIR="$test_dir/new-parent/nested/companion"
+bash -c 'set -euo pipefail; source "$1"; myt_begin_source_transaction;
+  mkdir "$INSTALL_DIR"; printf installed > "$INSTALL_DIR/main.go"' bash "$repo_dir/install-source-transaction.sh"
+[[ "$(cat "$INSTALL_DIR/main.go")" == installed ]]
 grep -q 'myt_begin_source_transaction' "$repo_dir/install.sh"
 printf 'installer source transaction tests passed\n'
