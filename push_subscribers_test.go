@@ -725,7 +725,7 @@ func TestChargingAndNavigationFanOutUsePerInstallationEventIDs(t *testing.T) {
 	captured = captured[:0]
 	captureMu.Unlock()
 	navigation := &navigationNotificationMonitor{}
-	if err := navigation.deliver(navigationLiveActivityEvent{
+	if _, err := navigation.deliver(navigationLiveActivityEvent{
 		EventID:     baseEventID,
 		CarID:       1,
 		Type:        "navigation_started",

@@ -48,7 +48,12 @@ type navigationLiveActivityEvent struct {
 	TripEndedAt     *int64 `json:"trip_ended_at,omitempty"`
 	DurationMinutes *int   `json:"duration_minutes,omitempty"`
 	EndReason       string `json:"end_reason,omitempty"`
+	Revision        int    `json:"revision,omitempty"`
+	LegPhase        string `json:"leg_phase,omitempty"`
 	ObservedAt      string `json:"observed_at"`
+	// Unscoped Companion session identity. session_id is rewritten per source
+	// at fan-out; this field lets outbox reconciliation find the original leg.
+	LogicalSessionID string `json:"logical_session_id,omitempty"`
 	// Optional history end_reason override (not sent to push relay).
 	endReasonOverride string
 	// Re-pair recovery can replay a start to one installation without sending
@@ -63,6 +68,10 @@ type activeRouteMQTT struct {
 	MilesToArrival   *float64 `json:"miles_to_arrival"`
 	MinutesToArrival *float64 `json:"minutes_to_arrival"`
 	Error            any      `json:"error"`
+	Location         *struct {
+		Latitude  *float64 `json:"latitude"`
+		Longitude *float64 `json:"longitude"`
+	} `json:"location"`
 }
 
 type carNavigationState struct {
@@ -79,8 +88,22 @@ type carNavigationState struct {
 	RemainingDistanceKM *float64 `json:"remaining_distance_km,omitempty"`
 	RemainingMinutes    *int     `json:"remaining_minutes,omitempty"`
 	ArrivalBatteryLevel *int     `json:"arrival_battery_level,omitempty"`
-	Active              bool     `json:"active"`
-	SessionID           string   `json:"session_id,omitempty"`
+	// Destination coordinates are local identity evidence only. They are never
+	// copied onto push payloads or App-readable push-history.
+	DestinationLatitude  *float64 `json:"destination_latitude,omitempty"`
+	DestinationLongitude *float64 `json:"destination_longitude,omitempty"`
+	Active               bool     `json:"active"`
+	SessionID            string   `json:"session_id,omitempty"`
+	LegPhase             string   `json:"leg_phase,omitempty"`
+	Revision             int      `json:"revision,omitempty"`
+	// Incomplete next-stop publications are staged here so they cannot rewrite
+	// the committed old-leg remaining distance or session identity.
+	PendingDestination      string   `json:"pending_destination,omitempty"`
+	PendingRemainingKM      *float64 `json:"pending_remaining_km,omitempty"`
+	PendingRemainingMinutes *int     `json:"pending_remaining_minutes,omitempty"`
+	PendingArrivalBattery   *int     `json:"pending_arrival_battery,omitempty"`
+	PendingLatitude         *float64 `json:"pending_latitude,omitempty"`
+	PendingLongitude        *float64 `json:"pending_longitude,omitempty"`
 	// RFC3339 when this navigation session became active (real trip start for end-frame).
 	SessionStartedAt      string   `json:"session_started_at,omitempty"`
 	DriveID               int64    `json:"drive_id,omitempty"`
@@ -100,27 +123,38 @@ type navigationNotificationStore struct {
 // navigationPushHistorySession is the App-readable source of truth for
 // destination/name/distance/time that Companion already trusts for push.
 type navigationPushHistorySession struct {
-	SessionID                string   `json:"session_id"`
-	CarID                    int      `json:"car_id"`
-	VehicleName              string   `json:"vehicle_name,omitempty"`
-	StartName                string   `json:"start_name,omitempty"`
-	Destination              string   `json:"destination"`
-	StartedAt                string   `json:"started_at"`
-	EndedAt                  string   `json:"ended_at,omitempty"`
-	EndReason                string   `json:"end_reason,omitempty"`
-	StartRemainingDistanceKM *float64 `json:"start_remaining_distance_km,omitempty"`
-	StartRemainingMinutes    *int     `json:"start_remaining_minutes,omitempty"`
-	StartEstimatedArrivalAt  *int64   `json:"start_estimated_arrival_at,omitempty"`
-	EndRemainingDistanceKM   *float64 `json:"end_remaining_distance_km,omitempty"`
-	EndRemainingMinutes      *int     `json:"end_remaining_minutes,omitempty"`
-	LastRemainingDistanceKM  *float64 `json:"last_remaining_distance_km,omitempty"`
-	LastRemainingMinutes     *int     `json:"last_remaining_minutes,omitempty"`
-	LastEstimatedArrivalAt   *int64   `json:"last_estimated_arrival_at,omitempty"`
-	DrivenDistanceKM         *float64 `json:"driven_distance_km,omitempty"`
-	TotalDistanceKM          *float64 `json:"total_distance_km,omitempty"`
-	LastEventType            string   `json:"last_event_type"`
-	LastDeliveryStatus       string   `json:"last_delivery_status,omitempty"`
-	UpdatedAt                string   `json:"updated_at"`
+	Revision                 int                              `json:"revision,omitempty"`
+	SessionID                string                           `json:"session_id"`
+	CarID                    int                              `json:"car_id"`
+	VehicleName              string                           `json:"vehicle_name,omitempty"`
+	StartName                string                           `json:"start_name,omitempty"`
+	Destination              string                           `json:"destination"`
+	StartedAt                string                           `json:"started_at"`
+	EndedAt                  string                           `json:"ended_at,omitempty"`
+	EndReason                string                           `json:"end_reason,omitempty"`
+	StartRemainingDistanceKM *float64                         `json:"start_remaining_distance_km,omitempty"`
+	StartRemainingMinutes    *int                             `json:"start_remaining_minutes,omitempty"`
+	StartEstimatedArrivalAt  *int64                           `json:"start_estimated_arrival_at,omitempty"`
+	EndRemainingDistanceKM   *float64                         `json:"end_remaining_distance_km,omitempty"`
+	EndRemainingMinutes      *int                             `json:"end_remaining_minutes,omitempty"`
+	LastRemainingDistanceKM  *float64                         `json:"last_remaining_distance_km,omitempty"`
+	LastRemainingMinutes     *int                             `json:"last_remaining_minutes,omitempty"`
+	LastEstimatedArrivalAt   *int64                           `json:"last_estimated_arrival_at,omitempty"`
+	DrivenDistanceKM         *float64                         `json:"driven_distance_km,omitempty"`
+	TotalDistanceKM          *float64                         `json:"total_distance_km,omitempty"`
+	LastEventType            string                           `json:"last_event_type"`
+	LastDeliveryStatus       string                           `json:"last_delivery_status,omitempty"`
+	Deliveries               []navigationInstallationDelivery `json:"deliveries,omitempty"`
+	UpdatedAt                string                           `json:"updated_at"`
+}
+
+type navigationInstallationDelivery struct {
+	Revision       int    `json:"revision,omitempty"`
+	InstallationID string `json:"installation_id"`
+	Status         string `json:"status"`
+	EventType      string `json:"event_type,omitempty"`
+	EventID        string `json:"event_id,omitempty"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 type navigationPushHistoryStore struct {
@@ -202,6 +236,9 @@ func (m *navigationNotificationMonitor) start() {
 		return
 	}
 	if startWorker {
+		if pushRegistry != nil {
+			pushRegistry.addDeliveryResolver(m.reconcileDeliveryResolution)
+		}
 		// Terminal events use a dedicated worker so a slow/retrying ordinary
 		// update can never keep a finished trip alive on the Lock Screen.
 		go m.deliveryWorker(m.queue)
@@ -364,9 +401,10 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	state := m.store.Cars[carID]
 	state.LastObservedAt = observedAt.Format(time.RFC3339)
 	wasActive := state.Active
+	snapshot := cloneCarNavigationState(state)
 	routeInvalid := false
-	previousDestination := state.Destination
-	previousRemainingDistanceKM := cloneFloat(state.RemainingDistanceKM)
+	startNewLeg := false
+	var newLegCandidate navigationRouteCandidate
 	switch field {
 	case "display_name":
 		state.DisplayName = collapsedDisplayName(value)
@@ -378,28 +416,27 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 			state.LastKnownGeofence = state.Geofence
 		}
 	case "active_route":
-		var route activeRouteMQTT
-		if json.Unmarshal([]byte(value), &route) != nil || route.Error != nil ||
-			strings.TrimSpace(route.Destination) == "" {
+		candidate := parseActiveRouteCandidate(value)
+		if candidate.Invalid {
 			routeInvalid = true
 			if !wasActive {
-				state.Destination = ""
-				state.RemainingDistanceKM = nil
-				state.RemainingMinutes = nil
-				state.ArrivalBatteryLevel = nil
+				clearCommittedRoute(&state)
 			}
 		} else {
-			state.Destination = strings.TrimSpace(route.Destination)
-			if route.MilesToArrival != nil {
-				km := *route.MilesToArrival * 1.609344
-				state.RemainingDistanceKM = &km
-			}
-			if route.MinutesToArrival != nil {
-				minutes := int(*route.MinutesToArrival + 0.5)
-				state.RemainingMinutes = &minutes
-			}
-			if route.EnergyAtArrival != nil && *route.EnergyAtArrival >= 0 && *route.EnergyAtArrival <= 100 {
-				state.ArrivalBatteryLevel = route.EnergyAtArrival
+			decision := classifyNavigationLegChange(state, candidate)
+			switch decision {
+			case navigationLegStage:
+				stagePendingCandidate(&state, candidate)
+			case navigationLegNew:
+				if wasActive && strings.TrimSpace(state.SessionID) != "" &&
+					strings.TrimSpace(state.Destination) != "" {
+					startNewLeg = true
+					newLegCandidate = candidate
+				} else {
+					applyRouteCandidate(&state, candidate)
+				}
+			default:
+				applyRouteCandidate(&state, candidate)
 			}
 		}
 	default:
@@ -409,43 +446,12 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 
 	// Destination and confirmed driving are sufficient to start. TeslaMate can
 	// legitimately publish the route label before distance/minutes; those
-	// optional values will populate in later updates.
+	// optional values will populate in later updates. Offline/asleep/unknown
+	// preserve an already-active session and must not invent arrival.
 	shouldBeActive := navigationShouldBeActive(routeInvalid, state)
 
-	// Mid-drive destination change: close previous session as redirected, open a new one.
-	if wasActive && shouldBeActive && state.SessionID != "" &&
-		previousDestination != "" && state.Destination != "" &&
-		navigationDestinationChangeStartsNewSession(
-			previousDestination,
-			state.Destination,
-			previousRemainingDistanceKM,
-			state.RemainingDistanceKM,
-		) {
-		if timer := m.pending[carID]; timer != nil {
-			timer.Stop()
-			delete(m.pending, carID)
-		}
-		endState := state
-		endState.Destination = previousDestination
-		endState.Active = false
-		endEvent := m.makeEventLocked(carID, &endState, "navigation_ended", observedAt)
-		endEvent.Destination = previousDestination
-		endEvent.endReasonOverride = "redirected"
-		endEvent.EndReason = "redirected"
-
-		state.Active = true
-		state.DriveID = 0
-		state.DrivenDistanceKM = nil
-		state.HasVerifiedTrajectory = false
-		state.SessionID = navigationSessionID(m.installationID, carID, 0, observedAt)
-		state.SessionStartedAt = observedAt.Format(time.RFC3339)
-		state.Sequence = 0
-		state.StartDelivered = false
-		state.LastQueuedAt = ""
-		// New session for the new destination — re-resolve start place for this leg.
-		state.StartName = strings.TrimSpace(state.Geofence)
-		sessionID := state.SessionID
-		startEvent := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
+	if startNewLeg && wasActive && shouldBeActive {
+		endEvent, startEvent, sessionID := m.commitRedirectedLegLocked(carID, &state, snapshot, newLegCandidate, observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
 		m.mu.Unlock()
@@ -456,16 +462,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	}
 
 	if shouldBeActive && (!wasActive || state.SessionID == "") {
-		state.Active = true
-		state.DriveID = 0
-		state.DrivenDistanceKM = nil
-		state.HasVerifiedTrajectory = false
-		state.SessionID = navigationSessionID(m.installationID, carID, 0, observedAt)
-		state.SessionStartedAt = observedAt.Format(time.RFC3339)
-		state.Sequence = 0
-		state.StartDelivered = false
-		state.LastQueuedAt = ""
-		state.StartName = strings.TrimSpace(state.Geofence)
+		m.beginNavigationLegLocked(&state, carID, observedAt)
 		sessionID := state.SessionID
 		event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
 		m.store.Cars[carID] = state
@@ -476,17 +473,31 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		return
 	}
 	if !shouldBeActive && wasActive {
+		endReason := "navigation_ended"
+		if navigationRemainingLooksArrived(snapshot.RemainingDistanceKM, snapshot.RemainingMinutes) &&
+			(routeInvalid || navigationVehicleStateIsParkingEvidence(state.VehicleState)) {
+			endReason = "arrived"
+			state.LegPhase = navigationLegPhaseConfirmedArrived
+		} else {
+			state.LegPhase = navigationLegPhaseEnded
+		}
 		state.Active = false
 		if timer := m.pending[carID]; timer != nil {
 			timer.Stop()
 			delete(m.pending, carID)
 		}
-		event := m.makeEventLocked(carID, &state, "navigation_ended", observedAt)
+		endState := cloneCarNavigationState(snapshot)
+		endState.Active = false
+		endState.LegPhase = state.LegPhase
+		endState.Revision = state.Revision
+		endState.Sequence = state.Sequence
+		event := m.makeEventLocked(carID, &endState, "navigation_ended", observedAt)
+		event.EndReason = endReason
+		event.endReasonOverride = endReason
+		state.Revision = endState.Revision
+		state.Sequence = endState.Sequence
 		if routeInvalid {
-			state.Destination = ""
-			state.RemainingDistanceKM = nil
-			state.RemainingMinutes = nil
-			state.ArrivalBatteryLevel = nil
+			clearCommittedRoute(&state)
 		}
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
@@ -523,6 +534,50 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	if needsEnrichment {
 		m.requestNavigationEnrichment(carID, sessionID)
 	}
+}
+
+func (m *navigationNotificationMonitor) beginNavigationLegLocked(state *carNavigationState, carID int, observedAt time.Time) {
+	state.Active = true
+	state.LegPhase = navigationLegPhaseActive
+	state.DriveID = 0
+	state.DrivenDistanceKM = nil
+	state.HasVerifiedTrajectory = false
+	state.SessionID = navigationSessionID(m.installationID, carID, 0, observedAt)
+	state.SessionStartedAt = observedAt.Format(time.RFC3339)
+	state.Sequence = 0
+	state.StartDelivered = false
+	state.LastQueuedAt = ""
+	state.StartName = strings.TrimSpace(state.Geofence)
+	clearPendingCandidate(state)
+}
+
+func (m *navigationNotificationMonitor) commitRedirectedLegLocked(
+	carID int,
+	state *carNavigationState,
+	snapshot carNavigationState,
+	candidate navigationRouteCandidate,
+	observedAt time.Time,
+) (navigationLiveActivityEvent, navigationLiveActivityEvent, string) {
+	if timer := m.pending[carID]; timer != nil {
+		timer.Stop()
+		delete(m.pending, carID)
+	}
+	endState := cloneCarNavigationState(snapshot)
+	endState.Active = false
+	endState.LegPhase = navigationLegPhaseEnded
+	endState.Revision = state.Revision
+	endState.Sequence = state.Sequence
+	endEvent := m.makeEventLocked(carID, &endState, "navigation_ended", observedAt)
+	endEvent.Destination = snapshot.Destination
+	endEvent.endReasonOverride = "redirected"
+	endEvent.EndReason = "redirected"
+	endEvent.LegPhase = navigationLegPhaseEnded
+
+	state.Revision = endState.Revision
+	applyRouteCandidate(state, candidate)
+	m.beginNavigationLegLocked(state, carID, observedAt)
+	startEvent := m.makeEventLocked(carID, state, "navigation_started", observedAt)
+	return endEvent, startEvent, state.SessionID
 }
 
 func knownNavigationStartName(liveGeofence, _ string) string {
@@ -633,7 +688,13 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 }
 
 func navigationShouldBeActive(routeInvalid bool, state carNavigationState) bool {
-	return !routeInvalid && state.VehicleState == "driving" && state.Destination != ""
+	if routeInvalid || strings.TrimSpace(state.Destination) == "" {
+		return false
+	}
+	if navigationVehicleStateIsTransientUnknown(state.VehicleState) {
+		return state.Active
+	}
+	return state.VehicleState == "driving"
 }
 
 func (m *navigationNotificationMonitor) scheduleUpdateLocked(carID int, observedAt time.Time) {
@@ -712,8 +773,16 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 			}
 		}
 	}
+	state.Revision++
 	idInput := fmt.Sprintf("%s:%s:%s:%d", m.installationID, state.SessionID, eventType, state.Sequence)
 	idHash := sha256.Sum256([]byte(idInput))
+	legPhase := strings.TrimSpace(state.LegPhase)
+	if eventType == "navigation_ended" && legPhase == "" {
+		legPhase = navigationLegPhaseEnded
+	}
+	if eventType != "navigation_ended" && legPhase == "" {
+		legPhase = navigationLegPhaseActive
+	}
 	event := navigationLiveActivityEvent{
 		EventID:               hex.EncodeToString(idHash[:16]),
 		InstallationID:        m.installationID,
@@ -733,6 +802,8 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		TripStartedAt:         tripStartedUnix,
 		TripEndedAt:           tripEndedUnix,
 		DurationMinutes:       durationMin,
+		Revision:              state.Revision,
+		LegPhase:              legPhase,
 		ObservedAt:            observedAt.Format(time.RFC3339),
 	}
 	if eventType == "navigation_ended" {
@@ -951,31 +1022,35 @@ func (m *navigationNotificationMonitor) deliveryWorker(events <-chan navigationL
 			if delay > 0 {
 				time.Sleep(delay)
 			}
-			if err := m.deliver(event); err != nil {
+			outcome, err := m.deliver(event)
+			if err != nil {
 				m.mu.Lock()
 				m.lastError = err.Error()
-				m.recordHistoryEventLocked(event, "failed")
+				m.recordHistoryEventLocked(event, string(pushDeliveryFailed))
 				m.mu.Unlock()
 				log.Printf("[warn] navigation relay event=%s attempt=%d: %v", event.EventID, attempt+1, err)
 				continue
 			}
 			m.mu.Lock()
-			m.store.Delivered[event.EventID] = event.ObservedAt
 			state := m.store.Cars[event.CarID]
 			if event.Type == "navigation_started" && state.SessionID == event.SessionID {
 				state.StartDelivered = true
 				state.LastQueuedAt = ""
 				m.store.Cars[event.CarID] = state
-				if state.Active {
+				if state.Active && outcome == pushDeliveryAPNsAccepted {
 					m.scheduleUpdateLocked(event.CarID, time.Now().UTC())
 				}
 			}
-			now := time.Now().UTC()
-			m.lastEventAt = &now
-			m.lastError = ""
-			m.recordHistoryEventLocked(event, "delivered")
+			if outcome == pushDeliveryAPNsAccepted {
+				m.store.Delivered[event.EventID] = event.ObservedAt
+				now := time.Now().UTC()
+				m.lastEventAt = &now
+				m.lastError = ""
+			}
+			m.recordHistoryEventLocked(event, string(outcome))
 			_ = m.saveLocked()
 			m.mu.Unlock()
+			// Durable outbox owns retry for queued / awaiting-token results.
 			break
 		}
 	}
@@ -985,7 +1060,10 @@ func (m *navigationNotificationMonitor) reconcileRestoredSessions(startedAt time
 	timer := time.NewTimer(45 * time.Second)
 	defer timer.Stop()
 	<-timer.C
+	m.reconcileRestoredSessionsNow(startedAt)
+}
 
+func (m *navigationNotificationMonitor) reconcileRestoredSessionsNow(startedAt time.Time) {
 	var endings []navigationLiveActivityEvent
 	m.mu.Lock()
 	for carID, state := range m.store.Cars {
@@ -999,7 +1077,10 @@ func (m *navigationNotificationMonitor) reconcileRestoredSessions(startedAt time
 		// No fresh retained MQTT state arrived after restart. End the orphan
 		// rather than silently deleting it and leaving the Lock Screen stuck.
 		state.Active = false
+		state.LegPhase = navigationLegPhaseEnded
 		event := m.makeEventLocked(carID, &state, "navigation_ended", time.Now().UTC())
+		event.EndReason = "stale"
+		event.endReasonOverride = "stale"
 		m.store.Cars[carID] = state
 		endings = append(endings, event)
 	}
@@ -1039,6 +1120,7 @@ func (m *navigationNotificationMonitor) expireStaleSessions(now time.Time) {
 			delete(m.pending, carID)
 		}
 		state.Active = false
+		state.LegPhase = navigationLegPhaseEnded
 		event := m.makeEventLocked(carID, &state, "navigation_ended", now)
 		event.EndReason = "stale"
 		event.endReasonOverride = "stale"
@@ -1052,10 +1134,10 @@ func (m *navigationNotificationMonitor) expireStaleSessions(now time.Time) {
 	}
 }
 
-func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEvent) error {
-	laErr := m.deliverTo(event, func(s pushSubscriber) bool { return s.wantsNavigationLiveActivity(event.CarID) })
+func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEvent) (pushDeliveryOutcome, error) {
+	laOutcome, laErr := m.deliverTo(event, func(s pushSubscriber) bool { return s.wantsNavigationLiveActivity(event.CarID) })
 	if event.liveActivityOnly {
-		return laErr
+		return laOutcome, laErr
 	}
 	alertType := ""
 	switch event.Type {
@@ -1071,18 +1153,18 @@ func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEven
 		alertEvent := event
 		alertEvent.Type = alertType
 		alertEvent.EventID = event.EventID + ":" + alertType
-		alertErr = m.deliverTo(alertEvent, func(s pushSubscriber) bool { return s.wantsNavigationTripAlerts(event.CarID) })
+		_, alertErr = m.deliverTo(alertEvent, func(s pushSubscriber) bool { return s.wantsNavigationTripAlerts(event.CarID) })
 	}
 	if laErr != nil {
-		return laErr
+		return laOutcome, laErr
 	}
-	return alertErr
+	return laOutcome, alertErr
 }
 
 func (m *navigationNotificationMonitor) deliverTo(
 	event navigationLiveActivityEvent,
 	pred func(pushSubscriber) bool,
-) error {
+) (pushDeliveryOutcome, error) {
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
 		subs = pushRegistry.matching(event.CarID, func(sub pushSubscriber) bool {
@@ -1102,14 +1184,17 @@ func (m *navigationNotificationMonitor) deliverTo(
 		}}
 	}
 	if len(subs) == 0 {
-		return nil
+		return "", nil
 	}
 	var last error
 	ok := 0
+	outcomes := make([]string, 0, len(subs))
+	logicalSessionID := event.SessionID
 	for _, sub := range subs {
 		copy := event
 		copy.InstallationID = sub.InstallationID
 		copy.SourceID = sub.SourceID
+		copy.LogicalSessionID = logicalSessionID
 		copy.SessionID = scopedLiveActivitySessionID(event.SessionID, sub.SourceID, "navigation")
 		copy.EventID = targetScopedPushEventID(event.EventID, sub.InstallationID, sub.SourceID, event.Type)
 		payload, err := json.Marshal(copy)
@@ -1117,8 +1202,10 @@ func (m *navigationNotificationMonitor) deliverTo(
 			last = err
 			continue
 		}
+		result := pushDeliveryResult{Outcome: pushDeliveryAPNsAccepted}
 		if pushRegistry != nil {
-			err = pushRegistry.deliverJSON(sub, payload)
+			result = pushRegistry.deliverJSONResult(sub, payload)
+			err = result.Err
 		} else {
 			signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 			_, _ = signature.Write(payload)
@@ -1141,22 +1228,31 @@ func (m *navigationNotificationMonitor) deliverTo(
 			response.Body.Close()
 			if response.StatusCode < 200 || response.StatusCode >= 300 {
 				err = fmt.Errorf("relay returned HTTP %d", response.StatusCode)
+				result.Outcome = pushDeliveryFailed
+				result.Status = response.StatusCode
 			}
 		}
 		if err != nil {
 			last = err
 			log.Printf("[warn] navigation fan-out installation=%s: %v", sub.InstallationID[:8], err)
+			m.recordInstallationDelivery(event, sub.InstallationID, copy.EventID, string(pushDeliveryFailed))
 			continue
 		}
+		outcome := string(result.Outcome)
+		if outcome == "" {
+			outcome = string(pushDeliveryAPNsAccepted)
+		}
+		outcomes = append(outcomes, outcome)
+		m.recordInstallationDelivery(event, sub.InstallationID, copy.EventID, outcome)
 		ok++
 	}
 	if last != nil {
-		return last
+		return pushDeliveryOutcome(summarizeNavigationDeliveryOutcomes(outcomes)), last
 	}
 	if ok == 0 {
-		return fmt.Errorf("no navigation subscribers")
+		return pushDeliveryFailed, fmt.Errorf("no navigation subscribers")
 	}
-	return nil
+	return pushDeliveryOutcome(summarizeNavigationDeliveryOutcomes(outcomes)), nil
 }
 
 func (m *navigationNotificationMonitor) status() map[string]any {
@@ -1247,6 +1343,7 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 	}
 	if idx < 0 {
 		session := navigationPushHistorySession{
+			Revision:           event.Revision,
 			SessionID:          event.SessionID,
 			CarID:              event.CarID,
 			VehicleName:        event.VehicleName,
@@ -1276,6 +1373,15 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		m.history.Sessions = append([]navigationPushHistorySession{session}, m.history.Sessions...)
 	} else {
 		session := m.history.Sessions[idx]
+		// Delivery workers can complete out of order. Once ended, no old start
+		// or update may rewrite the final leg snapshot in App-readable history.
+		if (session.EndedAt != "" && event.Type != "navigation_ended") ||
+			(event.Revision > 0 && session.Revision > event.Revision) {
+			return
+		}
+		if event.Revision > session.Revision {
+			session.Revision = event.Revision
+		}
 		if event.VehicleName != "" {
 			session.VehicleName = event.VehicleName
 		}
@@ -1308,7 +1414,9 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 			session.TotalDistanceKM = cloneFloat(event.TotalDistanceKM)
 		}
 		session.LastEventType = event.Type
-		session.LastDeliveryStatus = delivery
+		if delivery != "" {
+			session.LastDeliveryStatus = summarizeNavigationDeliveryStatus(session.Deliveries, delivery, event.Type)
+		}
 		session.UpdatedAt = now
 		if event.Type == "navigation_ended" {
 			session.EndedAt = event.ObservedAt
@@ -1322,6 +1430,164 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		m.history.Sessions = m.history.Sessions[:navigationPushHistoryLimit]
 	}
 	_ = m.saveHistoryLocked()
+}
+
+func (m *navigationNotificationMonitor) recordInstallationDelivery(event navigationLiveActivityEvent, installationID, eventID, status string) {
+	if strings.TrimSpace(event.SessionID) == "" || strings.TrimSpace(installationID) == "" || !isLiveActivityNavigationType(event.Type) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.upsertInstallationDeliveryLocked(event.SessionID, navigationInstallationDelivery{
+		Revision:       event.Revision,
+		InstallationID: installationID,
+		Status:         status,
+		EventType:      event.Type,
+		EventID:        eventID,
+		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+	})
+	_ = m.saveHistoryLocked()
+}
+
+func (m *navigationNotificationMonitor) reconcileDeliveryResolution(resolution pushDeliveryResolution) {
+	if !isLiveActivityNavigationType(resolution.EventType) {
+		return
+	}
+	sessionID := strings.TrimSpace(resolution.SessionID)
+	if sessionID == "" && resolution.EventID == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	idx := -1
+	for i := range m.history.Sessions {
+		if sessionID != "" && m.history.Sessions[i].SessionID == sessionID {
+			idx = i
+			break
+		}
+		if resolution.EventID != "" {
+			for _, delivery := range m.history.Sessions[i].Deliveries {
+				if delivery.EventID == resolution.EventID {
+					idx = i
+					sessionID = m.history.Sessions[i].SessionID
+					break
+				}
+			}
+		}
+		if idx >= 0 {
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	m.upsertInstallationDeliveryLocked(sessionID, navigationInstallationDelivery{
+		Revision:       resolution.Revision,
+		InstallationID: resolution.InstallationID,
+		Status:         resolution.Outcome,
+		EventType:      resolution.EventType,
+		EventID:        resolution.EventID,
+		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
+	})
+	_ = m.saveHistoryLocked()
+}
+
+func (m *navigationNotificationMonitor) upsertInstallationDeliveryLocked(sessionID string, incoming navigationInstallationDelivery) {
+	for i := range m.history.Sessions {
+		if m.history.Sessions[i].SessionID != sessionID {
+			continue
+		}
+		session := m.history.Sessions[i]
+		replaced := false
+		for d, existing := range session.Deliveries {
+			if existing.InstallationID == incoming.InstallationID &&
+				(incoming.EventType == "" || existing.EventType == incoming.EventType || existing.EventID == incoming.EventID) {
+				if incoming.Revision > 0 && incoming.Revision < existing.Revision {
+					return
+				}
+				session.Deliveries[d] = incoming
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			session.Deliveries = append(session.Deliveries, incoming)
+		}
+		session.LastDeliveryStatus = summarizeNavigationDeliveryStatus(session.Deliveries, incoming.Status, session.LastEventType)
+		session.UpdatedAt = incoming.UpdatedAt
+		m.history.Sessions[i] = session
+		return
+	}
+}
+
+func isLiveActivityNavigationType(eventType string) bool {
+	switch eventType {
+	case "navigation_started", "navigation_updated", "navigation_ended":
+		return true
+	default:
+		return false
+	}
+}
+
+func summarizeNavigationDeliveryOutcomes(outcomes []string) string {
+	deliveries := make([]navigationInstallationDelivery, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		if strings.TrimSpace(outcome) == "" {
+			continue
+		}
+		deliveries = append(deliveries, navigationInstallationDelivery{
+			Status:    outcome,
+			EventType: "navigation_updated",
+		})
+	}
+	return summarizeNavigationDeliveryStatus(deliveries, "", "navigation_updated")
+}
+
+func summarizeNavigationDeliveryStatus(deliveries []navigationInstallationDelivery, fallback, eventType string) string {
+	if eventType != "" && !isLiveActivityNavigationType(eventType) && len(deliveries) > 0 {
+		return summarizeNavigationDeliveryStatus(deliveries, fallback, "")
+	}
+	statuses := make([]string, 0, len(deliveries)+1)
+	for _, delivery := range deliveries {
+		if isLiveActivityNavigationType(eventType) && delivery.EventType != eventType {
+			continue
+		}
+		if isLiveActivityNavigationType(delivery.EventType) || delivery.EventType == "" {
+			statuses = append(statuses, normalizeNavigationDeliveryStatus(delivery.Status))
+		}
+	}
+	if len(statuses) == 0 && fallback != "" {
+		statuses = append(statuses, normalizeNavigationDeliveryStatus(fallback))
+	}
+	priority := []string{
+		string(pushDeliveryFailed),
+		string(pushDeliveryExpired),
+		string(pushDeliveryAwaitingToken),
+		string(pushDeliveryQueued),
+		string(pushDeliveryAPNsAccepted),
+	}
+	present := map[string]bool{}
+	for _, status := range statuses {
+		present[status] = true
+	}
+	for _, status := range priority {
+		if present[status] {
+			return status
+		}
+	}
+	return normalizeNavigationDeliveryStatus(fallback)
+}
+
+func normalizeNavigationDeliveryStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case "", "delivered":
+		return string(pushDeliveryAPNsAccepted)
+	case string(pushDeliveryAPNsAccepted), string(pushDeliveryQueued), string(pushDeliveryAwaitingToken),
+		string(pushDeliveryExpired), string(pushDeliveryFailed):
+		return strings.TrimSpace(status)
+	default:
+		return strings.TrimSpace(status)
+	}
 }
 
 func (m *navigationNotificationMonitor) replaceHistoryStartNameLocked(sessionID, startName string) {
@@ -1345,10 +1611,7 @@ func navigationEndReason(event navigationLiveActivityEvent) string {
 	if strings.TrimSpace(event.endReasonOverride) != "" {
 		return strings.TrimSpace(event.endReasonOverride)
 	}
-	if event.RemainingDistanceKM != nil && *event.RemainingDistanceKM <= 0.35 {
-		return "arrived"
-	}
-	if event.RemainingMinutes != nil && *event.RemainingMinutes <= 2 {
+	if navigationRemainingLooksArrived(event.RemainingDistanceKM, event.RemainingMinutes) {
 		return "arrived"
 	}
 	return "navigation_ended"
@@ -1368,20 +1631,15 @@ func navigationDestinationChangeStartsNewSession(
 	previousRemainingDistanceKM *float64,
 	currentRemainingDistanceKM *float64,
 ) bool {
-	if navigationDestinationEqual(previousDestination, currentDestination) {
-		return false
+	committed := carNavigationState{
+		Destination:         previousDestination,
+		RemainingDistanceKM: previousRemainingDistanceKM,
 	}
-	// Tesla often publishes the new label before miles/minutes. Missing
-	// remaining distance is a label swap, not a new route.
-	guardedPrevious := previousRemainingDistanceKM
-	guardedCurrent := currentRemainingDistanceKM
-	if guardedPrevious == nil || guardedCurrent == nil {
-		return false
+	candidate := navigationRouteCandidate{
+		Destination: currentDestination,
+		RemainingKM: currentRemainingDistanceKM,
 	}
-	previous := math.Max(0, *guardedPrevious)
-	current := math.Max(0, *guardedCurrent)
-	tolerance := math.Min(3, math.Max(0.8, math.Max(previous, current)*0.12))
-	return math.Abs(previous-current) > tolerance
+	return classifyNavigationLegChange(committed, candidate) == navigationLegNew
 }
 
 func (m *navigationNotificationMonitor) historyForCar(carID int, limit int) []navigationPushHistorySession {
@@ -1418,6 +1676,9 @@ func (m *navigationNotificationMonitor) loadHistory() {
 }
 
 func (m *navigationNotificationMonitor) saveHistoryLocked() error {
+	if strings.TrimSpace(m.historyPath) == "" {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(m.historyPath), 0700); err != nil {
 		return err
 	}

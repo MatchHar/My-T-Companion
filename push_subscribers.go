@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -161,6 +162,9 @@ type queuedPush struct {
 	InstallationID string          `json:"installation_id"`
 	Payload        json.RawMessage `json:"payload"`
 	EventType      string          `json:"event_type"`
+	SessionID      string          `json:"session_id,omitempty"`
+	CarID          int             `json:"car_id,omitempty"`
+	Outcome        string          `json:"outcome,omitempty"`
 	Attempts       int             `json:"attempts"`
 	CreatedAt      string          `json:"created_at"`
 	NextAttemptAt  string          `json:"next_attempt_at"`
@@ -168,8 +172,44 @@ type queuedPush struct {
 }
 
 type pushPayloadMetadata struct {
-	EventID string `json:"event_id"`
-	Type    string `json:"type"`
+	Revision         int    `json:"revision,omitempty"`
+	EventID          string `json:"event_id"`
+	Type             string `json:"type"`
+	SessionID        string `json:"session_id,omitempty"`
+	LogicalSessionID string `json:"logical_session_id,omitempty"`
+	CarID            int    `json:"car_id,omitempty"`
+}
+
+type pushDeliveryOutcome string
+
+const (
+	pushDeliveryAPNsAccepted  pushDeliveryOutcome = "apns_accepted"
+	pushDeliveryQueued        pushDeliveryOutcome = "queued"
+	pushDeliveryAwaitingToken pushDeliveryOutcome = "awaiting_token"
+	pushDeliveryExpired       pushDeliveryOutcome = "expired"
+	pushDeliveryFailed        pushDeliveryOutcome = "failed"
+)
+
+type pushDeliveryResult struct {
+	Outcome pushDeliveryOutcome
+	Status  int
+	Err     error
+}
+
+type pushDeliveryResolution struct {
+	Revision       int
+	InstallationID string
+	EventID        string
+	EventType      string
+	SessionID      string
+	CarID          int
+	Outcome        string
+}
+
+type pushDeliveryResolver func(pushDeliveryResolution)
+
+type relayErrorBody struct {
+	Error string `json:"error"`
 }
 
 // targetPushEventID turns one logical Companion event into a stable delivery
@@ -226,13 +266,14 @@ func scopedLiveActivitySessionID(sessionID, sourceID, kind string) string {
 }
 
 type pushSubscriberRegistry struct {
-	mu       sync.Mutex
-	path     string
-	store    pushSubscriberStore
-	http     *http.Client
-	stopCh   chan struct{}
-	stopOnce sync.Once
-	wg       sync.WaitGroup
+	mu        sync.Mutex
+	path      string
+	store     pushSubscriberStore
+	http      *http.Client
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	wg        sync.WaitGroup
+	resolvers []pushDeliveryResolver
 }
 
 func newPushSubscriberRegistry() *pushSubscriberRegistry {
@@ -771,42 +812,94 @@ func (r *pushSubscriberRegistry) matching(carID int, pred func(pushSubscriber) b
 	return out
 }
 
+func (r *pushSubscriberRegistry) addDeliveryResolver(fn pushDeliveryResolver) {
+	if r == nil || fn == nil {
+		return
+	}
+	r.mu.Lock()
+	r.resolvers = append(r.resolvers, fn)
+	r.mu.Unlock()
+}
+
+func (r *pushSubscriberRegistry) notifyDeliveryResolution(resolution pushDeliveryResolution) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	resolvers := append([]pushDeliveryResolver(nil), r.resolvers...)
+	r.mu.Unlock()
+	for _, resolver := range resolvers {
+		resolver(resolution)
+	}
+}
+
 func (r *pushSubscriberRegistry) deliverJSON(sub pushSubscriber, payload []byte) error {
+	return r.deliverJSONResult(sub, payload).Err
+}
+
+func (r *pushSubscriberRegistry) deliverJSONResult(sub pushSubscriber, payload []byte) pushDeliveryResult {
 	if !validPushSubscriber(sub) {
-		return fmt.Errorf("invalid stored push subscriber")
+		return pushDeliveryResult{Outcome: pushDeliveryFailed, Err: fmt.Errorf("invalid stored push subscriber")}
 	}
 	var metadata pushPayloadMetadata
 	if len(payload) == 0 || len(payload) > 16<<10 || json.Unmarshal(payload, &metadata) != nil ||
 		strings.TrimSpace(metadata.EventID) == "" || strings.TrimSpace(metadata.Type) == "" {
-		return fmt.Errorf("invalid push event payload")
+		return pushDeliveryResult{Outcome: pushDeliveryFailed, Err: fmt.Errorf("invalid push event payload")}
 	}
-	status, retryAfter, err := r.postJSON(sub, payload)
+	status, retryAfter, body, err := r.postJSON(sub, payload)
 	if err == nil && status >= 200 && status < 300 {
-		return nil
+		return pushDeliveryResult{Outcome: pushDeliveryAPNsAccepted, Status: status}
+	}
+	outcome := classifyRelayResponse(status, body)
+	if err != nil {
+		outcome = pushDeliveryQueued
 	}
 	if err != nil || retryableRelayStatus(status) {
-		if queueErr := r.enqueue(sub, metadata, payload, retryAfter); queueErr != nil {
+		if queueErr := r.enqueue(sub, metadata, payload, retryAfter, outcome); queueErr != nil {
 			if err != nil {
-				return fmt.Errorf("relay delivery failed (%v); durable queue failed: %w", err, queueErr)
+				return pushDeliveryResult{
+					Outcome: pushDeliveryFailed,
+					Status:  status,
+					Err:     fmt.Errorf("relay delivery failed (%v); durable queue failed: %w", err, queueErr),
+				}
 			}
-			return queueErr
+			return pushDeliveryResult{Outcome: pushDeliveryFailed, Status: status, Err: queueErr}
 		}
-		return nil
+		return pushDeliveryResult{Outcome: outcome, Status: status}
 	}
 	if status == http.StatusNotFound || status == http.StatusGone {
 		r.pauseInvalidSubscriber(sub.InstallationID)
 	}
-	return fmt.Errorf("relay returned HTTP %d", status)
+	return pushDeliveryResult{
+		Outcome: pushDeliveryFailed,
+		Status:  status,
+		Err:     fmt.Errorf("relay returned HTTP %d", status),
+	}
 }
 
-func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (int, time.Duration, error) {
+func classifyRelayResponse(status int, body []byte) pushDeliveryOutcome {
+	if status >= 200 && status < 300 {
+		return pushDeliveryAPNsAccepted
+	}
+	var parsed relayErrorBody
+	_ = json.Unmarshal(body, &parsed)
+	if status == http.StatusConflict && parsed.Error == "live_activity_token_pending" {
+		return pushDeliveryAwaitingToken
+	}
+	if retryableRelayStatus(status) || status == 0 {
+		return pushDeliveryQueued
+	}
+	return pushDeliveryFailed
+}
+
+func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (int, time.Duration, []byte, error) {
 	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-My-T-Installation", sub.InstallationID)
@@ -817,10 +910,11 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, nil, err
 	}
 	defer response.Body.Close()
-	return response.StatusCode, relayRetryAfter(response.Header.Get("Retry-After")), nil
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+	return response.StatusCode, relayRetryAfter(response.Header.Get("Retry-After")), body, nil
 }
 
 func relayRetryAfter(raw string) time.Duration {
@@ -972,16 +1066,23 @@ func (r *pushSubscriberRegistry) enqueue(
 	metadata pushPayloadMetadata,
 	payload []byte,
 	retryAfter time.Duration,
+	outcome pushDeliveryOutcome,
 ) error {
 	now := time.Now().UTC()
 	delay := max(defaultPushRetryDelay, retryAfter)
 	id := sub.InstallationID + ":" + metadata.EventID
+	if outcome == "" {
+		outcome = pushDeliveryQueued
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for index := range r.store.Outbox {
 		if r.store.Outbox[index].ID == id {
 			r.store.Outbox[index].Payload = append(json.RawMessage(nil), payload...)
 			r.store.Outbox[index].EventType = metadata.Type
+			r.store.Outbox[index].SessionID = metadata.SessionID
+			r.store.Outbox[index].CarID = metadata.CarID
+			r.store.Outbox[index].Outcome = string(outcome)
 			next := now.Add(delay)
 			current, err := time.Parse(time.RFC3339, r.store.Outbox[index].NextAttemptAt)
 			if err != nil || current.Before(next) {
@@ -998,6 +1099,9 @@ func (r *pushSubscriberRegistry) enqueue(
 		InstallationID: sub.InstallationID,
 		Payload:        append(json.RawMessage(nil), payload...),
 		EventType:      metadata.Type,
+		SessionID:      metadata.SessionID,
+		CarID:          metadata.CarID,
+		Outcome:        string(outcome),
 		CreatedAt:      now.Format(time.RFC3339),
 		NextAttemptAt:  now.Add(delay).Format(time.RFC3339),
 		ExpiresAt:      now.Add(pushEventTTL(metadata.Type)).Format(time.RFC3339),
@@ -1061,6 +1165,7 @@ func (r *pushSubscriberRegistry) retryDue(now time.Time) {
 		expires, expiresErr := time.Parse(time.RFC3339, item.ExpiresAt)
 		if expiresErr != nil || !expires.After(now) {
 			r.removeOutboxItem(item.ID)
+			r.notifyDeliveryResolution(outboxResolution(item, string(pushDeliveryExpired)))
 			continue
 		}
 		if nextErr == nil && next.After(now) {
@@ -1071,21 +1176,60 @@ func (r *pushSubscriberRegistry) retryDue(now time.Time) {
 			r.removeOutboxItem(item.ID)
 			continue
 		}
-		status, retryAfter, err := r.postJSON(sub, item.Payload)
+		status, retryAfter, body, err := r.postJSON(sub, item.Payload)
 		if err == nil && status >= 200 && status < 300 {
 			r.removeOutboxItem(item.ID)
+			r.notifyDeliveryResolution(outboxResolution(item, string(pushDeliveryAPNsAccepted)))
 			continue
 		}
 		if status == http.StatusNotFound || status == http.StatusGone {
 			r.pauseInvalidSubscriber(item.InstallationID)
+			r.notifyDeliveryResolution(outboxResolution(item, string(pushDeliveryFailed)))
 			continue
 		}
 		if err == nil && !retryableRelayStatus(status) {
 			log.Printf("[warn] dropped permanent relay failure installation=%s status=%d", shortInstallationID(item.InstallationID), status)
 			r.removeOutboxItem(item.ID)
+			r.notifyDeliveryResolution(outboxResolution(item, string(pushDeliveryFailed)))
 			continue
 		}
+		outcome := classifyRelayResponse(status, body)
+		if err != nil {
+			outcome = pushDeliveryQueued
+		}
 		r.rescheduleOutboxItem(item.ID, now, retryAfter)
+		r.notifyDeliveryResolution(outboxResolution(item, string(outcome)))
+	}
+}
+
+func outboxResolution(item queuedPush, outcome string) pushDeliveryResolution {
+	sessionID := item.SessionID
+	eventType := item.EventType
+	eventID := ""
+	carID := item.CarID
+	var metadata pushPayloadMetadata
+	if json.Unmarshal(item.Payload, &metadata) == nil {
+		if metadata.LogicalSessionID != "" {
+			sessionID = metadata.LogicalSessionID
+		} else if sessionID == "" {
+			sessionID = metadata.SessionID
+		}
+		if eventType == "" {
+			eventType = metadata.Type
+		}
+		eventID = metadata.EventID
+		if carID == 0 {
+			carID = metadata.CarID
+		}
+	}
+	return pushDeliveryResolution{
+		Revision:       metadata.Revision,
+		InstallationID: item.InstallationID,
+		EventID:        eventID,
+		EventType:      eventType,
+		SessionID:      sessionID,
+		CarID:          carID,
+		Outcome:        outcome,
 	}
 }
 

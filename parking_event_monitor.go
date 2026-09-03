@@ -40,8 +40,27 @@ type parkingEventCarState struct {
 }
 
 type parkingEventStore struct {
-	Cars   map[int]parkingEventCarState `json:"cars"`
-	Events []parkingObservedEvent       `json:"events"`
+	Cars         map[int]parkingEventCarState  `json:"cars"`
+	Events       []parkingObservedEvent        `json:"events"`
+	DoorReceipts map[string]parkingDoorReceipt `json:"door_receipts,omitempty"`
+}
+
+type parkingDoorReceipt struct {
+	CarID            int    `json:"car_id"`
+	Field            string `json:"field"`
+	ReceivedCount    int    `json:"received_count"`
+	StoredEventCount int    `json:"stored_event_count"`
+	LastReceivedAt   string `json:"last_received_at,omitempty"`
+	LastStoredAt     string `json:"last_stored_at,omitempty"`
+	LastValue        string `json:"last_value,omitempty"`
+	BaselineOnly     bool   `json:"baseline_only"`
+}
+
+var namedDoorMQTTFields = []string{
+	"driver_front_door_open",
+	"driver_rear_door_open",
+	"passenger_front_door_open",
+	"passenger_rear_door_open",
 }
 
 type parkingEventMonitor struct {
@@ -223,11 +242,17 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 	// Retained MQTT values arrive at every subscription. The first observation
 	// establishes a baseline only; it must never be presented as a transition.
 	if !initialized || previous == value {
+		if isNamedDoorField(field) {
+			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, !initialized)
+		}
 		_ = m.saveLocked()
 		return
 	}
-	eventType := parkingEventType(field, value)
+	eventType := parkingEventType(field, previous, value)
 	if eventType == "" {
+		if isNamedDoorField(field) {
+			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, false)
+		}
 		_ = m.saveLocked()
 		return
 	}
@@ -246,10 +271,13 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 		ObservationMode: "teslamate_mqtt_first_observed",
 	}
 	m.store.Events = append(m.store.Events, event)
+	if isNamedDoorField(field) {
+		m.recordDoorReceiptLocked(carID, field, value, observedAt, true, false)
+	}
 	_ = m.saveLocked()
 }
 
-func parkingEventType(field, value string) string {
+func parkingEventType(field, previous, value string) string {
 	switch field {
 	case "plugged_in":
 		if value == "true" {
@@ -259,16 +287,7 @@ func parkingEventType(field, value string) string {
 			return "plug_disconnected"
 		}
 	case "charging_state":
-		switch value {
-		case "charging":
-			return "charging_started"
-		case "complete":
-			return "charging_completed"
-		case "stopped":
-			return "charging_stopped"
-		case "nopower":
-			return "charging_no_power"
-		}
+		return parkingChargingEventType(previous, value)
 	case "locked":
 		if value == "true" {
 			return "vehicle_locked"
@@ -321,6 +340,85 @@ func parkingEventType(field, value string) string {
 		return boolEvent(value, "charge_port_opened", "charge_port_closed")
 	}
 	return ""
+}
+
+func parkingChargingEventType(previous, current string) string {
+	switch current {
+	case "charging":
+		if previous != "charging" {
+			return "charging_started"
+		}
+	case "complete":
+		if previous != "complete" {
+			return "charging_completed"
+		}
+	case "stopped":
+		// Plugged/waiting is not a charge stop. Only a real charging interval
+		// may emit charging_stopped.
+		if previous == "charging" {
+			return "charging_stopped"
+		}
+	case "nopower":
+		if previous != "nopower" {
+			return "charging_no_power"
+		}
+	}
+	return ""
+}
+
+func isNamedDoorField(field string) bool {
+	switch field {
+	case "driver_front_door_open", "driver_rear_door_open",
+		"passenger_front_door_open", "passenger_rear_door_open":
+		return true
+	default:
+		return false
+	}
+}
+
+func doorReceiptKey(carID int, field string) string {
+	return strconv.Itoa(carID) + ":" + field
+}
+
+func (m *parkingEventMonitor) recordDoorReceiptLocked(carID int, field, value string, observedAt time.Time, stored, baseline bool) {
+	if m.store.DoorReceipts == nil {
+		m.store.DoorReceipts = map[string]parkingDoorReceipt{}
+	}
+	key := doorReceiptKey(carID, field)
+	rec := m.store.DoorReceipts[key]
+	rec.CarID = carID
+	rec.Field = field
+	rec.ReceivedCount++
+	rec.LastReceivedAt = observedAt.Format(time.RFC3339Nano)
+	rec.LastValue = value
+	if stored {
+		rec.StoredEventCount++
+		rec.LastStoredAt = rec.LastReceivedAt
+		rec.BaselineOnly = false
+	} else if rec.StoredEventCount == 0 {
+		rec.BaselineOnly = baseline || rec.BaselineOnly
+	}
+	m.store.DoorReceipts[key] = rec
+}
+
+func (m *parkingEventMonitor) mqttConnected() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.connected
+}
+
+func (m *parkingEventMonitor) doorDiagnostics(carID int) []parkingDoorReceipt {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]parkingDoorReceipt, 0, len(namedDoorMQTTFields))
+	for _, field := range namedDoorMQTTFields {
+		rec, ok := m.store.DoorReceipts[doorReceiptKey(carID, field)]
+		if !ok {
+			rec = parkingDoorReceipt{CarID: carID, Field: field}
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 func boolEvent(value, trueEvent, falseEvent string) string {
@@ -395,6 +493,9 @@ func (m *parkingEventMonitor) load() {
 		}
 		if stored.Events != nil {
 			m.store.Events = stored.Events
+		}
+		if stored.DoorReceipts != nil {
+			m.store.DoorReceipts = stored.DoorReceipts
 		}
 		m.pruneLocked(time.Now().UTC())
 	}
