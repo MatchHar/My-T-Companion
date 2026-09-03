@@ -13,7 +13,7 @@ myt_begin_source_transaction() {
   local parent
   parent="$(dirname "$INSTALL_DIR")"
   # Preserve install.sh's support for a new nested INSTALL_DIR.
-  install -d -m 0755 "$parent" || return 1
+  [[ -d "$parent" ]] || install -d -m 0755 "$parent" || return 1
   MYT_SOURCE_BACKUP="$(umask 077; mktemp -d "$parent/.my-t-install-source.XXXXXXXX")"
   MYT_SOURCE_EXISTED=false
   if [[ -d "$INSTALL_DIR" ]]; then
