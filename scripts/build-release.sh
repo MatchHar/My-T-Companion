@@ -6,6 +6,12 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 "$repo_dir/scripts/check-network-boundary.sh"
 "$repo_dir/scripts/check-push-secret-boundary.sh"
 version="$(tr -d '[:space:]' < "$repo_dir/VERSION")"
+for notes in "RELEASE_NOTES_${version}.md" "RELEASE_NOTES_${version}.zh-Hans.md" "RELEASE_NOTES_${version}.zh-Hant.md"; do
+  [[ -s "$repo_dir/$notes" ]] || {
+    printf 'Missing release documentation: %s\n' "$notes" >&2
+    exit 1
+  }
+done
 output_dir="${1:-$repo_dir/dist}"
 archive_name="my-t-companion-${version}.tar.gz"
 mkdir -p "$output_dir"
