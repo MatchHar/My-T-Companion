@@ -686,6 +686,63 @@ func TestNamedDoorTopicsAreSubscribedAndMapped(t *testing.T) {
 	}
 }
 
+func TestParkingPersistenceWorkerKeepsRapidNamedDoorTransitions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "parking-events.json")
+	monitor := &parkingEventMonitor{
+		statePath:     path,
+		retentionDays: 365,
+		store: parkingEventStore{
+			Cars:   map[int]parkingEventCarState{},
+			Events: []parkingObservedEvent{},
+		},
+	}
+	monitor.startPersistenceWorker()
+	at := time.Date(2026, 9, 4, 18, 23, 0, 0, time.UTC)
+	fields := []string{
+		"driver_front_door_open",
+		"driver_rear_door_open",
+		"passenger_front_door_open",
+		"passenger_rear_door_open",
+	}
+	for _, field := range fields {
+		monitor.observe(1, field, "false", at)
+	}
+	for index, field := range fields {
+		openedAt := at.Add(time.Duration(index*2+1) * time.Millisecond)
+		monitor.observe(1, field, "true", openedAt)
+		monitor.observe(1, field, "false", openedAt.Add(time.Millisecond))
+	}
+	monitor.stopPersistenceWorker()
+
+	loaded := &parkingEventMonitor{
+		statePath: path,
+		store: parkingEventStore{
+			Cars:   map[int]parkingEventCarState{},
+			Events: []parkingObservedEvent{},
+		},
+	}
+	loaded.load()
+	if got, want := len(loaded.store.Events), len(fields)*2; got != want {
+		t.Fatalf("persisted %d rapid named-door transitions, want %d: %+v", got, want, loaded.store.Events)
+	}
+	for index, field := range fields {
+		opened := loaded.store.Events[index*2]
+		closed := loaded.store.Events[index*2+1]
+		if opened.Field != field || !strings.HasSuffix(opened.Type, "_opened") {
+			t.Fatalf("event %d = %+v, want %s opened", index*2, opened, field)
+		}
+		if closed.Field != field || !strings.HasSuffix(closed.Type, "_closed") {
+			t.Fatalf("event %d = %+v, want %s closed", index*2+1, closed, field)
+		}
+	}
+	for _, field := range fields {
+		receipt := loaded.store.DoorReceipts[doorReceiptKey(1, field)]
+		if receipt.ReceivedCount != 3 || receipt.StoredEventCount != 2 || receipt.BaselineOnly {
+			t.Fatalf("unexpected receipt for %s: %+v", field, receipt)
+		}
+	}
+}
+
 func TestCompanionStatusReturnsObservedLockDoorsAndWindows(t *testing.T) {
 	oldToken, oldProbe, oldParkingEvents := apiToken, authProbeURL, parkingEvents
 	apiToken, authProbeURL = "test-token", ""

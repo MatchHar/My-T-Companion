@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.10.43
+
+- Keep ordered TeslaMate MQTT transition handling responsive by moving the
+  parking-event JSON snapshot write out of the message callback. A single
+  coalescing worker persists the complete store and flushes it during graceful
+  shutdown.
+- Skip redundant disk writes for unchanged ordinary battery/range and state
+  observations while retaining every named-door receipt used for diagnostics.
+- Preserve rapid four-door open/close transitions in arrival order. The same
+  nonblocking persistence path covers windows, lock, plug, charging, climate,
+  preconditioning, battery heating and charge-port actions.
+- No API, database, pairing or stored-data migration is required. Events that
+  TeslaMate never emits are still not inferred or added to history.
+
 ## 1.10.42
 
 - Preserve the exact pre-install source/configuration on installation failure,

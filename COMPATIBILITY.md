@@ -7,13 +7,17 @@ signed relay delivery. Version `1.7.1` adds destination-navigation Live Activity
 without changing APIs or deployment. Parking and navigation remain usable
 without pairing.
 
-The 1.10.39 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
+The 1.10.43 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
 stable line, together with TeslaMateAPI 1.25.0. Per-vehicle push overrides use
 TeslaMate car IDs already present in notification events and require no
 database migration, Tesla token change, or vehicle wake. Existing installations
 start with the all-vehicle behavior from 1.10.36. Requests that omit the new
 optional field preserve any stored overrides instead of erasing settings an
 older App cannot display.
+
+Version 1.10.43 changes only the internal parking-event persistence path. It
+requires no database, API, pairing, proxy, Tesla token, or stored-data
+migration and remains compatible with existing My T clients.
 
 ## Required baseline
 

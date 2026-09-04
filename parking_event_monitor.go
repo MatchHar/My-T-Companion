@@ -17,6 +17,7 @@ import (
 const (
 	defaultParkingEventRetentionDays = 0
 	defaultParkingEventMaximum       = 50000
+	parkingEventPersistenceDelay     = 50 * time.Millisecond
 )
 
 type parkingObservedEvent struct {
@@ -76,6 +77,9 @@ type parkingEventMonitor struct {
 	connected     bool
 	lastError     string
 	store         parkingEventStore
+	persistCh     chan struct{}
+	persistStopCh chan struct{}
+	persistDoneCh chan struct{}
 }
 
 func newParkingEventMonitorFromEnvironment() *parkingEventMonitor {
@@ -107,6 +111,7 @@ func newParkingEventMonitorFromEnvironment() *parkingEventMonitor {
 }
 
 func (m *parkingEventMonitor) start() {
+	m.startPersistenceWorker()
 	options := mqtt.NewClientOptions().
 		AddBroker(m.mqttBroker).
 		SetClientID(m.mqttClientID).
@@ -169,6 +174,7 @@ func (m *parkingEventMonitor) stop() {
 	if m.client != nil && m.client.IsConnected() {
 		m.client.Disconnect(250)
 	}
+	m.stopPersistenceWorker()
 }
 
 var parkingEventMQTTFields = []string{
@@ -224,14 +230,22 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 	}
 	switch field {
 	case "battery_level":
-		state.BatteryLevel = parseBoundedInt(value, 0, 100)
+		parsed := parseBoundedInt(value, 0, 100)
+		if equalParkingInt(state.BatteryLevel, parsed) {
+			return
+		}
+		state.BatteryLevel = parsed
 		m.store.Cars[carID] = state
-		_ = m.saveLocked()
+		m.persistLocked()
 		return
 	case "rated_battery_range_km":
-		state.RatedRangeKM = parseBoundedFloat(value, 0, 1000)
+		parsed := parseBoundedFloat(value, 0, 1000)
+		if equalParkingFloat(state.RatedRangeKM, parsed) {
+			return
+		}
+		state.RatedRangeKM = parsed
 		m.store.Cars[carID] = state
-		_ = m.saveLocked()
+		m.persistLocked()
 		return
 	}
 
@@ -241,11 +255,18 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 
 	// Retained MQTT values arrive at every subscription. The first observation
 	// establishes a baseline only; it must never be presented as a transition.
-	if !initialized || previous == value {
+	if previous == value {
 		if isNamedDoorField(field) {
-			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, !initialized)
+			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, false)
+			m.persistLocked()
 		}
-		_ = m.saveLocked()
+		return
+	}
+	if !initialized {
+		if isNamedDoorField(field) {
+			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, true)
+		}
+		m.persistLocked()
 		return
 	}
 	eventType := parkingEventType(field, previous, value)
@@ -253,7 +274,7 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 		if isNamedDoorField(field) {
 			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, false)
 		}
-		_ = m.saveLocked()
+		m.persistLocked()
 		return
 	}
 	m.pruneLocked(observedAt)
@@ -274,7 +295,7 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 	if isNamedDoorField(field) {
 		m.recordDoorReceiptLocked(carID, field, value, observedAt, true, false)
 	}
-	_ = m.saveLocked()
+	m.persistLocked()
 }
 
 func parkingEventType(field, previous, value string) string {
@@ -502,11 +523,102 @@ func (m *parkingEventMonitor) load() {
 }
 
 func (m *parkingEventMonitor) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(m.statePath), 0700); err != nil {
-		return err
-	}
 	data, err := json.Marshal(m.store)
 	if err != nil {
+		return err
+	}
+	return m.writeState(data)
+}
+
+func (m *parkingEventMonitor) persistLocked() {
+	if m.persistCh == nil {
+		if err := m.saveLocked(); err != nil {
+			log.Printf("[warn] persist parking events: %v", err)
+		}
+		return
+	}
+	select {
+	case m.persistCh <- struct{}{}:
+	default:
+	}
+}
+
+func (m *parkingEventMonitor) startPersistenceWorker() {
+	m.mu.Lock()
+	if m.persistCh != nil {
+		m.mu.Unlock()
+		return
+	}
+	requests := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	m.persistCh = requests
+	m.persistStopCh = stop
+	m.persistDoneCh = done
+	m.mu.Unlock()
+
+	go m.runPersistenceWorker(requests, stop, done)
+}
+
+func (m *parkingEventMonitor) stopPersistenceWorker() {
+	m.mu.Lock()
+	stop := m.persistStopCh
+	done := m.persistDoneCh
+	if stop == nil {
+		m.mu.Unlock()
+		return
+	}
+	m.persistStopCh = nil
+	close(stop)
+	m.mu.Unlock()
+
+	<-done
+
+	m.mu.Lock()
+	if m.persistDoneCh == done {
+		m.persistCh = nil
+		m.persistDoneCh = nil
+	}
+	m.mu.Unlock()
+}
+
+func (m *parkingEventMonitor) runPersistenceWorker(requests <-chan struct{}, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	for {
+		select {
+		case <-requests:
+			timer := time.NewTimer(parkingEventPersistenceDelay)
+			select {
+			case <-timer.C:
+				m.persistSnapshot()
+			case <-stop:
+				timer.Stop()
+				m.persistSnapshot()
+				return
+			}
+		case <-stop:
+			m.persistSnapshot()
+			return
+		}
+	}
+}
+
+func (m *parkingEventMonitor) persistSnapshot() {
+	m.mu.RLock()
+	snapshot := cloneParkingEventStore(m.store)
+	m.mu.RUnlock()
+
+	data, err := json.Marshal(snapshot)
+	if err == nil {
+		err = m.writeState(data)
+	}
+	if err != nil {
+		log.Printf("[warn] persist parking events: %v", err)
+	}
+}
+
+func (m *parkingEventMonitor) writeState(data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(m.statePath), 0700); err != nil {
 		return err
 	}
 	temp := m.statePath + ".tmp"
@@ -514,6 +626,36 @@ func (m *parkingEventMonitor) saveLocked() error {
 		return err
 	}
 	return os.Rename(temp, m.statePath)
+}
+
+func cloneParkingEventStore(store parkingEventStore) parkingEventStore {
+	cloned := parkingEventStore{
+		Cars:         make(map[int]parkingEventCarState, len(store.Cars)),
+		Events:       append([]parkingObservedEvent(nil), store.Events...),
+		DoorReceipts: make(map[string]parkingDoorReceipt, len(store.DoorReceipts)),
+	}
+	for carID, state := range store.Cars {
+		values := make(map[string]string, len(state.Values))
+		for field, value := range state.Values {
+			values[field] = value
+		}
+		state.Values = values
+		state.BatteryLevel = cloneParkingInt(state.BatteryLevel)
+		state.RatedRangeKM = cloneFloat(state.RatedRangeKM)
+		cloned.Cars[carID] = state
+	}
+	for key, receipt := range store.DoorReceipts {
+		cloned.DoorReceipts[key] = receipt
+	}
+	return cloned
+}
+
+func equalParkingInt(left, right *int) bool {
+	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
+}
+
+func equalParkingFloat(left, right *float64) bool {
+	return (left == nil && right == nil) || (left != nil && right != nil && *left == *right)
 }
 
 func cloneParkingInt(value *int) *int {
