@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.44
+
+- Keep the last confirmed destination authoritative when Tesla briefly
+  resurrects an older, far-away destination after arrival without usable route
+  distance or time. The stale terminal snapshot is staged and discarded when
+  parking or route-clear follows, so it cannot create a false destination leg
+  or arrival notification.
+- Confirm a genuine nearby next stop only after the same candidate persists
+  while the vehicle is still authoritatively driving. Pending observations are
+  bounded and cannot be trusted after a restart or long gap.
+- Clear every prior route metric before committing a genuine redirect, so a
+  partial new observation cannot inherit the old leg's zero distance, zero
+  minutes, destination coordinates, or arrival battery.
+- No API, database, pairing, notification-preference, or stored-history
+  migration is required. Vehicle polling and wake behavior are unchanged.
+
 ## 1.10.43
 
 - Keep ordered TeslaMate MQTT transition handling responsive by moving the

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"strings"
+	"time"
 )
 
 const (
@@ -18,6 +19,8 @@ const (
 	navigationAliasRemainingCapKM   = 3.0
 	navigationArrivalDistanceKM     = 0.35
 	navigationArrivalMinutes        = 2
+	navigationPendingConfirmDelay   = 2 * time.Second
+	navigationPendingConfirmWindow  = 30 * time.Second
 )
 
 type navigationLegDecision int
@@ -91,7 +94,13 @@ func classifyNavigationLegChange(committed carNavigationState, candidate navigat
 		if coordsKnown && coordsClose {
 			return navigationLegKeep
 		}
-		if coordsFar || navigationRemainingLooksLikeNewSameNameStop(committed.RemainingDistanceKM, candidate.RemainingKM) {
+		if coordsFar {
+			if navigationRouteCandidateNeedsConfirmation(candidate) {
+				return navigationLegStage
+			}
+			return navigationLegNew
+		}
+		if navigationRemainingLooksLikeNewSameNameStop(committed.RemainingDistanceKM, candidate.RemainingKM) {
 			return navigationLegNew
 		}
 		return navigationLegKeep
@@ -100,6 +109,9 @@ func classifyNavigationLegChange(committed carNavigationState, candidate navigat
 		return navigationLegAlias
 	}
 	if coordsFar {
+		if navigationRouteCandidateNeedsConfirmation(candidate) {
+			return navigationLegStage
+		}
 		return navigationLegNew
 	}
 	if committed.RemainingDistanceKM == nil || candidate.RemainingKM == nil {
@@ -109,6 +121,17 @@ func classifyNavigationLegChange(committed carNavigationState, candidate navigat
 		return navigationLegNew
 	}
 	return navigationLegAlias
+}
+
+// A terminal Tesla vehicle snapshot can briefly resurrect an older destination
+// after the current leg has reached zero. Coordinates alone are not enough to
+// commit that value as a new leg: require later route progress while the car is
+// still driving, or discard the staged candidate when parking/route-clear wins.
+func navigationRouteCandidateNeedsConfirmation(candidate navigationRouteCandidate) bool {
+	if candidate.RemainingKM == nil && candidate.RemainingMinutes == nil {
+		return true
+	}
+	return navigationRemainingLooksArrived(candidate.RemainingKM, candidate.RemainingMinutes)
 }
 
 func navigationRemainingDeltaStartsNewLeg(previous, current *float64) bool {
@@ -243,7 +266,11 @@ func applyRouteCandidate(state *carNavigationState, candidate navigationRouteCan
 	}
 }
 
-func stagePendingCandidate(state *carNavigationState, candidate navigationRouteCandidate) {
+func stagePendingCandidate(state *carNavigationState, candidate navigationRouteCandidate, observedAt time.Time) {
+	age, validAge := pendingRouteCandidateAge(*state, observedAt)
+	if !pendingRouteCandidateMatches(*state, candidate) || !validAge || age > navigationPendingConfirmWindow {
+		state.PendingObservedAt = observedAt.Format(time.RFC3339Nano)
+	}
 	state.PendingDestination = candidate.Destination
 	state.PendingRemainingKM = cloneFloat(candidate.RemainingKM)
 	state.PendingRemainingMinutes = cloneInt(candidate.RemainingMinutes)
@@ -255,6 +282,43 @@ func stagePendingCandidate(state *carNavigationState, candidate navigationRouteC
 	}
 }
 
+func pendingRouteCandidateConfirmed(
+	state carNavigationState,
+	candidate navigationRouteCandidate,
+	observedAt time.Time,
+) bool {
+	if state.VehicleState != "driving" || !pendingRouteCandidateMatches(state, candidate) {
+		return false
+	}
+	age, valid := pendingRouteCandidateAge(state, observedAt)
+	if !valid {
+		return false
+	}
+	return age >= navigationPendingConfirmDelay && age <= navigationPendingConfirmWindow
+}
+
+func pendingRouteCandidateAge(state carNavigationState, observedAt time.Time) (time.Duration, bool) {
+	firstObservedAt, err := time.Parse(time.RFC3339Nano, state.PendingObservedAt)
+	if err != nil || observedAt.Before(firstObservedAt) {
+		return 0, false
+	}
+	return observedAt.Sub(firstObservedAt), true
+}
+
+func pendingRouteCandidateMatches(state carNavigationState, candidate navigationRouteCandidate) bool {
+	if strings.TrimSpace(state.PendingDestination) == "" ||
+		!navigationDestinationEqual(state.PendingDestination, candidate.Destination) {
+		return false
+	}
+	_, far, known := navigationDestinationCoordinatesRelation(
+		state.PendingLatitude,
+		state.PendingLongitude,
+		candidate.Latitude,
+		candidate.Longitude,
+	)
+	return !known || !far
+}
+
 func clearPendingCandidate(state *carNavigationState) {
 	state.PendingDestination = ""
 	state.PendingRemainingKM = nil
@@ -262,6 +326,7 @@ func clearPendingCandidate(state *carNavigationState) {
 	state.PendingArrivalBattery = nil
 	state.PendingLatitude = nil
 	state.PendingLongitude = nil
+	state.PendingObservedAt = ""
 }
 
 func clearCommittedRoute(state *carNavigationState) {

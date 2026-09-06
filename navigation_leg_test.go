@@ -66,6 +66,242 @@ func TestStagedNextStopCommitsNewLegFromOldSnapshot(t *testing.T) {
 	}
 }
 
+func TestFarDestinationWithoutProgressIsStagedUntilMetricsArrive(t *testing.T) {
+	m := testNavigationMonitor(t)
+	defer m.stop()
+	now := time.Now().UTC()
+	m.observe(1, "state", "driving", now)
+	m.observe(1, "active_route", `{"destination":"Stop A","miles_to_arrival":8,"minutes_to_arrival":20,"location":{"latitude":43.77,"longitude":-79.28}}`, now)
+	start := <-m.queue
+
+	m.observe(1, "active_route", `{"destination":"Stop B","location":{"latitude":43.78,"longitude":-79.25}}`, now.Add(time.Second))
+	staged := m.store.Cars[1]
+	if staged.SessionID != start.SessionID || staged.Destination != "Stop A" {
+		t.Fatalf("incomplete far candidate replaced committed leg: %+v", staged)
+	}
+	if staged.PendingDestination != "Stop B" || staged.LegPhase != navigationLegPhasePendingNext {
+		t.Fatalf("incomplete far candidate was not staged: %+v", staged)
+	}
+	select {
+	case event := <-m.priorityQueue:
+		t.Fatalf("incomplete far candidate ended the old leg: %+v", event)
+	default:
+	}
+
+	m.observe(1, "active_route", `{"destination":"Stop B","miles_to_arrival":12,"minutes_to_arrival":25,"location":{"latitude":43.78,"longitude":-79.25}}`, now.Add(2*time.Second))
+	end := <-m.priorityQueue
+	next := <-m.queue
+	if end.Destination != "Stop A" || end.EndReason != "redirected" {
+		t.Fatalf("confirmed redirect ended wrong leg: %+v", end)
+	}
+	if next.Destination != "Stop B" || next.SessionID == start.SessionID {
+		t.Fatalf("confirmed route metrics did not start B: %+v", next)
+	}
+}
+
+func TestTerminalStaleDestinationDoesNotReplaceArrivedLeg(t *testing.T) {
+	m := testNavigationMonitor(t)
+	defer m.stop()
+	now := time.Now().UTC()
+	m.observe(2, "state", "driving", now)
+	m.observe(2, "active_route", `{"destination":"華泰超市","miles_to_arrival":0,"minutes_to_arrival":0,"location":{"latitude":43.772303,"longitude":-79.281021}}`, now)
+	start := <-m.queue
+
+	// TeslaMate's real terminal snapshot: the car is physically at Hua Tai but
+	// active_route briefly resurrects Winners with far coordinates and no route
+	// distance/time before state changes to online.
+	m.observe(2, "active_route", `{"destination":"Winners Scarborough","location":{"latitude":43.77462,"longitude":-79.259131}}`, now.Add(time.Second))
+	staged := m.store.Cars[2]
+	if staged.SessionID != start.SessionID || staged.Destination != "華泰超市" {
+		t.Fatalf("terminal stale destination replaced Hua Tai: %+v", staged)
+	}
+	if staged.PendingDestination != "Winners Scarborough" {
+		t.Fatalf("terminal stale destination was not staged: %+v", staged)
+	}
+
+	m.observe(2, "state", "online", now.Add(2*time.Second))
+	end := <-m.priorityQueue
+	if end.SessionID != start.SessionID || end.Destination != "華泰超市" || end.EndReason != "arrived" {
+		t.Fatalf("terminal state did not arrive the committed Hua Tai leg: %+v", end)
+	}
+	if got := m.store.Cars[2]; got.PendingDestination != "" || got.Active {
+		t.Fatalf("terminal state retained pending/still active state: %+v", got)
+	}
+	select {
+	case event := <-m.queue:
+		t.Fatalf("terminal stale destination started a false Winners leg: %+v", event)
+	default:
+	}
+	select {
+	case event := <-m.priorityQueue:
+		t.Fatalf("terminal stale destination emitted an extra end: %+v", event)
+	default:
+	}
+}
+
+func TestTerminalStagedDestinationIsDiscardedWhenRouteClears(t *testing.T) {
+	m := testNavigationMonitor(t)
+	defer m.stop()
+	now := time.Now().UTC()
+	m.observe(2, "state", "driving", now)
+	m.observe(2, "active_route", `{"destination":"華泰超市","miles_to_arrival":0,"minutes_to_arrival":0,"location":{"latitude":43.772303,"longitude":-79.281021}}`, now)
+	start := <-m.queue
+	m.observe(2, "active_route", `{"destination":"Winners Scarborough","location":{"latitude":43.77462,"longitude":-79.259131}}`, now.Add(time.Second))
+	m.observe(2, "active_route", `{"error":"No active route available"}`, now.Add(2*time.Second))
+
+	end := <-m.priorityQueue
+	if end.SessionID != start.SessionID || end.Destination != "華泰超市" || end.EndReason != "arrived" {
+		t.Fatalf("route clear did not arrive the last committed leg: %+v", end)
+	}
+	state := m.store.Cars[2]
+	if state.Active || state.Destination != "" || state.PendingDestination != "" {
+		t.Fatalf("route clear retained committed/pending destination: %+v", state)
+	}
+	select {
+	case event := <-m.queue:
+		t.Fatalf("route clear started a false pending leg: %+v", event)
+	default:
+	}
+}
+
+func TestFarDestinationAlreadyAtArrivalNeedsConfirmation(t *testing.T) {
+	zeroKM := 0.0
+	zeroMinutes := 0
+	oldLatitude := 43.772303
+	oldLongitude := -79.281021
+	newLatitude := 43.77462
+	newLongitude := -79.259131
+	committed := carNavigationState{
+		Destination:          "華泰超市",
+		RemainingDistanceKM:  &zeroKM,
+		RemainingMinutes:     &zeroMinutes,
+		DestinationLatitude:  &oldLatitude,
+		DestinationLongitude: &oldLongitude,
+	}
+	candidate := navigationRouteCandidate{
+		Destination:      "Winners Scarborough",
+		RemainingKM:      &zeroKM,
+		RemainingMinutes: &zeroMinutes,
+		Latitude:         &newLatitude,
+		Longitude:        &newLongitude,
+	}
+	if decision := classifyNavigationLegChange(committed, candidate); decision != navigationLegStage {
+		t.Fatalf("far zero-progress destination decision=%v want staged", decision)
+	}
+}
+
+func TestRepeatedStagedNearStopConfirmsWhileStillDriving(t *testing.T) {
+	m := testNavigationMonitor(t)
+	defer m.stop()
+	now := time.Now().UTC()
+	m.observe(1, "state", "driving", now)
+	m.observe(1, "active_route", `{"destination":"Stop A","miles_to_arrival":0,"minutes_to_arrival":0,"location":{"latitude":43.77,"longitude":-79.28}}`, now)
+	start := <-m.queue
+
+	nearStop := `{"destination":"Stop B","miles_to_arrival":0.12,"minutes_to_arrival":1,"location":{"latitude":43.771,"longitude":-79.277}}`
+	m.observe(1, "active_route", nearStop, now.Add(time.Second))
+	if got := m.store.Cars[1]; got.SessionID != start.SessionID || got.PendingObservedAt == "" {
+		t.Fatalf("first close-stop sample was not staged: %+v", got)
+	}
+	m.observe(1, "active_route", nearStop, now.Add(2*time.Second))
+	select {
+	case event := <-m.priorityQueue:
+		t.Fatalf("close-stop candidate confirmed before debounce: %+v", event)
+	default:
+	}
+	m.observe(1, "active_route", nearStop, now.Add(3*time.Second))
+	end := <-m.priorityQueue
+	next := <-m.queue
+	if end.Destination != "Stop A" || next.Destination != "Stop B" || next.SessionID == start.SessionID {
+		t.Fatalf("repeated close-stop candidate did not become a real leg: end=%+v next=%+v", end, next)
+	}
+}
+
+func TestPersistedOldPendingCandidateCannotConfirmAfterRestartGap(t *testing.T) {
+	m := testNavigationMonitor(t)
+	defer m.stop()
+	now := time.Now().UTC()
+	oldDistance := 0.0
+	oldMinutes := 0
+	oldLatitude := 43.77
+	oldLongitude := -79.28
+	pendingLatitude := 43.771
+	pendingLongitude := -79.277
+	m.store.Cars[1] = carNavigationState{
+		VehicleState:            "driving",
+		Destination:             "Stop A",
+		RemainingDistanceKM:     &oldDistance,
+		RemainingMinutes:        &oldMinutes,
+		DestinationLatitude:     &oldLatitude,
+		DestinationLongitude:    &oldLongitude,
+		Active:                  true,
+		SessionID:               "old-session",
+		SessionStartedAt:        now.Add(-time.Hour).Format(time.RFC3339),
+		LegPhase:                navigationLegPhasePendingNext,
+		PendingDestination:      "Stop B",
+		PendingRemainingKM:      floatPointer(0.2),
+		PendingRemainingMinutes: &oldMinutes,
+		PendingLatitude:         &pendingLatitude,
+		PendingLongitude:        &pendingLongitude,
+		PendingObservedAt:       now.Add(-time.Hour).Format(time.RFC3339Nano),
+	}
+
+	m.observe(1, "active_route", `{"destination":"Stop B","miles_to_arrival":0.12,"minutes_to_arrival":1,"location":{"latitude":43.771,"longitude":-79.277}}`, now)
+	state := m.store.Cars[1]
+	if state.SessionID != "old-session" || state.Destination != "Stop A" {
+		t.Fatalf("old persisted pending candidate confirmed immediately: %+v", state)
+	}
+	firstObservedAt, err := time.Parse(time.RFC3339Nano, state.PendingObservedAt)
+	if err != nil || firstObservedAt.Before(now.Add(-time.Second)) {
+		t.Fatalf("old pending confirmation window was not reset: %q", state.PendingObservedAt)
+	}
+	select {
+	case event := <-m.priorityQueue:
+		t.Fatalf("old persisted pending candidate emitted an end: %+v", event)
+	default:
+	}
+}
+
+func TestCommittedNewLegDoesNotInheritOldRouteMetrics(t *testing.T) {
+	m := testNavigationMonitor(t)
+	defer m.stop()
+	now := time.Now().UTC()
+	oldDistance := 0.0
+	oldMinutes := 0
+	oldArrivalBattery := 28
+	oldLatitude := 43.772303
+	oldLongitude := -79.281021
+	state := carNavigationState{
+		VehicleState:         "driving",
+		Destination:          "Stop A",
+		RemainingDistanceKM:  &oldDistance,
+		RemainingMinutes:     &oldMinutes,
+		ArrivalBatteryLevel:  &oldArrivalBattery,
+		DestinationLatitude:  &oldLatitude,
+		DestinationLongitude: &oldLongitude,
+		Active:               true,
+		SessionID:            "old-session",
+		SessionStartedAt:     now.Add(-time.Hour).Format(time.RFC3339),
+		LegPhase:             navigationLegPhaseActive,
+		StartDelivered:       true,
+	}
+	newMinutes := 25
+	candidate := navigationRouteCandidate{
+		Destination:      "Stop B",
+		RemainingMinutes: &newMinutes,
+	}
+	_, next, _ := m.commitRedirectedLegLocked(1, &state, cloneCarNavigationState(state), candidate, now)
+	if next.RemainingDistanceKM != nil {
+		t.Fatalf("new leg inherited old distance: %+v", next.RemainingDistanceKM)
+	}
+	if next.RemainingMinutes == nil || *next.RemainingMinutes != 25 {
+		t.Fatalf("new leg lost its own minutes: %+v", next.RemainingMinutes)
+	}
+	if next.ArrivalBatteryLevel != nil || state.DestinationLatitude != nil || state.DestinationLongitude != nil {
+		t.Fatalf("new leg inherited old arrival/coordinates: next=%+v state=%+v", next, state)
+	}
+}
+
 func TestNearbyDistinctStopStartsNewSession(t *testing.T) {
 	if !navigationDestinationChangeStartsNewSession("Stop A", "Stop B", floatPointer(0.1), floatPointer(0.6)) {
 		t.Fatal("distinct stop 500 m farther must start a new session")
