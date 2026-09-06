@@ -104,6 +104,7 @@ type carNavigationState struct {
 	PendingArrivalBattery   *int     `json:"pending_arrival_battery,omitempty"`
 	PendingLatitude         *float64 `json:"pending_latitude,omitempty"`
 	PendingLongitude        *float64 `json:"pending_longitude,omitempty"`
+	PendingObservedAt       string   `json:"pending_observed_at,omitempty"`
 	// RFC3339 when this navigation session became active (real trip start for end-frame).
 	SessionStartedAt      string   `json:"session_started_at,omitempty"`
 	DriveID               int64    `json:"drive_id,omitempty"`
@@ -426,7 +427,13 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 			decision := classifyNavigationLegChange(state, candidate)
 			switch decision {
 			case navigationLegStage:
-				stagePendingCandidate(&state, candidate)
+				if wasActive && strings.TrimSpace(state.SessionID) != "" &&
+					pendingRouteCandidateConfirmed(state, candidate, observedAt) {
+					startNewLeg = true
+					newLegCandidate = candidate
+				} else {
+					stagePendingCandidate(&state, candidate, observedAt)
+				}
 			case navigationLegNew:
 				if wasActive && strings.TrimSpace(state.SessionID) != "" &&
 					strings.TrimSpace(state.Destination) != "" {
@@ -450,7 +457,10 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	// preserve an already-active session and must not invent arrival.
 	shouldBeActive := navigationShouldBeActive(routeInvalid, state)
 
-	if startNewLeg && wasActive && shouldBeActive {
+	// A different destination can arrive in the same terminal Tesla snapshot as
+	// shift=P. Commit a redirect only while driving is still authoritative; the
+	// following parking state must otherwise close the last committed leg.
+	if startNewLeg && wasActive && shouldBeActive && state.VehicleState == "driving" {
 		endEvent, startEvent, sessionID := m.commitRedirectedLegLocked(carID, &state, snapshot, newLegCandidate, observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
@@ -482,6 +492,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 			state.LegPhase = navigationLegPhaseEnded
 		}
 		state.Active = false
+		clearPendingCandidate(&state)
 		if timer := m.pending[carID]; timer != nil {
 			timer.Stop()
 			delete(m.pending, carID)
@@ -574,6 +585,10 @@ func (m *navigationNotificationMonitor) commitRedirectedLegLocked(
 	endEvent.LegPhase = navigationLegPhaseEnded
 
 	state.Revision = endState.Revision
+	// A new leg owns a new set of route metrics. Nil fields in the candidate
+	// must not inherit the previous leg's final 0 km / 0 min and manufacture an
+	// immediate arrival.
+	clearCommittedRoute(state)
 	applyRouteCandidate(state, candidate)
 	m.beginNavigationLegLocked(state, carID, observedAt)
 	startEvent := m.makeEventLocked(carID, state, "navigation_started", observedAt)

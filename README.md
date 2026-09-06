@@ -231,6 +231,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.44 | Terminal destination-rebound rejection with bounded nearby-next-stop confirmation and clean redirect metrics |
 | 1.10.43 | Nonblocking ordered parking-event capture with coalesced durable snapshots and graceful-shutdown flush |
 | 1.10.39 | Source-scoped charging, navigation, and Lock Secure delivery plus collision-safe Live Activity sessions |
 | 1.10.38 | Four named-door history/status, active-parking observations, source-scoped software updates, and route repair |
