@@ -460,6 +460,7 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
     storage_policy.go
     lock_secure_notification.go
     push_subscribers.go
+    friend_together.go
   )
   for name in "${required_go[@]}"; do
     [[ -f "$SOURCE_DIR/$name" ]] || fail "Release package missing $name"
@@ -470,11 +471,17 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
     install -m 0644 "$go_file" "$INSTALL_DIR/$(basename "$go_file")"
   done
   shopt -u nullglob
+  [[ -d "$SOURCE_DIR/internal/friendtogether" ]] || fail "Release package missing internal/friendtogether"
+  rm -rf "$INSTALL_DIR/internal"
+  mkdir -p "$INSTALL_DIR/internal"
+  cp -a "$SOURCE_DIR/internal/." "$INSTALL_DIR/internal/"
   install -m 0644 "$SOURCE_DIR/VERSION" "$INSTALL_DIR/VERSION"
   # Fail fast if build context is incomplete (HostBox shows only last ~6KB of SSH output).
   for name in "${required_go[@]}"; do
     [[ -f "$INSTALL_DIR/$name" ]] || fail "Install incomplete: $INSTALL_DIR/$name missing after copy"
   done
+  [[ -f "$INSTALL_DIR/internal/friendtogether/http_service.go" ]] \
+    || fail "Install incomplete: $INSTALL_DIR/internal/friendtogether missing after copy"
   log "Build context Go sources: $(ls -1 "$INSTALL_DIR"/*.go 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
   install -m 0644 "$SOURCE_DIR/install-source-transaction.sh" "$INSTALL_DIR/install-source-transaction.sh"
@@ -500,9 +507,11 @@ fi
 # Always verify production sources before docker build (covers in-place reinstalls).
 for name in main.go teslamate_version.go notification.go charging_notification.go navigation_notification.go \
   parking_event_monitor.go storage_policy.go lock_secure_notification.go \
-  push_subscribers.go Dockerfile VERSION; do
+  push_subscribers.go friend_together.go Dockerfile VERSION; do
   [[ -f "$INSTALL_DIR/$name" ]] || fail "Missing build file: $INSTALL_DIR/$name — re-run from a complete release package"
 done
+[[ -f "$INSTALL_DIR/internal/friendtogether/http_service.go" ]] \
+  || fail "Missing build file: $INSTALL_DIR/internal/friendtogether/http_service.go — re-run from a complete release package"
 if ! grep -qE '^COPY[[:space:]]+\*\.go' "$INSTALL_DIR/Dockerfile"; then
   for go_file in "$INSTALL_DIR"/*.go; do
     base="$(basename "$go_file")"

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.46
+
+- Copy `internal/friendtogether` into the VPS Docker build context. 1.10.45
+  added `COPY internal ./internal` to the Dockerfile, but the installer only
+  copied root `*.go` files, so HostBox/CLI upgrades failed with
+  `"/internal": not found` and rolled back to the previous version.
+- Keep Friend Together off by default. Parking, navigation, pairing, and
+  notifications remain unchanged on a normal upgrade.
+
 ## 1.10.45
 
 - Add optional Friend Together sharing between independent TeslaMate owners.
