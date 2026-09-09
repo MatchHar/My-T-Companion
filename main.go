@@ -162,6 +162,8 @@ func main() {
 	defer lowBatteryPush.stop()
 
 	mux := http.NewServeMux()
+	stopFriends := registerFriendTogether(mux)
+	defer stopFriends()
 	mux.HandleFunc("/api/ping", handlePing)
 	mux.HandleFunc("/api/healthz", handleHealth)
 	mux.HandleFunc("/api/v1/capabilities", handleCapabilities)
@@ -605,6 +607,9 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"charges",
 			"updates",
 		},
+	}
+	if friendTogether != nil && friendTogether.Ready() {
+		payload["capabilities"] = append(payload["capabilities"].([]string), "friend_together_v1")
 	}
 	// Prefer a live read on the private TeslaMate network. Static install
 	// metadata is reported explicitly as a fallback so clients never confuse it

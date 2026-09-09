@@ -7,6 +7,7 @@
 @my_t_push_history path_regexp my_t_push_history ^/api/v1/cars/[0-9]+/navigation/push-history$
 @my_t_parking_capabilities path /api/v1/capabilities
 @my_t_notifications path_regexp my_t_notifications ^/api/v1/notifications/
+@my_t_friend_owner path /api/v1/friend-together/*
 
 # Place these handles before the general TeslaMate API handle.
 handle @my_t_parking_states {
@@ -35,5 +36,11 @@ handle @my_t_parking_capabilities {
 
 # software-update status/pair + charging/navigation Live Activity status
 handle @my_t_notifications {
+	reverse_proxy 127.0.0.1:8083
+}
+
+# Owner-only Friend Together control. Retain this site's existing authentication.
+# Guest /friend/v1/* belongs only on a separately configured HTTPS share origin.
+handle @my_t_friend_owner {
 	reverse_proxy 127.0.0.1:8083
 }

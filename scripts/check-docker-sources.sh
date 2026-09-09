@@ -44,12 +44,24 @@ for f in "${required[@]}"; do
   [[ -f "$repo_dir/$f" ]] || { echo "missing required $f" >&2; exit 1; }
   grep -qE 'test -f '"$f" "$df" || true
 done
-for f in lock_secure_notification.go push_subscribers.go teslamate_version.go; do
+for f in lock_secure_notification.go push_subscribers.go teslamate_version.go friend_together.go; do
   grep -qF "test -f $f" "$df" || {
     echo "Dockerfile must test -f $f before go build" >&2
     exit 1
   }
 done
+grep -qF 'COPY internal ./internal' "$df" || {
+  echo "Dockerfile must COPY internal ./internal for Friend Together" >&2
+  exit 1
+}
+grep -qF 'test -f internal/friendtogether/http_service.go' "$df" || {
+  echo "Dockerfile must test -f internal/friendtogether/http_service.go before go build" >&2
+  exit 1
+}
+[[ -f "$repo_dir/internal/friendtogether/http_service.go" ]] || {
+  echo "missing required internal/friendtogether/http_service.go" >&2
+  exit 1
+}
 
 count=0
 for _ in $prod; do

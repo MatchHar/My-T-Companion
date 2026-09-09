@@ -12,8 +12,17 @@ not become stale after each release.
 ## Deployment requirements
 
 - Bind the service only to `127.0.0.1`.
-- Put every data endpoint behind HTTPS and the same authentication boundary as
+- Put every owner data/control endpoint (including `/api/v1/friend-together/*`)
+  behind HTTPS and the same authentication boundary as
   the existing TeslaMate API.
+- Exception only for the optional, default-off Friend Together candidate:
+  expose `/friend/v1/*` on a **dedicated HTTPS share origin**, preserving its
+  configured Host. It uses device-bound DPoP and explicit owner-approved,
+  temporary grants, never TeslaMate owner credentials or the owner auth probe.
+  Nonce/invitation redemption does not authorize vehicle data. Do not put this
+  guest route behind owner Basic/Cloudflare Access or relax the owner site's
+  protection. No other paths, database/MQTT ports or full-server APIs belong on
+  that guest origin. See [candidate deployment boundaries](docs/friend-together.md).
 - Confirm an unauthenticated request to `/api/ping` is rejected before enabling
   authentication reuse.
 - Keep PostgreSQL on a private Docker network.

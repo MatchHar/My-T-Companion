@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.10.45
+
+- Add optional Friend Together sharing between independent TeslaMate owners.
+  The feature is **off by default**. Existing parking, navigation, pairing,
+  notifications, APNs, and capabilities are unchanged until
+  `FRIEND_TOGETHER_ENABLED=true` plus a dedicated HTTPS guest origin are set.
+- Owner controls stay on `/api/v1/friend-together/*` behind the existing API
+  authentication. Guest `/friend/v1/*` is a separate device-bound DPoP surface
+  and must not be placed on the owner site or port 8083.
+- Capability `friend_together_v1` is advertised only after the service is
+  enabled and ready. Disabled installs keep the previous capability list.
+- No TeslaMate schema, pairing, notification-preference, or stored-history
+  migration is required. A Companion restart ends active v1 shares by design.
+
 ## 1.10.44
 
 - Keep the last confirmed destination authoritative when Tesla briefly
