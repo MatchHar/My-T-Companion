@@ -73,7 +73,16 @@ func publicKey(k PublicKey) (*ecdsa.PublicKey, error) {
 }
 func thumbprint(k PublicKey) string {
 	// RFC7638 mandatory members only, lexicographic ordering, no whitespace.
-	return hashSecret(`{"crv":"P-256","kty":"EC","x":"` + k.X + `","y":"` + k.Y + `"}`)
+	body, err := json.Marshal(struct {
+		Crv string `json:"crv"`
+		Kty string `json:"kty"`
+		X   string `json:"x"`
+		Y   string `json:"y"`
+	}{Crv: "P-256", Kty: "EC", X: k.X, Y: k.Y})
+	if err != nil {
+		return hashSecret("")
+	}
+	return hashSecret(string(body))
 }
 func validDevice(d Device) bool {
 	_, err := publicKey(d.PublicKey)
