@@ -231,6 +231,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.46 | Installer copies `internal/` into the Docker build context so HostBox upgrades of Friend Together succeed |
 | 1.10.45 | Optional default-off Friend Together between independent owners; existing parking, navigation, and pairing unchanged |
 | 1.10.44 | Terminal destination-rebound rejection with bounded nearby-next-stop confirmation and clean redirect metrics |
 | 1.10.43 | Nonblocking ordered parking-event capture with coalesced durable snapshots and graceful-shutdown flush |

@@ -62,6 +62,14 @@ grep -qF 'test -f internal/friendtogether/http_service.go' "$df" || {
   echo "missing required internal/friendtogether/http_service.go" >&2
   exit 1
 }
+grep -qF 'cp -a "$SOURCE_DIR/internal/." "$INSTALL_DIR/internal/"' "$repo_dir/install.sh" || {
+  echo "install.sh must copy internal/ into the Docker build context" >&2
+  exit 1
+}
+grep -qF 'internal/friendtogether/http_service.go' "$repo_dir/install.sh" || {
+  echo "install.sh must fail if internal/friendtogether is missing after copy" >&2
+  exit 1
+}
 
 count=0
 for _ in $prod; do

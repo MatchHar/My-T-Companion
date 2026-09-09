@@ -7,7 +7,7 @@ signed relay delivery. Version `1.7.1` adds destination-navigation Live Activity
 without changing APIs or deployment. Parking and navigation remain usable
 without pairing.
 
-The 1.10.45 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
+The 1.10.46 release is compatible with TeslaMate 4.2.0 and the previous 4.1.1
 stable line, together with TeslaMateAPI 1.25.0. Per-vehicle push overrides use
 TeslaMate car IDs already present in notification events and require no
 database migration, Tesla token change, or vehicle wake. Existing installations
@@ -15,13 +15,15 @@ start with the all-vehicle behavior from 1.10.36. Requests that omit the new
 optional field preserve any stored overrides instead of erasing settings an
 older App cannot display.
 
-Version 1.10.45 adds optional default-off Friend Together. Ordinary HostBox or
-CLI upgrades from 1.10.44 keep parking, navigation, pairing, and notifications
-working without extra configuration. Enabling Friend Together later requires
-`FRIEND_TOGETHER_ENABLED=true`, a dedicated HTTPS guest origin for `/friend/v1/*`,
-and the owner `/api/v1/friend-together/*` matcher on the authenticated API site.
-It requires no database, pairing, Tesla token, notification-preference, or
-stored-history migration and remains compatible with existing My T clients.
+Version 1.10.46 repairs HostBox/CLI upgrades of 1.10.45, which failed because
+the installer omitted `internal/` from the Docker build context. Friend Together
+stays off by default. Ordinary upgrades keep parking, navigation, pairing, and
+notifications working without extra configuration. Enabling Friend Together
+later requires `FRIEND_TOGETHER_ENABLED=true`, a dedicated HTTPS guest origin
+for `/friend/v1/*`, and the owner `/api/v1/friend-together/*` matcher on the
+authenticated API site. It requires no database, pairing, Tesla token,
+notification-preference, or stored-history migration and remains compatible
+with existing My T clients.
 
 ## Required baseline
 
