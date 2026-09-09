@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"log"
 	"math"
+	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -267,17 +267,40 @@ func (s *friendTeslaMateSource) stop() {
 	}
 }
 
+func pqKeyword(value string) string {
+	return "'" + strings.ReplaceAll(value, `'`, `''`) + "'"
+}
+
+func friendDatabaseDSN() string {
+	// Same keyword DSN as the working parking/notification pool. The previous
+	// postgres:?host=... URL left lib/pq on a unix socket, so OwnsCar failed
+	// with 503 source_unavailable while GET /status still looked ready.
+	return fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=%s application_name=my-t-companion-friends options='-c statement_timeout=2000 -c default_transaction_read_only=on'",
+		pqKeyword(getenv("DATABASE_HOST", "database")),
+		pqKeyword(getenv("DATABASE_PORT", "5432")),
+		pqKeyword(getenv("DATABASE_USER", "teslamate")),
+		pqKeyword(getenv("DATABASE_PASS", "secret")),
+		pqKeyword(getenv("DATABASE_NAME", "teslamate")),
+		pqKeyword(getenv("DATABASE_SSL", "disable")),
+		pqKeyword(getenv("DATABASE_TIMEOUT", "10")),
+	)
+}
+
 func openFriendDatabase() (*sql.DB, error) {
-	// URL encoding prevents configured values from becoming connection options.
-	q := url.Values{"host": {getenv("DATABASE_HOST", "database")}, "port": {getenv("DATABASE_PORT", "5432")}, "user": {getenv("DATABASE_USER", "teslamate")}, "password": {getenv("DATABASE_PASS", "secret")}, "dbname": {getenv("DATABASE_NAME", "teslamate")}, "sslmode": {getenv("DATABASE_SSL", "disable")}, "connect_timeout": {"2"}, "application_name": {"my-t-companion-friends"}, "options": {"-c statement_timeout=2000 -c default_transaction_read_only=on -c timezone=UTC"}}
-	u := url.URL{Scheme: "postgres", RawQuery: q.Encode()}
-	pool, err := sql.Open("postgres", u.String())
+	pool, err := sql.Open("postgres", friendDatabaseDSN())
 	if err != nil {
 		return nil, err
 	}
 	pool.SetMaxOpenConns(2)
 	pool.SetMaxIdleConns(1)
 	pool.SetConnMaxLifetime(5 * time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := pool.PingContext(ctx); err != nil {
+		_ = pool.Close()
+		return nil, err
+	}
 	return pool, nil
 }
 func (s *friendTeslaMateSource) observeNavigation(id int64, payload []byte, at int64) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	ft "mycarmate-states-api/internal/friendtogether"
@@ -85,6 +86,25 @@ func TestFriendNavigationRejectsPartialInvalidAndBounds(t *testing.T) {
 		s.observeNavigation(1, []byte(raw), 1000)
 		if s.navigation[1].active || s.navigation[1].revision != 7 {
 			t.Fatal("invalid route kept live")
+		}
+	}
+}
+
+func TestFriendDatabaseDSNMatchesWorkingPool(t *testing.T) {
+	t.Setenv("DATABASE_HOST", "database")
+	t.Setenv("DATABASE_PORT", "5432")
+	t.Setenv("DATABASE_USER", "teslamate")
+	t.Setenv("DATABASE_PASS", "unit-test-pass")
+	t.Setenv("DATABASE_NAME", "teslamate")
+	t.Setenv("DATABASE_SSL", "disable")
+	t.Setenv("DATABASE_TIMEOUT", "10")
+	dsn := friendDatabaseDSN()
+	if strings.HasPrefix(dsn, "postgres:") {
+		t.Fatal("friend pool must use the keyword DSN that already works for parking")
+	}
+	for _, part := range []string{"host='database'", "port='5432'", "user='teslamate'", "dbname='teslamate'", "application_name=my-t-companion-friends"} {
+		if !strings.Contains(dsn, part) {
+			t.Fatalf("missing %s", part)
 		}
 	}
 }
