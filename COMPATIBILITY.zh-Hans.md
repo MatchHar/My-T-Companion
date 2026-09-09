@@ -6,15 +6,15 @@
 加入目的地导航实时活动投递，并保留充电实时活动及已修补的构建依赖，API
 和部署方式没有改变。未配对推送时，停车与导航功能仍可使用。
 
-1.10.46 与 TeslaMate 4.2.0、上一稳定版 4.1.1 以及 TeslaMateAPI 1.25.0
+1.10.47 与 TeslaMate 4.2.0、上一稳定版 4.1.1 以及 TeslaMateAPI 1.25.0
 兼容。分车推送覆盖使用通知事件中已有的 TeslaMate 车辆 ID，不需要数据库迁移、
 更换 Tesla 令牌或唤醒车辆。现有安装开始时仍沿用 1.10.36 的全部车辆行为；请求
 未带新可选字段时会保留已有覆盖，不会让无法显示它们的旧版 App 静默清除设置。
 
-1.10.46 修复 HostBox／命令行升级 1.10.45 失败：安装程序未把 `internal/` 拷进
-Docker 构建目录。朋友同行仍默认关闭。常规升级后停车、导航、配对与通知保持
-原样。之后若要启用朋友同行，需设置 `FRIEND_TOGETHER_ENABLED=true`、独立 HTTPS
-访客域名（只公开 `/friend/v1/*`），并在已认证 API 站点加入
+1.10.47 修复 HostBox 启用朋友同行后，My T 建立邀请失败：GET `/status` 已成功，
+POST `/invitations` 因独立只读连接池用了 `postgres:?host=...` 连不上 TeslaMate
+数据库而返回 503。常规升级不改变停车、导航、配对与通知。启用朋友同行仍需
+`FRIEND_TOGETHER_ENABLED=true`、独立 HTTPS 访客域名，以及车主
 `/api/v1/friend-together/*`。不需要迁移数据库、配对、Tesla 令牌、通知偏好或
 已有历史，并继续兼容现有 My T 客户端。
 

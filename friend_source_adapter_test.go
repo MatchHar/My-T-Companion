@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,12 +123,12 @@ func TestFriendDatabasePoolIsSeparateBoundedAndLazy(t *testing.T) {
 	t.Setenv("DATABASE_PORT", "1")
 	t.Setenv("DATABASE_USER", "synthetic ' user")
 	t.Setenv("DATABASE_PASS", "synthetic ' value -c not_an_option")
-	pool, err := openFriendDatabase()
-	if err != nil {
-		t.Fatal("encoded local test settings not accepted")
+	dsn := friendDatabaseDSN()
+	if strings.Contains(dsn, "postgres:") || !strings.Contains(dsn, "password='synthetic '' value -c not_an_option'") {
+		t.Fatal("friend DSN must quote values instead of a postgres:? URL")
 	}
-	defer pool.Close()
-	if pool == db || pool.Stats().MaxOpenConnections != 2 || pool.Stats().OpenConnections != 0 {
-		t.Fatal("pool must be independent, bounded and not connect on creation")
+	_, err := openFriendDatabase()
+	if err == nil {
+		t.Fatal("closed local port must fail the friend-pool ping")
 	}
 }

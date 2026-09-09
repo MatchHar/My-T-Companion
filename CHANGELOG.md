@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.47
+
+- Use the same PostgreSQL keyword DSN for Friend Together vehicle lookup that
+  already works for parking and notifications. The previous `postgres:?host=...`
+  URL made `OwnsCar` fail with 503 `source_unavailable` while GET `/status`
+  still reported ready, so My T could open the invite form then fail to create.
+- Keep Friend Together off by default. No TeslaMate schema change.
+
 ## 1.10.46
 
 - Copy `internal/friendtogether` into the VPS Docker build context. 1.10.45
