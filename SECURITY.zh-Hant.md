@@ -10,7 +10,14 @@
 ## 部署要求
 
 - 服務只能繫結至 `127.0.0.1`。
-- 所有資料端點必須位於 HTTPS 及既有 TeslaMate API 的同一驗證邊界後方。
+- 所有車主資料／控制端點（包括 `/api/v1/friend-together/*`）必須位於 HTTPS
+  及既有 TeslaMate API 的同一驗證邊界後方。
+- 唯一例外是選用、預設關閉的朋友同行候選功能：只在**獨立 HTTPS 分享網域**
+  公開 `/friend/v1/*`，保留設定的 Host。訪客使用裝置綁定 DPoP 與車主明確核准的
+  限時授權，不使用 TeslaMate 車主憑證或車主驗證探測。取得 nonce／兌換邀請不會
+  授予車輛資料。不能把訪客路由放在車主 Basic／Cloudflare Access 後，也不能放寬
+  車主網站的保護；其他路由、資料庫／MQTT 或完整伺服器 API 不能公開在分享網域。
+  詳見[候選功能部署邊界](docs/friend-together.md)。
 - 重複使用驗證前，確認未驗證的 `/api/ping` 要求會被拒絕。
 - PostgreSQL 只能保留在私人 Docker 網路。
 - 不得移除 `PGOPTIONS=-c default_transaction_read_only=on`。

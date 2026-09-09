@@ -590,6 +590,9 @@ YAML
       PARKING_EVENT_STATE_PATH: /data/parking-events.json
       PARKING_EVENT_RETENTION_DAYS: \${PARKING_EVENT_RETENTION_DAYS:-0}
       PARKING_EVENT_MAX_EVENTS: \${PARKING_EVENT_MAX_EVENTS:-50000}
+      FRIEND_TOGETHER_ENABLED: \${FRIEND_TOGETHER_ENABLED:-false}
+      FRIEND_TOGETHER_GUEST_ORIGIN: \${FRIEND_TOGETHER_GUEST_ORIGIN:-}
+      FRIEND_TOGETHER_STATE_PATH: \${FRIEND_TOGETHER_STATE_PATH:-/data/friend-together/state.json}
     ports:
       - "127.0.0.1:8083:8080"
     volumes:
@@ -658,6 +661,7 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   missing_push_history=true
   # Broad notifications/* covers software-update + Live Activity status routes
   missing_notifications=true
+  missing_friend_owner=true
   grep -qE 'cars/.*/states|parking_states|my_t_parking_states' "$CADDY_FILE" && missing_states=false
   grep -qE 'parking-events|my_t_parking_events' "$CADDY_FILE" && missing_parking_events=false
   grep -qE 'companion-status|my_t_companion_status' "$CADDY_FILE" && missing_companion_status=false
@@ -670,8 +674,9 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
       && grep -qE 'live-activity|charging-live-activity|navigation-live-activity' "$CADDY_FILE"; }; then
     missing_notifications=false
   fi
+  grep -qE 'friend-together|my_t_friend_owner' "$CADDY_FILE" && missing_friend_owner=false
 
-  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_companion_status" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notifications" == true ]]; then
+  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_companion_status" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notifications" == true || "$missing_friend_owner" == true ]]; then
     route_anchor="$(grep -nE '^[[:space:]]*handle[[:space:]]+@(teslamate_api|api)' "$CADDY_FILE" | head -n 1 | cut -d: -f1 || true)"
     if [[ -z "$route_anchor" ]]; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
@@ -738,6 +743,15 @@ CADDY
       cat >> "$route_file" <<'CADDY'
 	@my_t_notifications path_regexp my_t_notifications ^/api/v1/notifications/
 	handle @my_t_notifications {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+CADDY
+    fi
+    if [[ "$missing_friend_owner" == true ]]; then
+      cat >> "$route_file" <<'CADDY'
+	@my_t_friend_owner path /api/v1/friend-together/*
+	handle @my_t_friend_owner {
 		reverse_proxy 127.0.0.1:8083
 	}
 
@@ -813,18 +827,21 @@ setup_docker_teslamate_caddy_routes() {
   local needs_companion_status=true
   local needs_navigation=true
   local needs_notifications=true
+  local needs_friend_owner=true
   local needs_upstream_migration=false
   grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null && needs_capabilities=false
   grep -qE 'my_t_parking|parking-events' "$caddyfile" 2>/dev/null && needs_parking=false
   grep -qE 'companion-status|my_t_companion_status' "$caddyfile" 2>/dev/null && needs_companion_status=false
   grep -qE 'my_t_nav|navigation/current-drive' "$caddyfile" 2>/dev/null && needs_navigation=false
   grep -qE 'my_t_push|api/v1/notifications/' "$caddyfile" 2>/dev/null && needs_notifications=false
+  grep -qE 'friend-together|my_t_friend_owner' "$caddyfile" 2>/dev/null && needs_friend_owner=false
   if grep -qF 'host.docker.internal:8083' "$caddyfile" 2>/dev/null; then
     needs_upstream_migration=true
   fi
   if [[ "$needs_capabilities" == false && "$needs_parking" == false &&
         "$needs_companion_status" == false &&
         "$needs_navigation" == false && "$needs_notifications" == false &&
+        "$needs_friend_owner" == false &&
         "$needs_upstream_migration" == false ]]; then
     log "TeslaMate docker Caddyfile already has Companion routes on the shared Docker network"
     return 0
@@ -844,7 +861,8 @@ setup_docker_teslamate_caddy_routes() {
   : > "$insert"
   if [[ "$needs_capabilities" == true || "$needs_parking" == true ||
         "$needs_companion_status" == true ||
-        "$needs_navigation" == true || "$needs_notifications" == true ]]; then
+        "$needs_navigation" == true || "$needs_notifications" == true ||
+        "$needs_friend_owner" == true ]]; then
     cat >> "$insert" <<'CADDY'
   # BEGIN MY T VPS COMPANION (docker edge → shared-network companion)
 CADDY
@@ -885,6 +903,14 @@ CADDY
     cat >> "$insert" <<'CADDY'
   @my_t_push path_regexp my_t_push ^/api/v1/notifications/
   handle @my_t_push {
+    reverse_proxy companion:8080
+  }
+CADDY
+  fi
+  if [[ "$needs_friend_owner" == true ]]; then
+    cat >> "$insert" <<'CADDY'
+  @my_t_friend_owner path /api/v1/friend-together/*
+  handle @my_t_friend_owner {
     reverse_proxy companion:8080
   }
 CADDY
@@ -986,7 +1012,7 @@ setup_api_port_edge() {
   cat > "$INSTALL_DIR/edge/Caddyfile" <<CADDY
 # Unified My T entry — same port as before. Stock TeslaMateAPI is not modified.
 :${host_port} {
-	@my_t_companion path_regexp my_t_companion ^/api/v1/(capabilities|cars/[0-9]+/states|cars/[0-9]+/parking-events|cars/[0-9]+/companion-status|cars/[0-9]+/navigation/current-drive|cars/[0-9]+/navigation/push-history|notifications/.*)\$
+	@my_t_companion path_regexp my_t_companion ^/api/v1/(capabilities|cars/[0-9]+/states|cars/[0-9]+/parking-events|cars/[0-9]+/companion-status|cars/[0-9]+/navigation/current-drive|cars/[0-9]+/navigation/push-history|notifications/.*|friend-together/.*)\$
 	handle @my_t_companion {
 		reverse_proxy 127.0.0.1:8083
 	}
