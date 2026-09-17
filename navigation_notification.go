@@ -25,6 +25,7 @@ import (
 const navigationUpdateMinimumInterval = 10 * time.Second
 const navigationPushHistoryLimit = 200
 const navigationMinimumVerifiedDistanceKM = 0.05
+const navigationStartAlertGrace = 8 * time.Second
 
 type navigationLiveActivityEvent struct {
 	EventID               string   `json:"event_id"`
@@ -60,6 +61,8 @@ type navigationLiveActivityEvent struct {
 	// another destination banner to every phone.
 	targetInstallationID string
 	liveActivityOnly     bool
+	// alertOnly sends the destination trip-start banner without touching Live Activity.
+	alertOnly bool
 }
 
 type activeRouteMQTT struct {
@@ -112,6 +115,7 @@ type carNavigationState struct {
 	HasVerifiedTrajectory bool     `json:"has_verified_trajectory,omitempty"`
 	Sequence              int      `json:"sequence"`
 	StartDelivered        bool     `json:"start_delivered"`
+	StartAlertDelivered   bool     `json:"start_alert_delivered"`
 	LastQueuedAt          string   `json:"last_queued_at,omitempty"`
 	LastObservedAt        string   `json:"last_observed_at,omitempty"`
 }
@@ -184,8 +188,9 @@ type navigationNotificationMonitor struct {
 	lastError       string
 	queue           chan navigationLiveActivityEvent
 	priorityQueue   chan navigationLiveActivityEvent
-	pending         map[int]*time.Timer
-	enriching       map[int]string
+	pending            map[int]*time.Timer
+	pendingStartAlerts map[int]*time.Timer
+	enriching          map[int]string
 	distanceReader  func(int) (int64, *float64, bool)
 	startNameReader func(int) string
 }
@@ -204,8 +209,9 @@ func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMo
 		httpClient:     newPushRelayHTTPClient(15 * time.Second),
 		queue:          make(chan navigationLiveActivityEvent, 128),
 		priorityQueue:  make(chan navigationLiveActivityEvent, 16),
-		pending:        map[int]*time.Timer{},
-		enriching:      map[int]string{},
+		pending:            map[int]*time.Timer{},
+		pendingStartAlerts: map[int]*time.Timer{},
+		enriching:          map[int]string{},
 		store: navigationNotificationStore{
 			Cars:      map[int]carNavigationState{},
 			Delivered: map[string]string{},
@@ -474,7 +480,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	if shouldBeActive && (!wasActive || state.SessionID == "") {
 		m.beginNavigationLegLocked(&state, carID, observedAt)
 		sessionID := state.SessionID
-		event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
+		event := m.enqueueNavigationStartedLocked(carID, &state, observedAt)
 		m.store.Cars[carID] = state
 		_ = m.saveLocked()
 		m.mu.Unlock()
@@ -497,6 +503,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 			timer.Stop()
 			delete(m.pending, carID)
 		}
+		m.cancelStartAlertLocked(carID)
 		endState := cloneCarNavigationState(snapshot)
 		endState.Active = false
 		endState.LegPhase = state.LegPhase
@@ -527,7 +534,7 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		if !state.StartDelivered {
 			lastQueued, _ := time.Parse(time.RFC3339, state.LastQueuedAt)
 			if lastQueued.IsZero() || observedAt.Sub(lastQueued) >= navigationUpdateMinimumInterval {
-				event := m.makeEventLocked(carID, &state, "navigation_started", observedAt)
+				event := m.enqueueNavigationStartedLocked(carID, &state, observedAt)
 				m.store.Cars[carID] = state
 				_ = m.saveLocked()
 				m.mu.Unlock()
@@ -557,6 +564,7 @@ func (m *navigationNotificationMonitor) beginNavigationLegLocked(state *carNavig
 	state.SessionStartedAt = observedAt.Format(time.RFC3339)
 	state.Sequence = 0
 	state.StartDelivered = false
+	state.StartAlertDelivered = false
 	state.LastQueuedAt = ""
 	state.StartName = strings.TrimSpace(state.Geofence)
 	clearPendingCandidate(state)
@@ -573,6 +581,7 @@ func (m *navigationNotificationMonitor) commitRedirectedLegLocked(
 		timer.Stop()
 		delete(m.pending, carID)
 	}
+	m.cancelStartAlertLocked(carID)
 	endState := cloneCarNavigationState(snapshot)
 	endState.Active = false
 	endState.LegPhase = navigationLegPhaseEnded
@@ -591,8 +600,66 @@ func (m *navigationNotificationMonitor) commitRedirectedLegLocked(
 	clearCommittedRoute(state)
 	applyRouteCandidate(state, candidate)
 	m.beginNavigationLegLocked(state, carID, observedAt)
-	startEvent := m.makeEventLocked(carID, state, "navigation_started", observedAt)
+	startEvent := m.enqueueNavigationStartedLocked(carID, state, observedAt)
 	return endEvent, startEvent, state.SessionID
+}
+
+
+func (m *navigationNotificationMonitor) cancelStartAlertLocked(carID int) {
+	if m.pendingStartAlerts == nil {
+		return
+	}
+	if timer := m.pendingStartAlerts[carID]; timer != nil {
+		timer.Stop()
+		delete(m.pendingStartAlerts, carID)
+	}
+}
+
+func (m *navigationNotificationMonitor) scheduleStartAlertLocked(carID int, sessionID string) {
+	m.cancelStartAlertLocked(carID)
+	if m.pendingStartAlerts == nil {
+		m.pendingStartAlerts = map[int]*time.Timer{}
+	}
+	m.pendingStartAlerts[carID] = time.AfterFunc(navigationStartAlertGrace, func() {
+		m.flushStartAlert(carID, sessionID)
+	})
+}
+
+func (m *navigationNotificationMonitor) flushStartAlert(carID int, sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cancelStartAlertLocked(carID)
+	state := m.store.Cars[carID]
+	if !state.Active || state.SessionID != sessionID || state.StartAlertDelivered {
+		return
+	}
+	if strings.TrimSpace(state.StartName) == "" {
+		if name := resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence); name != "" {
+			state.StartName = name
+			m.replaceHistoryStartNameLocked(sessionID, name)
+		}
+	}
+	event := m.makeEventLocked(carID, &state, "navigation_started", time.Now().UTC())
+	event.alertOnly = true
+	state.StartAlertDelivered = true
+	m.store.Cars[carID] = state
+	_ = m.saveLocked()
+	_ = m.saveHistoryLocked()
+	m.enqueueAlreadyLocked(event)
+}
+
+func (m *navigationNotificationMonitor) enqueueNavigationStartedLocked(carID int, state *carNavigationState, observedAt time.Time) navigationLiveActivityEvent {
+	if strings.TrimSpace(state.StartName) == "" {
+		state.StartName = resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence)
+	}
+	event := m.makeEventLocked(carID, state, "navigation_started", observedAt)
+	if strings.TrimSpace(state.StartName) == "" {
+		event.liveActivityOnly = true
+		m.scheduleStartAlertLocked(carID, state.SessionID)
+	} else {
+		state.StartAlertDelivered = true
+	}
+	return event
 }
 
 func knownNavigationStartName(liveGeofence, _ string) string {
@@ -685,6 +752,15 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
 	_ = m.saveHistoryLocked()
+	if startNameChanged && state.StartDelivered && !state.StartAlertDelivered {
+		m.cancelStartAlertLocked(carID)
+		alertEvent := m.makeEventLocked(carID, &state, "navigation_started", time.Now().UTC())
+		alertEvent.alertOnly = true
+		state.StartAlertDelivered = true
+		m.store.Cars[carID] = state
+		_ = m.saveLocked()
+		m.enqueueAlreadyLocked(alertEvent)
+	}
 	if state.StartDelivered && (becameVerified || startNameChanged) {
 		// Do not leave the first real origin/progress value behind the normal
 		// update throttle. The initial card may be sent before PostgreSQL has the
@@ -1050,6 +1126,9 @@ func (m *navigationNotificationMonitor) deliveryWorker(events <-chan navigationL
 			state := m.store.Cars[event.CarID]
 			if event.Type == "navigation_started" && state.SessionID == event.SessionID {
 				state.StartDelivered = true
+				if !event.liveActivityOnly {
+					state.StartAlertDelivered = true
+				}
 				state.LastQueuedAt = ""
 				m.store.Cars[event.CarID] = state
 				if state.Active && outcome == pushDeliveryAPNsAccepted {
@@ -1150,7 +1229,11 @@ func (m *navigationNotificationMonitor) expireStaleSessions(now time.Time) {
 }
 
 func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEvent) (pushDeliveryOutcome, error) {
-	laOutcome, laErr := m.deliverTo(event, func(s pushSubscriber) bool { return s.wantsNavigationLiveActivity(event.CarID) })
+	var laOutcome pushDeliveryOutcome
+	var laErr error
+	if !event.alertOnly {
+		laOutcome, laErr = m.deliverTo(event, func(s pushSubscriber) bool { return s.wantsNavigationLiveActivity(event.CarID) })
+	}
 	if event.liveActivityOnly {
 		return laOutcome, laErr
 	}

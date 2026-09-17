@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.48
+
+- When navigation starts without a resolved `start_name`, send Live Activity first
+  and wait briefly for origin enrichment before the trip-start alert.
+- Once `start_name` arrives (or after ~8s), send a one-shot alert-only
+  `navigation_started` so Cloudflare can render 「从…前往…」 / from–to copy.
+- Cancel a pending start alert when the leg ends or redirects.
+
 ## 1.10.47
 
 - Use the same PostgreSQL keyword DSN for Friend Together vehicle lookup that

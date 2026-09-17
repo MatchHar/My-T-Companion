@@ -231,6 +231,7 @@ its own retention period; available history follows the TeslaMate database.
 
 | Companion version | Capability added |
 | --- | --- |
+| 1.10.48 | Defer trip-start banner until start_name is known (or ~8s) so alerts can show from→to |
 | 1.10.47 | Friend Together vehicle lookup uses the working TeslaMate Postgres DSN |
 | 1.10.46 | Installer copies `internal/` into the Docker build context so HostBox upgrades of Friend Together succeed |
 | 1.10.45 | Optional default-off Friend Together between independent owners; existing parking, navigation, and pairing unchanged |

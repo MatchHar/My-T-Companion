@@ -440,13 +440,25 @@ func TestFirstResolvedStartNameQueuesImmediateNavigationUpdate(t *testing.T) {
 
 	m.enrichNavigationSession(1, "navigation-first-origin-test")
 
+	// Live Activity-only starts also enqueue a one-shot trip banner once origin is known.
+	select {
+	case event := <-m.queue:
+		if event.Type != "navigation_started" || !event.alertOnly {
+			t.Fatalf("expected alert-only navigation_started, got: %+v", event)
+		}
+		if event.StartName != "McNicoll Avenue, Milliken, Scarborough" {
+			t.Fatalf("alert missing resolved start name: %+v", event)
+		}
+	default:
+		t.Fatal("expected deferred trip-start alert after start_name resolved")
+	}
 	select {
 	case event := <-m.queue:
 		if event.Type != "navigation_updated" {
-			t.Fatalf("unexpected event: %+v", event)
+			t.Fatalf("unexpected follow-up event: %+v", event)
 		}
 		if event.StartName != "McNicoll Avenue, Milliken, Scarborough" {
-			t.Fatalf("resolved start name missing from immediate event: %+v", event)
+			t.Fatalf("resolved start name missing from immediate update: %+v", event)
 		}
 	default:
 		t.Fatal("first resolved start name did not queue an immediate update")
