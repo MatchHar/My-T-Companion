@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.49
+
+- Mid-drive destination changes mark the new leg as `leg_kind=reroute` with
+  `omit_start`, so trip banners never reattach the original origin.
+- Enrichment no longer invents a `start_name` for reroute legs.
+- Near the previous destination (≤0.5 km / ≤3 min) or within 45s of another
+  reroute, keep Live Activity updates but suppress the ordinary start banner.
+
 ## 1.10.48
 
 - When navigation starts without a resolved `start_name`, send Live Activity first

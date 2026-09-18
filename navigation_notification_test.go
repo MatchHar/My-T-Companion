@@ -468,6 +468,126 @@ func TestFirstResolvedStartNameQueuesImmediateNavigationUpdate(t *testing.T) {
 	}
 }
 
+func TestMidDriveDestinationChangeOmitsOriginOnRerouteBanner(t *testing.T) {
+	tmp := t.TempDir()
+	m := &navigationNotificationMonitor{
+		statePath:     filepath.Join(tmp, "nav.json"),
+		historyPath:   filepath.Join(tmp, "history.json"),
+		queue:         make(chan navigationLiveActivityEvent, 8),
+		priorityQueue: make(chan navigationLiveActivityEvent, 4),
+		pending:       map[int]*time.Timer{},
+		store: navigationNotificationStore{
+			Cars:      map[int]carNavigationState{},
+			Delivered: map[string]string{},
+		},
+		history:        navigationPushHistoryStore{},
+		installationID: "install-test",
+		enabled:        true,
+	}
+
+	now := mustParseTime(t, "2026-09-18T15:00:00Z")
+	m.observe(1, "state", "driving", now)
+	m.observe(1, "active_route", `{"destination":"Office","miles_to_arrival":20.4,"minutes_to_arrival":28}`, now)
+	select {
+	case start := <-m.queue:
+		if start.Type != "navigation_started" {
+			t.Fatalf("expected origin start, got %+v", start)
+		}
+		if start.LegKind != "origin" {
+			t.Fatalf("origin leg_kind: got %q", start.LegKind)
+		}
+		if start.OmitStart {
+			t.Fatal("origin start should not omit start")
+		}
+	default:
+		t.Fatal("expected navigation_started for origin leg")
+	}
+
+	m.observe(1, "active_route", `{"destination":"Airport","miles_to_arrival":7.1,"minutes_to_arrival":14}`, now.Add(30*time.Second))
+
+	select {
+	case end := <-m.priorityQueue:
+		if end.Type != "navigation_ended" || end.EndReason != "redirected" {
+			t.Fatalf("expected redirected end, got %+v", end)
+		}
+		if end.Destination != "Office" {
+			t.Fatalf("end destination should stay previous: %q", end.Destination)
+		}
+	default:
+		t.Fatal("expected redirected navigation_ended on priority queue")
+	}
+
+	select {
+	case reroute := <-m.queue:
+		if reroute.Type != "navigation_started" {
+			t.Fatalf("expected reroute start, got %+v", reroute)
+		}
+		if reroute.LegKind != "reroute" {
+			t.Fatalf("reroute leg_kind: got %q", reroute.LegKind)
+		}
+		if !reroute.OmitStart {
+			t.Fatal("reroute banner must omit start")
+		}
+		if reroute.StartName != "" {
+			t.Fatalf("reroute must not carry origin start_name: %q", reroute.StartName)
+		}
+		if reroute.Destination != "Airport" {
+			t.Fatalf("reroute destination: %q", reroute.Destination)
+		}
+		if reroute.liveActivityOnly {
+			t.Fatal("ordinary mid-drive change should still send a trip banner")
+		}
+	default:
+		t.Fatal("expected navigation_started for reroute leg")
+	}
+
+	m.mu.Lock()
+	state := m.store.Cars[1]
+	m.mu.Unlock()
+	if state.LegKind != "reroute" || state.StartName != "" {
+		t.Fatalf("persisted reroute state: leg=%q start=%q", state.LegKind, state.StartName)
+	}
+}
+
+func TestNearPreviousDestinationSuppressesRerouteBanner(t *testing.T) {
+	tmp := t.TempDir()
+	m := &navigationNotificationMonitor{
+		statePath:     filepath.Join(tmp, "nav.json"),
+		historyPath:   filepath.Join(tmp, "history.json"),
+		queue:         make(chan navigationLiveActivityEvent, 8),
+		priorityQueue: make(chan navigationLiveActivityEvent, 4),
+		pending:       map[int]*time.Timer{},
+		store: navigationNotificationStore{
+			Cars:      map[int]carNavigationState{},
+			Delivered: map[string]string{},
+		},
+		history:        navigationPushHistoryStore{},
+		installationID: "install-test",
+		enabled:        true,
+	}
+
+	now := mustParseTime(t, "2026-09-18T16:00:00Z")
+	m.observe(1, "state", "driving", now)
+	// ~0.2 miles ≈ 0.32 km — already near the previous destination.
+	m.observe(1, "active_route", `{"destination":"Office","miles_to_arrival":0.2,"minutes_to_arrival":2}`, now)
+	<-m.queue // origin start
+
+	m.observe(1, "active_route", `{"destination":"Airport","miles_to_arrival":12.0,"minutes_to_arrival":18}`, now.Add(5*time.Second))
+	<-m.priorityQueue // redirected end
+	select {
+	case reroute := <-m.queue:
+		if !reroute.liveActivityOnly {
+			t.Fatalf("near-arrival reroute must be live-activity-only, got %+v", reroute)
+		}
+		if reroute.LegKind != "reroute" || reroute.StartName != "" {
+			t.Fatalf("unexpected reroute payload: %+v", reroute)
+		}
+	default:
+		t.Fatal("expected live-activity-only reroute start")
+	}
+}
+
+
 func mustParseTime(t *testing.T, raw string) time.Time {
 	t.Helper()
 	ts, err := time.Parse(time.RFC3339, raw)

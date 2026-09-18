@@ -26,6 +26,12 @@ const navigationUpdateMinimumInterval = 10 * time.Second
 const navigationPushHistoryLimit = 200
 const navigationMinimumVerifiedDistanceKM = 0.05
 const navigationStartAlertGrace = 8 * time.Second
+// Mid-drive destination changes within this window collapse into one banner.
+const navigationRerouteAlertMinimumInterval = 45 * time.Second
+// If already this close to the previous destination, skip a reroute start banner
+// (arrival handling wins).
+const navigationRerouteNearArrivalKM = 0.5
+const navigationRerouteNearArrivalMinutes = 3
 
 type navigationLiveActivityEvent struct {
 	EventID               string   `json:"event_id"`
@@ -37,6 +43,9 @@ type navigationLiveActivityEvent struct {
 	SessionID             string   `json:"session_id"`
 	Destination           string   `json:"destination"`
 	StartName             string   `json:"start_name,omitempty"`
+	// origin = first navigation of a parked/start trip; reroute = mid-drive destination change.
+	LegKind               string   `json:"leg_kind,omitempty"`
+	OmitStart             bool     `json:"omit_start,omitempty"`
 	RemainingDistanceKM   *float64 `json:"remaining_distance_km,omitempty"`
 	RemainingMinutes      *int     `json:"remaining_minutes,omitempty"`
 	EstimatedArrivalAt    *int64   `json:"estimated_arrival_at,omitempty"`
@@ -87,7 +96,11 @@ type carNavigationState struct {
 	LastKnownGeofence string `json:"last_known_geofence,omitempty"`
 	Destination       string `json:"destination,omitempty"`
 	// Frozen label for where the navigation session began (geofence or drive start).
-	StartName           string   `json:"start_name,omitempty"`
+	StartName string `json:"start_name,omitempty"`
+	// origin | reroute — controls whether trip-start banners include start_name.
+	LegKind string `json:"leg_kind,omitempty"`
+	// Wall time of the last mid-drive destination-change banner (debounce).
+	LastRerouteAlertAt  string   `json:"last_reroute_alert_at,omitempty"`
 	RemainingDistanceKM *float64 `json:"remaining_distance_km,omitempty"`
 	RemainingMinutes    *int     `json:"remaining_minutes,omitempty"`
 	ArrivalBatteryLevel *int     `json:"arrival_battery_level,omitempty"`
@@ -566,6 +579,8 @@ func (m *navigationNotificationMonitor) beginNavigationLegLocked(state *carNavig
 	state.StartDelivered = false
 	state.StartAlertDelivered = false
 	state.LastQueuedAt = ""
+	state.LegKind = "origin"
+	state.LastRerouteAlertAt = ""
 	state.StartName = strings.TrimSpace(state.Geofence)
 	clearPendingCandidate(state)
 }
@@ -599,8 +614,32 @@ func (m *navigationNotificationMonitor) commitRedirectedLegLocked(
 	// immediate arrival.
 	clearCommittedRoute(state)
 	applyRouteCandidate(state, candidate)
+	// Near the *previous* destination: prefer arrival over a last-second reroute banner.
+	nearArrival := navigationNearArrival(snapshot.RemainingDistanceKM, snapshot.RemainingMinutes)
+	debounced := false
+	if !nearArrival && state.LastRerouteAlertAt != "" {
+		if t, err := time.Parse(time.RFC3339, state.LastRerouteAlertAt); err == nil {
+			if observedAt.Sub(t) < navigationRerouteAlertMinimumInterval {
+				debounced = true
+			}
+		}
+	}
 	m.beginNavigationLegLocked(state, carID, observedAt)
+	// Mid-drive legs must not reattach the original trip origin.
+	state.LegKind = "reroute"
+	state.StartName = ""
 	startEvent := m.enqueueNavigationStartedLocked(carID, state, observedAt)
+	if nearArrival || debounced {
+		// Keep Live Activity in sync; suppress the ordinary trip-start banner.
+		startEvent.alertOnly = false
+		startEvent.liveActivityOnly = true
+		state.StartAlertDelivered = true
+		startEvent.OmitStart = true
+		startEvent.LegKind = "reroute"
+		startEvent.StartName = ""
+	} else {
+		state.LastRerouteAlertAt = observedAt.Format(time.RFC3339)
+	}
 	return endEvent, startEvent, state.SessionID
 }
 
@@ -633,14 +672,21 @@ func (m *navigationNotificationMonitor) flushStartAlert(carID int, sessionID str
 	if !state.Active || state.SessionID != sessionID || state.StartAlertDelivered {
 		return
 	}
-	if strings.TrimSpace(state.StartName) == "" {
+	if state.LegKind != "reroute" && strings.TrimSpace(state.StartName) == "" {
 		if name := resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence); name != "" {
 			state.StartName = name
 			m.replaceHistoryStartNameLocked(sessionID, name)
 		}
 	}
+	if state.LegKind == "reroute" {
+		state.StartName = ""
+	}
 	event := m.makeEventLocked(carID, &state, "navigation_started", time.Now().UTC())
 	event.alertOnly = true
+	if state.LegKind == "reroute" {
+		event.OmitStart = true
+		event.StartName = ""
+	}
 	state.StartAlertDelivered = true
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
@@ -649,10 +695,23 @@ func (m *navigationNotificationMonitor) flushStartAlert(carID int, sessionID str
 }
 
 func (m *navigationNotificationMonitor) enqueueNavigationStartedLocked(carID int, state *carNavigationState, observedAt time.Time) navigationLiveActivityEvent {
-	if strings.TrimSpace(state.StartName) == "" {
+	if strings.TrimSpace(state.LegKind) == "" {
+		state.LegKind = "origin"
+	}
+	if state.LegKind == "reroute" {
+		// Mid-drive destination changes: never reattach the previous origin.
+		state.StartName = ""
+	} else if strings.TrimSpace(state.StartName) == "" {
 		state.StartName = resolveNavigationStartName(carID, state.Geofence, state.LastKnownGeofence)
 	}
 	event := m.makeEventLocked(carID, state, "navigation_started", observedAt)
+	if state.LegKind == "reroute" {
+		event.OmitStart = true
+		event.StartName = ""
+		// Fire the reroute banner promptly; do not wait for a start_name that we will omit.
+		state.StartAlertDelivered = true
+		return event
+	}
 	if strings.TrimSpace(state.StartName) == "" {
 		event.liveActivityOnly = true
 		m.scheduleStartAlertLocked(carID, state.SessionID)
@@ -703,6 +762,7 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 	m.mu.Lock()
 	current := m.store.Cars[carID]
 	needsStartName := current.Active && current.SessionID == sessionID &&
+		current.LegKind != "reroute" &&
 		strings.TrimSpace(current.StartName) == ""
 	m.mu.Unlock()
 	startName := ""
@@ -740,10 +800,15 @@ func (m *navigationNotificationMonitor) enrichNavigationSession(carID int, sessi
 		}
 	}
 	startNameChanged := false
-	if authoritative := strings.TrimSpace(startName); authoritative != "" && state.StartName != authoritative {
-		state.StartName = authoritative
-		m.replaceHistoryStartNameLocked(sessionID, authoritative)
-		startNameChanged = true
+	if state.LegKind != "reroute" {
+		if authoritative := strings.TrimSpace(startName); authoritative != "" && state.StartName != authoritative {
+			state.StartName = authoritative
+			m.replaceHistoryStartNameLocked(sessionID, authoritative)
+			startNameChanged = true
+			changed = true
+		}
+	} else if strings.TrimSpace(state.StartName) != "" {
+		state.StartName = ""
 		changed = true
 	}
 	if !changed {
@@ -883,6 +948,8 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		SessionID:             state.SessionID,
 		Destination:           state.Destination,
 		StartName:             state.StartName,
+		LegKind:               state.LegKind,
+		OmitStart:             state.LegKind == "reroute",
 		RemainingDistanceKM:   cloneFloat(state.RemainingDistanceKM),
 		RemainingMinutes:      cloneInt(state.RemainingMinutes),
 		EstimatedArrivalAt:    eta,
@@ -908,6 +975,17 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 // open drive, then (4) the previous completed drive end place. A sticky fence
 // is deliberately ignored because it is not scoped to the active drive.
 // Empty string means unknown — App may still fall back to matching a TeslaMate drive.
+
+func navigationNearArrival(remainingKM *float64, remainingMinutes *int) bool {
+	if remainingKM != nil && *remainingKM >= 0 && *remainingKM <= navigationRerouteNearArrivalKM {
+		return true
+	}
+	if remainingMinutes != nil && *remainingMinutes >= 0 && *remainingMinutes <= navigationRerouteNearArrivalMinutes {
+		return true
+	}
+	return false
+}
+
 func resolveNavigationStartName(carID int, liveGeofence, lastKnownGeofence string) string {
 	if name := knownNavigationStartName(liveGeofence, lastKnownGeofence); name != "" {
 		return name
