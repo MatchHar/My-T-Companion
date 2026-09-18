@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Preserve `FRIEND_TOGETHER_ENABLED`, `FRIEND_TOGETHER_GUEST_ORIGIN`, and
+  `FRIEND_TOGETHER_STATE_PATH` when `install.sh` rewrites `.env` during an
+  upgrade, so Friend Together stays on after `update.sh` (HostBox no longer
+  needs a manual re-enable after every Companion bump).
+
 ## 1.10.49
 
 - Mid-drive destination changes mark the new leg as `leg_kind=reroute` with

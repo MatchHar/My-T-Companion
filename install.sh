@@ -395,6 +395,37 @@ fi
 push_installation_id="${PUSH_INSTALLATION_ID:-$(read_env_value PUSH_INSTALLATION_ID "$ENV_FILE" || true)}"
 push_relay_url="${PUSH_RELAY_URL:-$(read_env_value PUSH_RELAY_URL "$ENV_FILE" || true)}"
 push_relay_secret="${PUSH_RELAY_SECRET:-$(read_env_value PUSH_RELAY_SECRET "$ENV_FILE" || true)}"
+
+# Friend Together is configured by HostBox (or manually) in .env / the running
+# companion container. Preserve it across the .env rewrite below — otherwise
+# every update.sh install defaults FRIEND_TOGETHER_ENABLED to false.
+normalize_friend_together_enabled() {
+  local raw
+  raw="$(printf '%s' "${1:-}" | tr "[:upper:]" "[:lower:]" | tr -d "[:space:]")"
+  case "$raw" in
+    true|1|yes|on) printf "true" ;;
+    *) printf "false" ;;
+  esac
+}
+
+friend_together_enabled_raw="${FRIEND_TOGETHER_ENABLED:-$(read_env_value FRIEND_TOGETHER_ENABLED "$ENV_FILE" || true)}"
+friend_together_guest_origin="${FRIEND_TOGETHER_GUEST_ORIGIN:-$(read_env_value FRIEND_TOGETHER_GUEST_ORIGIN "$ENV_FILE" || true)}"
+friend_together_state_path="${FRIEND_TOGETHER_STATE_PATH:-$(read_env_value FRIEND_TOGETHER_STATE_PATH "$ENV_FILE" || true)}"
+if [[ -z "$friend_together_enabled_raw" || -z "$friend_together_guest_origin" || -z "$friend_together_state_path" ]]; then
+  companion_cid=""
+  if [[ -f "$COMPOSE_FILE" ]]; then
+    companion_cid="$(
+      docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" --file "$COMPOSE_FILE" ps -q companion 2>/dev/null || true
+    )"
+  fi
+  if [[ -n "$companion_cid" ]]; then
+    [[ -n "$friend_together_enabled_raw" ]] || friend_together_enabled_raw="$(container_env "$companion_cid" FRIEND_TOGETHER_ENABLED || true)"
+    [[ -n "$friend_together_guest_origin" ]] || friend_together_guest_origin="$(container_env "$companion_cid" FRIEND_TOGETHER_GUEST_ORIGIN || true)"
+    [[ -n "$friend_together_state_path" ]] || friend_together_state_path="$(container_env "$companion_cid" FRIEND_TOGETHER_STATE_PATH || true)"
+  fi
+fi
+friend_together_enabled="$(normalize_friend_together_enabled "$friend_together_enabled_raw")"
+[[ -n "$friend_together_state_path" ]] || friend_together_state_path="/data/friend-together/state.json"
 if [[ -n "$push_relay_url" && ! "$push_relay_url" =~ ^https:// ]]; then
   fail "PUSH_RELAY_URL must use HTTPS."
 fi
@@ -543,6 +574,9 @@ umask 077
   printf 'PUSH_INSTALLATION_ID=%s\n' "$push_installation_id"
   printf 'PUSH_RELAY_URL=%s\n' "$push_relay_url"
   printf 'PUSH_RELAY_SECRET=%s\n' "$push_relay_secret"
+  printf 'FRIEND_TOGETHER_ENABLED=%s\n' "$friend_together_enabled"
+  printf 'FRIEND_TOGETHER_GUEST_ORIGIN=%s\n' "$friend_together_guest_origin"
+  printf 'FRIEND_TOGETHER_STATE_PATH=%s\n' "$friend_together_state_path"
 } > "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
