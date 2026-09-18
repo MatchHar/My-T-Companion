@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.10.50
 
 - Preserve `FRIEND_TOGETHER_ENABLED`, `FRIEND_TOGETHER_GUEST_ORIGIN`, and
   `FRIEND_TOGETHER_STATE_PATH` when `install.sh` rewrites `.env` during an
