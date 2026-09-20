@@ -10,12 +10,15 @@ for key in INSTALL_DIR TESLAMATE_DIR COMPOSE_PROJECT CADDY_FILE DATABASE_PASS DA
   MY_T_API_TOKEN MY_T_UPDATE_SOURCE_DIR MY_T_RELEASE_BASE_URL PUSH_RELAY_SECRET DOCKER_HOST DOCKER_CONTEXT; do
   [[ -z "${!key:-}" ]] || fail "Refusing inherited operator configuration: $key"
 done
-for tool in docker curl jq gh sha256sum tar openssl ss; do
+for tool in docker curl jq gh sha256sum tar openssl ss ip iptables; do
   command -v "$tool" >/dev/null || fail "Missing $tool"
 done
 [[ "$(docker context inspect --format '{{.Endpoints.docker.Host}}')" == unix:///var/run/docker.sock ]] \
   || fail 'Docker must use this disposable runner, never a remote daemon.'
 [[ -z "$(docker ps -aq)" ]] || fail 'Runner Docker daemon is not empty.'
+bridge=myt-fixture0
+! ip link show "$bridge" >/dev/null 2>&1 || fail 'Fixture bridge name already exists.'
+firewall_ready=0
 if ss -H -lnt '( sport = :80 or sport = :8083 )' | grep -q .; then
   fail 'Fixture ports are already occupied.'
 fi
@@ -62,6 +65,12 @@ cleanup() {
   if [[ -f "$TESLAMATE_DIR/docker-compose.yml" ]]; then
     stack logs --no-color --tail 100 > "$log_dir/stack-final.log" 2>&1
     stack down --volumes --remove-orphans > "$log_dir/stack-cleanup.log" 2>&1
+  fi
+  if [[ "$firewall_ready" == 1 ]]; then
+    iptables -D DOCKER-USER -i "$bridge" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+    iptables -D DOCKER-USER -i "$bridge" ! -o "$bridge" -j DROP
+    iptables -D INPUT -i "$bridge" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -D INPUT -i "$bridge" -j DROP
   fi
   printf 'exit_status=%s\n' "$status" >> "$log_dir/gates.txt"
   chmod -R a+rX "$log_dir"
@@ -133,7 +142,10 @@ services:
       - .:/etc/caddy:ro
 networks:
   default:
-    internal: true
+    driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.name: $bridge
 volumes:
   database:
 EOF
@@ -160,7 +172,26 @@ cat > "$TESLAMATE_DIR/Caddyfile" <<'EOF'
 EOF
 # Installer patches TESLAMATE_DIR/Caddyfile; the directory bind sees atomic replacements.
 cp "$TESLAMATE_DIR/Caddyfile" "$work_dir/initial-Caddyfile"
+# Internal-only Docker networks do not publish the host port needed by the
+# unmodified installer. Use a normal dedicated bridge, but deny all new runtime
+# egress outside that bridge and all new access to runner-host services. Replies
+# to our loopback-published acceptance probes remain allowed. Image pulls and
+# build dependency downloads run outside this runtime network.
+stack create
+iptables -I DOCKER-USER 1 -i "$bridge" ! -o "$bridge" -j DROP
+iptables -I DOCKER-USER 1 -i "$bridge" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+iptables -I INPUT 1 -i "$bridge" -j DROP
+iptables -I INPUT 1 -i "$bridge" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+firewall_ready=1
+iptables -C DOCKER-USER -i "$bridge" ! -o "$bridge" -j DROP
+iptables -C INPUT -i "$bridge" -j DROP
 stack up -d --wait --wait-timeout 90
+# TEST-NET-1 is documentation-only; this bounded probe must not escape the
+# fixture bridge. No production service is used as a connectivity target.
+if stack exec -T teslamateapi wget -q -T 2 -O /dev/null http://192.0.2.1; then
+  fail 'Runtime fixture unexpectedly reached an external network.'
+fi
+gate 'Dedicated runtime bridge blocks new external/runner-host connections; only loopback ports published'
 stack exec -T database psql -U fixture_admin -d teslamate -v ON_ERROR_STOP=1 <<'SQL'
 CREATE TABLE cars (id integer PRIMARY KEY, name text);
 CREATE TABLE positions (

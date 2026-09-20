@@ -5,8 +5,12 @@ runner, with no repository/account secrets, production data, Tesla credentials,
 or production Docker socket. Its synthetic stack uses actual PostgreSQL,
 Mosquitto and Caddy. A minimal TeslaMate-compatible schema and authenticated API
 stub replace TeslaMate ingestion/API behavior; this is not a complete upstream
-compatibility matrix or a real-car test. Runtime containers use an internal-only
-Docker network. The only subscriber is synthetic and paused; relay pairing and
+compatibility matrix or a real-car test. Runtime containers use one dedicated
+bridge with narrowly scoped rules denying new connections outside the bridge
+and to runner-host services; only replies to loopback-published acceptance probes
+are allowed. An internal-only Docker network cannot publish the localhost port
+required by the unmodified installer. Image pulls and build dependencies use the
+runner's normal connection, outside the runtime bridge. The only subscriber is synthetic and paused; relay pairing and
 outbox delivery remain off.
 
 The script downloads published immutable 1.10.50 and 1.10.51 archives, verifies
