@@ -49,7 +49,9 @@ existing companion data volume. Temporary navigation and push-delivery state
 expires independently. See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md).
 
 After secure pairing, each iPhone can also opt into a notification when a
-vehicle is observed locked and unoccupied. The server-wide choices are defaults
+vehicle is observed locked with no presence detected. Detection is advisory,
+not proof of an empty cabin; please check every seat yourself. Missing current
+evidence suppresses the reminder. The server-wide choices are defaults
 for every vehicle. A compatible My T build can independently override every
 notification category for a named vehicle; new vehicles inherit the defaults.
 Changing the vehicle selected in My T never changes server-side notification

@@ -768,6 +768,10 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 		software = softwarePush.carState(carID)
 	}
 	doorDiagnostics := []parkingDoorReceipt{}
+	var presence map[string]any
+	if lockSecurePush != nil {
+		presence = lockSecurePush.presenceSnapshot(carID, time.Now().UTC())
+	}
 	mqttConnected := false
 	if parkingEvents != nil {
 		doorDiagnostics = parkingEvents.doorDiagnostics(carID)
@@ -776,6 +780,7 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"car_id":                      carID,
+			"presence_observation":        presence,
 			"locked":                      mqttBool(values, "locked"),
 			"doors_open":                  mqttBool(values, "doors_open"),
 			"driver_front_door_open":      mqttBool(values, "driver_front_door_open"),
