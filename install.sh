@@ -699,6 +699,7 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   missing_states=true
   missing_parking_events=true
   missing_companion_status=true
+  missing_tire_history=true
   missing_capabilities=true
   missing_current_drive=true
   missing_push_history=true
@@ -708,6 +709,7 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   grep -qE 'cars/.*/states|parking_states|my_t_parking_states' "$CADDY_FILE" && missing_states=false
   grep -qE 'parking-events|my_t_parking_events' "$CADDY_FILE" && missing_parking_events=false
   grep -qE 'companion-status|my_t_companion_status' "$CADDY_FILE" && missing_companion_status=false
+  grep -qE 'tire-pressure-history|my_t_tire_history' "$CADDY_FILE" && missing_tire_history=false
   grep -qE 'api/v1/capabilities|parking_capabilities|my_t_parking_capabilities' "$CADDY_FILE" && missing_capabilities=false
   grep -qE 'current-drive|my_t_current_drive' "$CADDY_FILE" && missing_current_drive=false
   grep -qE 'push-history|my_t_push_history' "$CADDY_FILE" && missing_push_history=false
@@ -719,7 +721,7 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   fi
   grep -qE 'friend-together|my_t_friend_owner' "$CADDY_FILE" && missing_friend_owner=false
 
-  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_companion_status" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notifications" == true || "$missing_friend_owner" == true ]]; then
+  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_companion_status" == true || "$missing_tire_history" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notifications" == true || "$missing_friend_owner" == true ]]; then
     route_anchor="$(grep -nE '^[[:space:]]*handle[[:space:]]+@(teslamate_api|api)' "$CADDY_FILE" | head -n 1 | cut -d: -f1 || true)"
     if [[ -z "$route_anchor" ]]; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
@@ -750,6 +752,15 @@ CADDY
       cat >> "$route_file" <<'CADDY'
 	@my_t_companion_status path_regexp my_t_companion_status ^/api/v1/cars/[0-9]+/companion-status$
 	handle @my_t_companion_status {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+CADDY
+    fi
+    if [[ "$missing_tire_history" == true ]]; then
+      cat >> "$route_file" <<'CADDY'
+	@my_t_tire_history path_regexp my_t_tire_history ^/api/v1/cars/[0-9]+/tire-pressure-history$
+	handle @my_t_tire_history {
 		reverse_proxy 127.0.0.1:8083
 	}
 
@@ -868,6 +879,7 @@ setup_docker_teslamate_caddy_routes() {
   local needs_capabilities=true
   local needs_parking=true
   local needs_companion_status=true
+  local needs_tire_history=true
   local needs_navigation=true
   local needs_notifications=true
   local needs_friend_owner=true
@@ -875,6 +887,7 @@ setup_docker_teslamate_caddy_routes() {
   grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null && needs_capabilities=false
   grep -qE 'my_t_parking|parking-events' "$caddyfile" 2>/dev/null && needs_parking=false
   grep -qE 'companion-status|my_t_companion_status' "$caddyfile" 2>/dev/null && needs_companion_status=false
+  grep -qE 'tire-pressure-history|my_t_tire_history' "$caddyfile" 2>/dev/null && needs_tire_history=false
   grep -qE 'my_t_nav|navigation/current-drive' "$caddyfile" 2>/dev/null && needs_navigation=false
   grep -qE 'my_t_push|api/v1/notifications/' "$caddyfile" 2>/dev/null && needs_notifications=false
   grep -qE 'friend-together|my_t_friend_owner' "$caddyfile" 2>/dev/null && needs_friend_owner=false
@@ -883,6 +896,7 @@ setup_docker_teslamate_caddy_routes() {
   fi
   if [[ "$needs_capabilities" == false && "$needs_parking" == false &&
         "$needs_companion_status" == false &&
+        "$needs_tire_history" == false &&
         "$needs_navigation" == false && "$needs_notifications" == false &&
         "$needs_friend_owner" == false &&
         "$needs_upstream_migration" == false ]]; then
@@ -904,6 +918,7 @@ setup_docker_teslamate_caddy_routes() {
   : > "$insert"
   if [[ "$needs_capabilities" == true || "$needs_parking" == true ||
         "$needs_companion_status" == true ||
+        "$needs_tire_history" == true ||
         "$needs_navigation" == true || "$needs_notifications" == true ||
         "$needs_friend_owner" == true ]]; then
     cat >> "$insert" <<'CADDY'
@@ -930,6 +945,14 @@ CADDY
     cat >> "$insert" <<'CADDY'
   @my_t_companion_status path_regexp my_t_companion_status ^/api/v1/cars/[0-9]+/companion-status$
   handle @my_t_companion_status {
+    reverse_proxy companion:8080
+  }
+CADDY
+  fi
+  if [[ "$needs_tire_history" == true ]]; then
+    cat >> "$insert" <<'CADDY'
+  @my_t_tire_history path_regexp my_t_tire_history ^/api/v1/cars/[0-9]+/tire-pressure-history$
+  handle @my_t_tire_history {
     reverse_proxy companion:8080
   }
 CADDY
@@ -978,6 +1001,7 @@ CADDY
   if ! grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null ||
      ! grep -qE 'my_t_parking|parking-events' "$caddyfile" 2>/dev/null ||
      ! grep -qE 'companion-status|my_t_companion_status' "$caddyfile" 2>/dev/null ||
+     ! grep -qE 'tire-pressure-history|my_t_tire_history' "$caddyfile" 2>/dev/null ||
      ! grep -qE 'my_t_nav|navigation/current-drive' "$caddyfile" 2>/dev/null ||
      ! grep -qE 'my_t_push|api/v1/notifications/' "$caddyfile" 2>/dev/null ||
      grep -qF 'reverse_proxy host.docker.internal:8083' "$caddyfile" 2>/dev/null; then
@@ -1055,7 +1079,7 @@ setup_api_port_edge() {
   cat > "$INSTALL_DIR/edge/Caddyfile" <<CADDY
 # Unified My T entry — same port as before. Stock TeslaMateAPI is not modified.
 :${host_port} {
-	@my_t_companion path_regexp my_t_companion ^/api/v1/(capabilities|cars/[0-9]+/states|cars/[0-9]+/parking-events|cars/[0-9]+/companion-status|cars/[0-9]+/navigation/current-drive|cars/[0-9]+/navigation/push-history|notifications/.*|friend-together/.*)\$
+	@my_t_companion path_regexp my_t_companion ^/api/v1/(capabilities|cars/[0-9]+/states|cars/[0-9]+/parking-events|cars/[0-9]+/companion-status|cars/[0-9]+/tire-pressure-history|cars/[0-9]+/navigation/current-drive|cars/[0-9]+/navigation/push-history|notifications/.*|friend-together/.*)\$
 	handle @my_t_companion {
 		reverse_proxy 127.0.0.1:8083
 	}

@@ -3,6 +3,7 @@
 @my_t_parking_states path_regexp my_t_parking_states ^/api/v1/cars/[0-9]+/states$
 @my_t_parking_events path_regexp my_t_parking_events ^/api/v1/cars/[0-9]+/parking-events$
 @my_t_companion_status path_regexp my_t_companion_status ^/api/v1/cars/[0-9]+/companion-status$
+@my_t_tire_history path_regexp my_t_tire_history ^/api/v1/cars/[0-9]+/tire-pressure-history$
 @my_t_current_drive path_regexp my_t_current_drive ^/api/v1/cars/[0-9]+/navigation/current-drive$
 @my_t_push_history path_regexp my_t_push_history ^/api/v1/cars/[0-9]+/navigation/push-history$
 @my_t_parking_capabilities path /api/v1/capabilities
@@ -19,6 +20,10 @@ handle @my_t_parking_events {
 }
 
 handle @my_t_companion_status {
+	reverse_proxy 127.0.0.1:8083
+}
+
+handle @my_t_tire_history {
 	reverse_proxy 127.0.0.1:8083
 }
 

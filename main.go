@@ -611,6 +611,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if friendTogether != nil && friendTogether.Ready() {
 		payload["capabilities"] = append(payload["capabilities"].([]string), "friend_together_v1")
 	}
+	addTireHistoryCapability(r.Context(), payload)
 	// Prefer a live read on the private TeslaMate network. Static install
 	// metadata is reported explicitly as a fallback so clients never confuse it
 	// with a fresh observation after upgrading TeslaMate independently.
@@ -639,6 +640,10 @@ func handleSoftwareNotificationStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStates(w http.ResponseWriter, r *http.Request) {
+	if matches := tireHistoryPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
+		handleTirePressureHistory(w, r, matches[1])
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

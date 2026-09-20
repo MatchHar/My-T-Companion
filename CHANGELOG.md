@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.10.51
+
+- Add authenticated, read-only tire-pressure history from existing TeslaMate
+  position records, including recorded outside temperature and original record
+  timestamps. No new logger, weather lookup, vehicle wake, or schema migration.
+- Bound requests to 31 days and 2,000 records per page, with source/car/window
+  scoped keyset cursors, explicit units, honest missing values, and no location
+  fields. Clients can inspect existing records without waiting for new history.
+- Advertise `tire_pressure_history_v1` only when the required source schema is
+  available; distinguish unsupported sources and read failures from empty data.
+- Include the route in installer-managed Caddy routing and manual Caddy/Nginx
+  examples. Existing client routes and notification settings remain unchanged.
+- Tire-history UI requires a compatible My T build; the backend release alone
+  does not add this screen to older App versions.
+
 ## 1.10.50
 
 - Preserve `FRIEND_TOGETHER_ENABLED`, `FRIEND_TOGETHER_GUEST_ORIGIN`, and

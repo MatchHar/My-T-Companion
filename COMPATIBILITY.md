@@ -25,6 +25,33 @@ and the owner `/api/v1/friend-together/*` matcher. It requires no database,
 pairing, Tesla token, notification-preference, or stored-history migration and
 remains compatible with existing My T clients.
 
+## Tire-pressure history in 1.10.51
+
+The optional tire-history API reads existing TeslaMate `positions` records. Its
+required columns were checked on TeslaMate 4.2.0 / TeslaMateAPI 1.25.0 / PostgreSQL
+18; this is not a claim that every version in the wider matrix below was tested
+for this feature. Capability discovery checks the actual installed schema. If a
+required column is missing, the feature reports unsupported instead of inventing
+data or modifying the database. A database failure is not empty history.
+
+The My T tire-history screen remains unavailable until a compatible App build
+ships. Existing clients and their parking, navigation, charging, pairing and
+notification behavior do not require an update. Custom proxies must forward
+`/api/v1/cars/{id}/tire-pressure-history` through the existing owner-authenticated
+Companion route. The installer and supplied Caddy/Nginx examples include it.
+
+History is limited by the source's retained records; record time is not a TPMS
+sensor-measurement time, and outside temperature is not tire temperature. No
+new sampling, wake request, external weather service or schema/index migration
+is introduced. See the [API contract](docs/tire-pressure-history.md) for the
+31-day limit, pagination, units, missing values and restart-safe client behavior.
+
+Upgrade with the existing verified-release installer/updater or HostBox after
+its separately signed catalog is promoted. Keep the previous verified archive
+and updater backup for rollback; reverting Companion does not remove TeslaMate
+history. Release publication, live endpoint acceptance and signed-catalog
+promotion are separate gates, not implied by local tests.
+
 ## Required baseline
 
 - Linux host with Docker Engine and Docker Compose v2.
