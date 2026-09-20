@@ -36,7 +36,7 @@ fi
 
 printf '\n2) Capabilities (same auth as My T)\n'
 if [[ -n "$token" ]]; then
-  body="$(curl -fsS -m 8 -H "Authorization: Bearer ${token}" http://127.0.0.1:8083/api/v1/capabilities 2>/dev/null || true)"
+  body="$(curl -fsS -m 8 -H "Authorization: Bearer ${token}" http://127.0.0.1:8083/api/companion/v1/capabilities 2>/dev/null || true)"
   if echo "$body" | grep -q 'my-t-companion'; then
     ver="$(echo "$body" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
     pass "capabilities OK version=${ver:-?}"
@@ -107,7 +107,7 @@ if [[ -f "$TESLAMATE_DIR/docker-compose.yml" ]]; then
   fi
 fi
 if [[ -n "$token" ]]; then
-  edge_body="$(curl -fsS -m 5 -H "Authorization: Bearer ${token}" "http://127.0.0.1:${api_port}/api/v1/capabilities" 2>/dev/null || true)"
+  edge_body="$(curl -fsS -m 5 -H "Authorization: Bearer ${token}" "http://127.0.0.1:${api_port}/api/companion/v1/capabilities" 2>/dev/null || true)"
   if echo "$edge_body" | grep -q 'my-t-companion'; then
     pass "unified entry :${api_port} serves companion capabilities (My T base_url can use this port)"
   else

@@ -14,7 +14,7 @@
 > newer My T build may be in App Review; this repo does not hard-code or claim
 > a private review version.
 > Parking timeline, observed events, trajectories, and destination-session
-> history work when the App can reach `/api/v1/capabilities`; push and Live
+> history work when the App can reach `/api/companion/v1/capabilities`; push and Live
 > Activities still need pairing. See
 > [My T feature availability](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md).
 
@@ -108,7 +108,7 @@ Three My T experiences need more precise server-side data:
 
 This companion provides only those missing read-only capabilities. It keeps
 TeslaMate as the source of truth and lets My T automatically enable enhanced
-views when `/api/v1/capabilities` is available.
+views when `/api/companion/v1/capabilities` is available.
 
 ### Feature behavior
 
@@ -131,7 +131,7 @@ second server, account, or vehicle connection in the app.
 
 The companion works with a TeslaMate database hosted on a LAN, but My T must
 reach TeslaMateAPI and the companion through **one unified base URL**. My T
-checks `/api/v1/capabilities` on the same server address already configured for
+checks `/api/companion/v1/capabilities` on the same server address already configured for
 TeslaMate; it does not require or expose a second companion address.
 
 | LAN setup | Result |
@@ -291,7 +291,7 @@ paired companion.
 Authenticated status:
 
 ```text
-GET /api/v1/notifications/navigation-live-activity/status
+GET /api/companion/v1/notifications/navigation-live-activity/status
 ```
 
 ## Charging Live Activities
@@ -311,7 +311,7 @@ available; missing kilometers are omitted rather than estimated.
 Authenticated status:
 
 ```text
-GET /api/v1/notifications/charging-live-activity/status
+GET /api/companion/v1/notifications/charging-live-activity/status
 ```
 
 ## Native iPhone vehicle software notifications
@@ -328,7 +328,7 @@ The App writes the pairing through the user's existing authenticated connection.
 Preferences and status are scoped to that iPhone's installation ID:
 
 ```text
-POST /api/v1/notifications/software-update/pair
+POST /api/companion/v1/notifications/software-update/pair
 ```
 
 From 1.10.37, a compatible App may include the optional
@@ -366,7 +366,7 @@ across multiple paired iPhones on that Companion.
 Authenticated status:
 
 ```text
-GET /api/v1/notifications/software-update/status
+GET /api/companion/v1/notifications/software-update/status
 ```
 
 See [CHANGELOG.md](CHANGELOG.md) for complete changes or the
@@ -409,7 +409,7 @@ gh attestation verify my-t-companion-X.Y.Z.tar.gz \
 Without GitHub CLI:
 
 ```sh
-version="$(curl -fsSL https://api.github.com/repos/MatchHar/My-T-Companion/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; test -n "$version" && workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+curl -fsSL https://raw.githubusercontent.com/MatchHar/My-T-Companion/main/install-recommended.sh -o /tmp/my-t-install-recommended.sh && sudo bash /tmp/my-t-install-recommended.sh
 ```
 
 Full success is reported only after both the local service and the unified My T
@@ -460,12 +460,12 @@ manually. The installer stops with an actionable error instead of guessing.
 
 ## Endpoints
 
-- `GET /api/v1/capabilities`
-- `GET /api/v1/cars/{car_id}/states?startDate=...&endDate=...`
-- `GET /api/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
-- `GET /api/v1/cars/{car_id}/companion-status`
-- `GET /api/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
-- `GET /api/v1/cars/{car_id}/navigation/push-history`
+- `GET /api/companion/v1/capabilities`
+- `GET /api/companion/v1/cars/{car_id}/states?startDate=...&endDate=...`
+- `GET /api/companion/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
+- `GET /api/companion/v1/cars/{car_id}/companion-status`
+- `GET /api/companion/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
+- `GET /api/companion/v1/cars/{car_id}/navigation/push-history`
 - `GET /api/healthz`
 
 All data and capability endpoints require the same authentication used by the
@@ -499,7 +499,7 @@ sudo TESLAMATE_DIR=/opt/teslamate ./install.sh
 The installer builds the companion, joins the TeslaMate Docker network, and
 tries to wire a unified entry (system Caddy, docker Caddyfile, or API-port edge).
 Gateway snippets must include **all** Companion paths under
-`/api/v1/notifications/*` (software-update **and** Live Activity status), not
+`/api/companion/v1/notifications/*` (software-update **and** Live Activity status), not
 only parking/navigation routes.
 
 ### Manual Compose (optional)
@@ -524,7 +524,7 @@ authenticated reverse-proxy boundary.
 curl --fail http://127.0.0.1:8083/api/healthz
 curl --fail \
   -H "Authorization: Bearer ${MY_T_API_TOKEN}" \
-  http://127.0.0.1:8083/api/v1/capabilities
+  http://127.0.0.1:8083/api/companion/v1/capabilities
 ```
 
 The first response should report `OK`. The second should include
@@ -533,9 +533,9 @@ The first response should report `OK`. The second should include
 
 ### Update
 
-The permanent command below follows GitHub's **latest stable Release** (drafts
-and prereleases are excluded), downloads that numbered archive, verifies its
-SHA-256 manifest, and backs up the existing installation before applying it:
+The permanent command below follows the **signed stable recommendation shared
+with HostBox**, not an unverified newly published release. It verifies the catalog
+signature and pinned archive digest, then backs up the existing installation:
 
 ```sh
 sudo /opt/my-t-companion/update.sh
@@ -543,9 +543,10 @@ sudo /opt/my-t-companion/update.sh
 
 My T may instead show a version-pinned command such as
 `sudo MY_T_VERSION=<verified-version> /opt/my-t-companion/update.sh`. That is intentional:
-the App pins the newest Companion version verified with that App build, while
-the permanent command is for administrators who explicitly want the newest
-stable server release.
+the App pins a verified version, while the permanent command follows the same
+recommended channel as HostBox. Ordinary updates refuse a lower version or an
+unidentified existing installation. A reviewed rollback must explicitly set
+`MY_T_ALLOW_DOWNGRADE=1`; this is never enabled by a normal update.
 Trusted deployment tools may additionally set
 `MY_T_EXPECTED_SHA256=<signed-catalog-digest>`; the updater then rejects an
 archive even when its separately downloaded release manifest also changed.
@@ -589,7 +590,7 @@ vehicle wakes.
 
 ## App behavior when not installed
 
-My T checks `/api/v1/capabilities`. If the add-on is unavailable, the app keeps
+My T checks `/api/companion/v1/capabilities`. If the add-on is unavailable, the app keeps
 the normal TeslaMate features working and explains that complete long-term
 parking wake history requires this optional VPS deployment. It does not invent
 missing events or battery consumption.

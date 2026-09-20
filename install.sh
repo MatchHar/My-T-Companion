@@ -34,6 +34,11 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
 }
 
+[[ -f "$SOURCE_DIR/upgrade-policy.sh" ]] || fail "Release missing upgrade policy."
+source "$SOURCE_DIR/upgrade-policy.sh"
+myt_acquire_operation_lock
+myt_guard_version "$VERSION"
+
 read_env_value() {
   local key="$1"
   local file="$2"
@@ -517,6 +522,9 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
   install -m 0755 "$SOURCE_DIR/install.sh" "$INSTALL_DIR/install.sh"
   install -m 0644 "$SOURCE_DIR/install-source-transaction.sh" "$INSTALL_DIR/install-source-transaction.sh"
   install -m 0755 "$SOURCE_DIR/update.sh" "$INSTALL_DIR/update.sh"
+  install -m 0644 "$SOURCE_DIR/upgrade-policy.sh" "$INSTALL_DIR/upgrade-policy.sh"
+  install -d -m 0755 "$INSTALL_DIR/hostbox"
+  install -m 0644 "$SOURCE_DIR/hostbox/hostbox-catalog-signing-public.pem" "$INSTALL_DIR/hostbox/hostbox-catalog-signing-public.pem"
   if [[ -f "$SOURCE_DIR/uninstall.sh" ]]; then
     install -m 0755 "$SOURCE_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
   fi
@@ -696,6 +704,8 @@ fi
 
 proxy_ready=false
 if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
+  missing_owner_api=true
+  grep -qF '@my_t_owner_api path /api/companion/*' "$CADDY_FILE" && missing_owner_api=false
   missing_states=true
   missing_parking_events=true
   missing_companion_status=true
@@ -721,7 +731,7 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
   fi
   grep -qE 'friend-together|my_t_friend_owner' "$CADDY_FILE" && missing_friend_owner=false
 
-  if [[ "$missing_states" == true || "$missing_parking_events" == true || "$missing_companion_status" == true || "$missing_tire_history" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notifications" == true || "$missing_friend_owner" == true ]]; then
+  if [[ "$missing_owner_api" == true || "$missing_states" == true || "$missing_parking_events" == true || "$missing_companion_status" == true || "$missing_tire_history" == true || "$missing_capabilities" == true || "$missing_current_drive" == true || "$missing_push_history" == true || "$missing_notifications" == true || "$missing_friend_owner" == true ]]; then
     route_anchor="$(grep -nE '^[[:space:]]*handle[[:space:]]+@(teslamate_api|api)' "$CADDY_FILE" | head -n 1 | cut -d: -f1 || true)"
     if [[ -z "$route_anchor" ]]; then
       fail "Service is healthy, but the Caddy API route location could not be detected. Add the routes from Caddyfile.snippet manually."
@@ -730,6 +740,15 @@ if [[ -f "$CADDY_FILE" ]] && command -v caddy >/dev/null 2>&1; then
     cp "$CADDY_FILE" "$backup"
     route_file="$(mktemp)"
     printf '\t# BEGIN MY T VPS COMPANION\n' > "$route_file"
+    if [[ "$missing_owner_api" == true ]]; then
+      cat >> "$route_file" <<'CADDY'
+	@my_t_owner_api path /api/companion/*
+	handle @my_t_owner_api {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+CADDY
+    fi
     if [[ "$missing_states" == true ]]; then
       cat >> "$route_file" <<'CADDY'
 	@my_t_parking_states path_regexp my_t_parking_states ^/api/v1/cars/[0-9]+/states$
@@ -846,7 +865,7 @@ fi
 capabilities="$(
   curl --fail --silent --show-error \
     -H "Authorization: Bearer $api_token" \
-    http://127.0.0.1:8083/api/v1/capabilities
+    http://127.0.0.1:8083/api/companion/v1/capabilities
 )"
 printf '%s' "$capabilities" | grep -q '"parking_state_history"' \
   || fail "Capability verification failed."
@@ -877,6 +896,8 @@ setup_docker_teslamate_caddy_routes() {
   fi
 
   local needs_capabilities=true
+  local needs_owner_api=true
+  grep -qF '@my_t_owner_api path /api/companion/*' "$caddyfile" 2>/dev/null && needs_owner_api=false
   local needs_parking=true
   local needs_companion_status=true
   local needs_tire_history=true
@@ -894,7 +915,7 @@ setup_docker_teslamate_caddy_routes() {
   if grep -qF 'host.docker.internal:8083' "$caddyfile" 2>/dev/null; then
     needs_upstream_migration=true
   fi
-  if [[ "$needs_capabilities" == false && "$needs_parking" == false &&
+  if [[ "$needs_owner_api" == false && "$needs_capabilities" == false && "$needs_parking" == false &&
         "$needs_companion_status" == false &&
         "$needs_tire_history" == false &&
         "$needs_navigation" == false && "$needs_notifications" == false &&
@@ -916,13 +937,22 @@ setup_docker_teslamate_caddy_routes() {
   local insert
   insert="$(mktemp)"
   : > "$insert"
-  if [[ "$needs_capabilities" == true || "$needs_parking" == true ||
+  if [[ "$needs_owner_api" == true || "$needs_capabilities" == true || "$needs_parking" == true ||
         "$needs_companion_status" == true ||
         "$needs_tire_history" == true ||
         "$needs_navigation" == true || "$needs_notifications" == true ||
         "$needs_friend_owner" == true ]]; then
     cat >> "$insert" <<'CADDY'
   # BEGIN MY T VPS COMPANION (docker edge → shared-network companion)
+CADDY
+  fi
+  if [[ "$needs_owner_api" == true ]]; then
+    cat >> "$insert" <<'CADDY'
+  @my_t_owner_api path /api/companion/*
+  handle @my_t_owner_api {
+    reverse_proxy companion:8080
+  }
+
 CADDY
   fi
   if [[ "$needs_capabilities" == true ]]; then
@@ -998,7 +1028,8 @@ CADDY
     mv "$caddyfile.new" "$caddyfile"
   fi
   rm -f "$insert"
-  if ! grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null ||
+  if ! grep -qF '@my_t_owner_api path /api/companion/*' "$caddyfile" 2>/dev/null ||
+     ! grep -qE 'api/v1/capabilities|my_t_parking_capabilities|my_t_capabilities' "$caddyfile" 2>/dev/null ||
      ! grep -qE 'my_t_parking|parking-events' "$caddyfile" 2>/dev/null ||
      ! grep -qE 'companion-status|my_t_companion_status' "$caddyfile" 2>/dev/null ||
      ! grep -qE 'tire-pressure-history|my_t_tire_history' "$caddyfile" 2>/dev/null ||
@@ -1079,6 +1110,10 @@ setup_api_port_edge() {
   cat > "$INSTALL_DIR/edge/Caddyfile" <<CADDY
 # Unified My T entry — same port as before. Stock TeslaMateAPI is not modified.
 :${host_port} {
+	@my_t_owner_api path /api/companion/*
+	handle @my_t_owner_api {
+		reverse_proxy 127.0.0.1:8083
+	}
 	@my_t_companion path_regexp my_t_companion ^/api/v1/(capabilities|cars/[0-9]+/states|cars/[0-9]+/parking-events|cars/[0-9]+/companion-status|cars/[0-9]+/tire-pressure-history|cars/[0-9]+/navigation/current-drive|cars/[0-9]+/navigation/push-history|notifications/.*|friend-together/.*)\$
 	handle @my_t_companion {
 		reverse_proxy 127.0.0.1:8083
@@ -1108,7 +1143,7 @@ YAML
   for _ in $(seq 1 15); do
     if curl --fail --silent --show-error \
       -H "Authorization: Bearer $api_token" \
-      "http://127.0.0.1:${host_port}/api/v1/capabilities" 2>/dev/null \
+      "http://127.0.0.1:${host_port}/api/companion/v1/capabilities" 2>/dev/null \
       | grep -q 'my-t-companion\|parking_state_history'; then
       ok=true
       break
@@ -1142,7 +1177,7 @@ if [[ "$proxy_ready" != true ]]; then
     # Verify via docker host port 80 if present, else fall through to api-port edge
     if curl --fail --silent --show-error \
       -H "Authorization: Bearer $api_token" \
-      http://127.0.0.1/api/v1/capabilities 2>/dev/null \
+      http://127.0.0.1/api/companion/v1/capabilities 2>/dev/null \
       | grep -q 'my-t-companion\|parking_state_history'; then
       proxy_ready=true
       MY_T_BASE_URL="${MY_T_BASE_URL:-http://127.0.0.1}"
@@ -1161,7 +1196,7 @@ fi
 if [[ "$proxy_ready" != true ]]; then
   if curl --fail --silent --show-error \
     -H "Authorization: Bearer $api_token" \
-    "http://127.0.0.1:8083/api/v1/capabilities" 2>/dev/null \
+    "http://127.0.0.1:8083/api/companion/v1/capabilities" 2>/dev/null \
     | grep -q 'my-t-companion\|parking_state_history'; then
     sidecar_url=false
     [[ "${MY_T_BASE_URL:-}" == *":8083"* ]] && sidecar_url=true
@@ -1185,7 +1220,7 @@ fi
 
 if [[ "$proxy_ready" != true ]]; then
   if [[ -n "$MY_T_BASE_URL" ]]; then
-    public_capabilities_url="${MY_T_BASE_URL%/}/api/v1/capabilities"
+    public_capabilities_url="${MY_T_BASE_URL%/}/api/companion/v1/capabilities"
     curl_args=(--fail --silent --show-error)
     if [[ -n "$MY_T_AUTH_HEADER" ]]; then
       curl_args+=(-H "$MY_T_AUTH_HEADER")
@@ -1208,7 +1243,7 @@ if [[ "$proxy_ready" != true ]]; then
   log "Automatic edge setup failed. Either:"
   log "  1) Install/fix Caddy or Tunnel and add Caddyfile.snippet / nginx.snippet.conf"
   log "  2) Rerun: sudo MY_T_BASE_URL=\"http://YOUR_IP:8081\" $INSTALL_DIR/install.sh"
-  fail "My T cannot use Companion until the API URL serves /api/v1/capabilities."
+  fail "My T cannot use Companion until the API URL serves /api/companion/v1/capabilities."
 fi
 
 log "Installation complete (version $VERSION) — Companion is reachable on the My T API URL"

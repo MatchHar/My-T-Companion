@@ -1,5 +1,6 @@
 # Place these matchers inside the API site's server block.
 # Companion stays on 127.0.0.1:8083; stock TeslaMateAPI keeps the rest of /api/*.
+@my_t_owner_api path /api/companion/*
 @my_t_parking_states path_regexp my_t_parking_states ^/api/v1/cars/[0-9]+/states$
 @my_t_parking_events path_regexp my_t_parking_events ^/api/v1/cars/[0-9]+/parking-events$
 @my_t_companion_status path_regexp my_t_companion_status ^/api/v1/cars/[0-9]+/companion-status$
@@ -11,6 +12,10 @@
 @my_t_friend_owner path /api/v1/friend-together/*
 
 # Place these handles before the general TeslaMate API handle.
+handle @my_t_owner_api {
+	reverse_proxy 127.0.0.1:8083
+}
+
 handle @my_t_parking_states {
 	reverse_proxy 127.0.0.1:8083
 }

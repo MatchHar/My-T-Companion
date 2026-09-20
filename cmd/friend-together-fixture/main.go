@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -72,6 +73,13 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/friend-together/", service.OwnerHandler())
+	// Exercise the canonical client path without changing the signed guest path.
+	mux.Handle("/api/companion/v1/friend-together/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := r.Clone(r.Context())
+		request.URL.Path = strings.Replace(r.URL.Path, "/api/companion/v1/", "/api/v1/", 1)
+		request.RequestURI = request.URL.RequestURI()
+		service.OwnerHandler().ServeHTTP(w, request)
+	}))
 	mux.Handle("/friend/v1/", service.GuestHandler())
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

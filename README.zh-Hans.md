@@ -10,7 +10,7 @@
 > **My T：** App Store 公开可下载版本以
 > [Apple 产品页](https://apps.apple.com/app/id6780299502)为准。
 > 较新版本可能正在审核中，本仓库不写死版本号，也不声明非公开审核版本。
-> 停车流水、观测事件、轨迹及目的地行程记录在可访问 `/api/v1/capabilities` 时
+> 停车流水、观测事件、轨迹及目的地行程记录在可访问 `/api/companion/v1/capabilities` 时
 > 可用；推送与实时活动仍需完成配对。详见
 > [My T 功能可用性](https://github.com/MatchHar/My-T-App/blob/main/docs/FEATURE_AVAILABILITY.md)。
 
@@ -46,7 +46,7 @@ TeslaMate 行程验证的进度。中继不会接收坐标、轨迹、VIN、Tesl
 未部署本组件时，My T 的 App 内目的地卡片、车辆实时位置与速度仍可正常使用；
 真实起点、已行驶轨迹、全程进度及主动锁屏推送需要部署并完成配对。
 
-状态接口：`GET /api/v1/notifications/navigation-live-activity/status`。
+状态接口：`GET /api/companion/v1/notifications/navigation-live-activity/status`。
 
 ## 充电锁屏实时活动
 
@@ -58,7 +58,7 @@ TeslaMate 行程验证的进度。中继不会接收坐标、轨迹、VIN、Tesl
 字段，不包含 VIN、位置、路线、TeslaMate 凭据或 kWh。续航增加只在 TeslaMate
 具有真实起始与当前 `rated_battery_range_km` 时计算；缺失时不估算公里数。
 
-状态接口：`GET /api/v1/notifications/charging-live-activity/status`。
+状态接口：`GET /api/companion/v1/notifications/charging-live-activity/status`。
 
 ## iPhone 原生车辆软件更新通知
 
@@ -70,9 +70,9 @@ TeslaMate 行程验证的进度。中继不会接收坐标、轨迹、VIN、Tesl
 去重状态。推送内容不包含 VIN、位置、TeslaMate 凭据、数据库密码、电池、路线或
 行驶历史。Apple APNs 私钥绝不会放入本公开项目或用户 VPS。
 
-状态接口：`GET /api/v1/notifications/software-update/status`。
+状态接口：`GET /api/companion/v1/notifications/software-update/status`。
 用户在 My T 中开启通知后，App 会通过现有已认证连接自动写入配对：
-`POST /api/v1/notifications/software-update/pair`。为防止服务端请求伪造
+`POST /api/companion/v1/notifications/software-update/pair`。为防止服务端请求伪造
 （SSRF），组件只接受 My T 官方中继地址，不允许配置任意服务器。
 
 从 1.10.37 起，兼容的 App 可加入可选 vehicle_preferences 数组。每项包含一个
@@ -141,7 +141,7 @@ TeslaMate/TeslaMateAPI 提供，本组件只补充三个手机端无法可靠还
    保留 TeslaMate 未作为历史保存的真实 MQTT 变化。
 
 VPS Companion 只提供这些缺失的只读能力。TeslaMate 仍是唯一数据来源；
-My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
+My T 检测到 `/api/companion/v1/capabilities` 后会自动启用增强显示。
 
 ### My T 功能对照
 
@@ -161,7 +161,7 @@ My T 检测到 `/api/v1/capabilities` 后会自动启用增强显示。
 
 本组件可以读取部署在内网的 TeslaMate 数据库，但 My T 必须通过**同一个统一
 访问地址**连接 TeslaMateAPI 和本组件。My T 会在已经配置的 TeslaMate 服务器
-地址上检测 `/api/v1/capabilities`，不需要、也不会另外配置一个组件地址。
+地址上检测 `/api/companion/v1/capabilities`，不需要、也不会另外配置一个组件地址。
 
 | 内网架构 | 使用结果 |
 | --- | --- |
@@ -319,7 +319,7 @@ gh attestation verify my-t-companion-X.Y.Z.tar.gz \
 未安装 GitHub CLI 时：
 
 ```sh
-version="$(curl -fsSL https://api.github.com/repos/MatchHar/My-T-Companion/releases/latest | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')"; test -n "$version" && workdir="$(mktemp -d)" && base="https://github.com/MatchHar/My-T-Companion/releases/download/v$version" && curl -fL "$base/my-t-companion-$version.tar.gz" -o "$workdir/my-t-companion-$version.tar.gz" && curl -fL "$base/my-t-companion-$version.tar.gz.sha256" -o "$workdir/my-t-companion-$version.tar.gz.sha256" && (cd "$workdir" && sha256sum -c "my-t-companion-$version.tar.gz.sha256") && tar -xzf "$workdir/my-t-companion-$version.tar.gz" -C "$workdir" && sudo "$workdir/my-t-companion-$version/install.sh"; status=$?; rm -rf "$workdir"; exit $status
+curl -fsSL https://raw.githubusercontent.com/MatchHar/My-T-Companion/main/install-recommended.sh -o /tmp/my-t-install-recommended.sh && sudo bash /tmp/my-t-install-recommended.sh
 ```
 
 只有本地服务和 My T 统一入口都验证成功，安装器才报告完整成功。手动使用
@@ -353,11 +353,11 @@ Nginx、Traefik 或无法识别的容器代理时，必须加入并验证仓库�
 
 ## API 接口
 
-- `GET /api/v1/capabilities`
-- `GET /api/v1/cars/{car_id}/states?startDate=...&endDate=...`
-- `GET /api/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
-- `GET /api/v1/cars/{car_id}/companion-status`
-- `GET /api/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
+- `GET /api/companion/v1/capabilities`
+- `GET /api/companion/v1/cars/{car_id}/states?startDate=...&endDate=...`
+- `GET /api/companion/v1/cars/{car_id}/parking-events?startDate=...&endDate=...`
+- `GET /api/companion/v1/cars/{car_id}/companion-status`
+- `GET /api/companion/v1/cars/{car_id}/navigation/current-drive?afterPointId=0&limit=5000`
 - `GET /api/healthz`
 
 所有车辆数据与能力接口都使用现有 TeslaMate API 认证。`/api/healthz`
@@ -392,7 +392,7 @@ Nginx、Traefik 或无法识别的容器代理时，必须加入并验证仓库�
 curl --fail http://127.0.0.1:8083/api/healthz
 curl --fail \
   -H "Authorization: Bearer ${MY_T_API_TOKEN}" \
-  http://127.0.0.1:8083/api/v1/capabilities
+  http://127.0.0.1:8083/api/companion/v1/capabilities
 ```
 
 第一条应返回 `OK`。第二条应包含：
@@ -406,15 +406,15 @@ curl --fail \
 
 ```sh
 curl -o /dev/null -w "%{http_code}\n" \
-  http://127.0.0.1:8083/api/v1/capabilities
+  http://127.0.0.1:8083/api/companion/v1/capabilities
 ```
 
 预期返回 `401`。
 
 ## 更新
 
-以下永久命令会跟随 GitHub 的**最新稳定 Release**（不包含草稿和预发布版），
-下载对应的固定版本、校验 SHA-256、备份现有安装，再运行可重复执行的安装程序：
+以下永久命令会跟随与 HostBox 共用的**签名稳定推荐目录**，不会直接安装刚发布但
+未推荐的版本。先验证目录签名及固定安装包摘要，再备份现有安装并执行更新：
 
 ```sh
 sudo /opt/my-t-companion/update.sh
@@ -423,7 +423,9 @@ sudo /opt/my-t-companion/update.sh
 My T 也可能显示类似
 `sudo MY_T_VERSION=<已验证版本> /opt/my-t-companion/update.sh`
 的指定版本命令。这是有意设计：App 固定到该 App 版本已验证兼容的最新
-Companion；永久命令则供明确希望跟随服务器最新稳定版的管理员使用。
+Companion；永久命令则与 HostBox 跟随相同的推荐渠道。普通更新会拒绝降级，
+也不会把版本未知的现有安装当作全新安装。经检查的回滚必须明确设置
+`MY_T_ALLOW_DOWNGRADE=1`，普通更新不会启用此选项。
 可信部署工具还可设置
 `MY_T_EXPECTED_SHA256=<签名目录中的摘要>`；即使 Release 清单也同时被更改，
 更新程序仍会拒绝与签名目录不一致的安装包。
@@ -454,7 +456,7 @@ sudo /opt/my-t-companion/uninstall.sh
 
 ## 未安装时的 App 行为
 
-My T 通过 `/api/v1/capabilities` 自动检测组件。未安装或不可用时：
+My T 通过 `/api/companion/v1/capabilities` 自动检测组件。未安装或不可用时：
 
 - 基础 TeslaMate 行程、充电和停车记录继续正常工作。
 - App 会说明完整休眠、唤醒、电量与续航流水需要可选 VPS 组件。
