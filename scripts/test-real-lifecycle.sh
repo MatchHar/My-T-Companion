@@ -7,7 +7,7 @@ fail() { printf 'LIFECYCLE FAIL: %s\n' "$*" >&2; exit 1; }
    "${RUNNER_OS:-}" == Linux && "${MYT_DISPOSABLE_LIFECYCLE:-}" == 1 && "$EUID" == 0 ]] \
   || fail 'Requires explicit opt-in on a disposable GitHub-hosted Linux runner as root.'
 for key in INSTALL_DIR TESLAMATE_DIR COMPOSE_PROJECT CADDY_FILE DATABASE_PASS DATABASE_USER \
-  MY_T_API_TOKEN MY_T_UPDATE_SOURCE_DIR MY_T_RELEASE_BASE_URL PUSH_RELAY_SECRET DOCKER_HOST DOCKER_CONTEXT; do
+  MY_T_API_TOKEN MY_T_BASE_URL MY_T_UPDATE_SOURCE_DIR MY_T_RELEASE_BASE_URL PUSH_RELAY_SECRET DOCKER_HOST DOCKER_CONTEXT; do
   [[ -z "${!key:-}" ]] || fail "Refusing inherited operator configuration: $key"
 done
 for tool in docker curl jq gh sha256sum tar openssl ss ip iptables; do
@@ -43,6 +43,7 @@ export CADDY_FILE="$work_dir/no-system-caddy"
 export INSTALL_DIR="$work_dir/clean-install" COMPOSE_PROJECT="$clean_project"
 export DATABASE_USER=fixture_reader DATABASE_PASS=synthetic-lifecycle-reader-only
 export MY_T_API_TOKEN=synthetic-lifecycle-owner-token-not-a-secret
+export MY_T_BASE_URL=http://127.0.0.1
 export TESLAMATE_VERSION=4.2.0 TESLAMATE_WEB_URL=http://teslamateapi:8080
 export FRIEND_TOGETHER_ENABLED=true FRIEND_TOGETHER_GUEST_ORIGIN=https://friend.example.com
 export FRIEND_TOGETHER_STATE_PATH=/data/friend-together/state.json
