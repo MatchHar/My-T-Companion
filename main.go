@@ -179,7 +179,7 @@ func main() {
 	log.Printf("[info] mycarmate-states-api listening on %s", addr)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           withHeaders(mux),
+		Handler:           withHeaders(withOwnerAPI(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -522,6 +522,7 @@ func runHealthcheck() {
 func withHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerAPIVersion, apiVersion)
+		w.Header().Set("X-My-T-Companion", "1")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -550,8 +551,9 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload := map[string]any{
-		"service": "my-t-companion",
-		"version": apiVersion,
+		"service":   "my-t-companion",
+		"version":   apiVersion,
+		"owner_api": map[string]any{"prefix": ownerAPIPrefix, "protocol_version": 1, "legacy_aliases": true},
 		"app_compatibility": map[string]any{
 			"minimum_version":     "3.10",
 			"recommended_version": "3.30",
@@ -1043,6 +1045,11 @@ func parsePageLimit(value string) (int, error) {
 }
 
 func authorized(r *http.Request) bool {
+	// Only the in-process canonical owner boundary can set this context value.
+	// It avoids a second upstream authentication probe in the shared handler.
+	if verified, _ := r.Context().Value(ownerAuthenticationContextKey{}).(bool); verified {
+		return true
+	}
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 		if tokenEqual(strings.TrimSpace(auth[7:]), apiToken) {
@@ -1078,6 +1085,9 @@ func authorizedByExistingAPI(r *http.Request) bool {
 		log.Printf("[warn] auth probe request: %v", err)
 		return false
 	}
+	if strings.HasPrefix(probe.URL.Path, "/api/companion") {
+		return false
+	}
 	probe.Host = r.Host
 	for _, name := range []string{
 		"Authorization",
@@ -1096,6 +1106,9 @@ func authorizedByExistingAPI(r *http.Request) bool {
 		return false
 	}
 	defer response.Body.Close()
+	if response.Header.Get("X-My-T-Companion") != "" {
+		return false
+	}
 	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 

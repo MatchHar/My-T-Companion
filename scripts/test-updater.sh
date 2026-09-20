@@ -28,6 +28,7 @@ make_release() {
 
 success_install="$test_dir/success-install"
 mkdir "$success_install"
+printf '9.9.6\n' > "$success_install/VERSION"
 printf '%s\n' '#!/usr/bin/env bash' 'printf restored > "$INSTALL_DIR/state"' \
   > "$success_install/install.sh"
 chmod +x "$success_install/install.sh"
@@ -42,6 +43,7 @@ compgen -G "$success_install.before-9.9.7-*" >/dev/null
 
 failure_install="$test_dir/failure-install"
 mkdir "$failure_install"
+printf '9.9.6\n' > "$failure_install/VERSION"
 printf '%s\n' '#!/usr/bin/env bash' 'printf restored > "$INSTALL_DIR/state"' \
   > "$failure_install/install.sh"
 chmod +x "$failure_install/install.sh"
@@ -56,10 +58,11 @@ if INSTALL_DIR="$failure_install" \
 fi
 [[ "$(cat "$failure_install/state")" == "restored" ]]
 
-# The updater itself is unchanged from 1.10.39: the new installer must clean
+# The installer must clean
 # its novel source files BEFORE the older overwrite-only installer runs.
 guarded_install="$test_dir/guarded-install"
 mkdir "$guarded_install"
+printf '9.9.6\n' > "$guarded_install/VERSION"
 printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' \
   '[[ ! -e "$INSTALL_DIR/new-source.go" ]]' \
   'printf restored > "$INSTALL_DIR/state"' > "$guarded_install/install.sh"
