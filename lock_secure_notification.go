@@ -42,6 +42,7 @@ type lockSecurePrefs struct {
 
 type lockSecureCarState struct {
 	DisplayName  string `json:"display_name,omitempty"`
+	Healthy      *bool  `json:"-"`
 	Locked       *bool  `json:"locked,omitempty"`
 	UserPresent  *bool  `json:"is_user_present,omitempty"`
 	State        string `json:"state,omitempty"`
@@ -72,6 +73,8 @@ type lockSecurePushEvent struct {
 
 type lockSecureNotificationMonitor struct {
 	mu             sync.Mutex
+	evidence       map[int]lockSecureEvidence
+	pending        map[int]*time.Timer
 	prefsPath      string
 	statePath      string
 	prefs          lockSecurePrefs
@@ -136,6 +139,7 @@ func (m *lockSecureNotificationMonitor) stop() {
 	m.client = nil
 	m.connected = false
 	m.started = false
+	m.resetEvidenceLocked()
 	m.mu.Unlock()
 	if client != nil && client.IsConnected() {
 		client.Disconnect(250)
@@ -206,14 +210,18 @@ func (m *lockSecureNotificationMonitor) connectMQTT() {
 	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 		m.mu.Lock()
 		m.connected = false
+		m.resetEvidenceLocked()
 		m.lastError = err.Error()
 		m.mu.Unlock()
 		log.Printf("[warn] lock-secure MQTT disconnected: %v", err)
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
+		m.mu.Lock()
+		m.resetEvidenceLocked()
+		m.mu.Unlock()
 		fields := []string{
 			"locked", "is_user_present", "state", "shift_state",
-			"doors_open", "trunk_open", "frunk_open", "display_name",
+			"doors_open", "trunk_open", "frunk_open", "display_name", "healthy",
 		}
 		topics := map[string]byte{}
 		for _, field := range fields {
@@ -262,7 +270,7 @@ func (m *lockSecureNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message
 	if err != nil || carID <= 0 {
 		return
 	}
-	m.observe(carID, parts[3], strings.TrimSpace(string(message.Payload())), time.Now().UTC())
+	m.observeMessage(carID, parts[3], strings.TrimSpace(string(message.Payload())), time.Now().UTC(), message.Retained())
 }
 
 func parseMQTTBool(value string) *bool {
@@ -280,9 +288,22 @@ func parseMQTTBool(value string) *bool {
 }
 
 func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, observedAt time.Time) {
+	m.observeMessage(carID, field, raw, observedAt, false)
+}
+
+func (m *lockSecureNotificationMonitor) observeMessage(carID int, field, raw string, observedAt time.Time, retained bool) {
 	m.mu.Lock()
+	if m.evidence == nil {
+		m.evidence = map[int]lockSecureEvidence{}
+	}
+	if m.pending == nil {
+		m.pending = map[int]*time.Timer{}
+	}
 	state := m.store.Cars[carID]
+	previous := state
 	switch field {
+	case "healthy":
+		state.Healthy = parseMQTTBool(raw)
 	case "display_name":
 		state.DisplayName = collapsedDisplayName(raw)
 	case "locked":
@@ -303,27 +324,56 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 		m.mu.Unlock()
 		return
 	}
-	secure := lockSecureIsSecure(state)
-	wasSecure := state.LastSecure
-	wasInitialized := state.Initialized
-	if state.Locked != nil && state.UserPresent != nil {
-		state.Initialized = true
-	}
-	state.LastSecure = secure
+	state.Initialized = state.Locked != nil && state.UserPresent != nil
+	state.LastSecure = lockSecureIsSecure(state)
 	m.store.Cars[carID] = state
-	_ = m.saveStateLocked()
-	// Retained MQTT values describe the current snapshot, not necessarily a new
-	// lock transition. Establish a per-car baseline before emitting events.
-	if !wasInitialized {
-		m.mu.Unlock()
-		return
+	evidence := m.evidence[carID]
+	evidence.observe(previous, state, field, retained, observedAt)
+	if !evidence.LockAt.IsZero() && observedAt.Sub(evidence.LockAt) > lockSecureEpisodeLifetime {
+		evidence.LockAt = time.Time{}
 	}
+	m.evidence[carID] = evidence
+	if field != "healthy" {
+		_ = m.saveStateLocked()
+	}
+	// Health heartbeats must not perpetually restart an otherwise settled event.
+	if field != "healthy" && field != "display_name" || evidence.LockAt.IsZero() {
+		if timer := m.pending[carID]; timer != nil {
+			timer.Stop()
+			delete(m.pending, carID)
+		}
+	}
+	if !evidence.LockAt.IsZero() && m.pending[carID] == nil {
+		var timer *time.Timer
+		timer = time.AfterFunc(lockSecureSettle, func() {
+			m.mu.Lock()
+			expected := timer
+			m.mu.Unlock()
+			m.finishPending(carID, expected)
+		})
+		m.pending[carID] = timer
+	}
+	m.mu.Unlock()
+}
 
-	shouldPush := secure && !wasSecure && m.hasLockSecureTargets(carID)
-	if !shouldPush {
+func (m *lockSecureNotificationMonitor) finishPending(carID int, timer *time.Timer) {
+	m.mu.Lock()
+	// Timer identity also protects against reconnect and an older cancelled callback.
+	if m.pending[carID] != timer {
 		m.mu.Unlock()
 		return
 	}
+	delete(m.pending, carID)
+	state := m.store.Cars[carID]
+	evidence := m.evidence[carID]
+	observedAt := time.Now().UTC()
+	if !m.connected || !evidence.ready(state, observedAt) || !m.hasLockSecureTargets(carID) {
+		m.mu.Unlock()
+		return
+	}
+	// Consume this lock episode. A heartbeat must never resend it.
+	evidence.LockAt = time.Time{}
+	m.evidence[carID] = evidence
 	// Cooldown 3 minutes per car.
 	if state.LastPushedAt != "" {
 		if t, err := time.Parse(time.RFC3339, state.LastPushedAt); err == nil {
@@ -347,7 +397,7 @@ func (m *lockSecureNotificationMonitor) observe(carID int, field, raw string, ob
 	m.store.Cars[carID] = state
 	_ = m.saveStateLocked()
 	m.mu.Unlock()
-	go m.fanOutLockSecure(originID, carID, state, observedAt)
+	go m.fanOutLockSecure(originID, carID, state, observedAt, evidence.StableSince)
 }
 
 func (m *lockSecureNotificationMonitor) hasLockSecureTargets(carID int) bool {
@@ -361,26 +411,38 @@ func lockSecureOriginID(carID int, observedAt time.Time) string {
 	return fmt.Sprintf("%d:vehicle_lock_secure:%s", carID, observedAt.UTC().Format("200601021504"))
 }
 
-func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID int, state lockSecureCarState, observedAt time.Time) {
+func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID int, state lockSecureCarState, observedAt time.Time, stableSince time.Time) {
 	defer func() {
 		m.mu.Lock()
 		delete(m.inFlight, originID)
 		m.mu.Unlock()
 	}()
 	subs := []pushSubscriber{}
+	m.mu.Lock()
+	legacyID, legacyURL, legacySecret := m.installationID, m.relayURL, m.relaySecret
+	m.mu.Unlock()
 	if pushRegistry != nil {
 		subs = pushRegistry.matching(carID, func(s pushSubscriber) bool { return s.wantsLockSecure(carID) })
-	} else if m.installationID != "" {
+	} else if legacyID != "" {
 		subs = []pushSubscriber{{
-			InstallationID: m.installationID,
-			RelayURL:       m.relayURL,
-			RelaySecret:    m.relaySecret,
+			InstallationID: legacyID,
+			RelayURL:       legacyURL,
+			RelaySecret:    legacySecret,
 			LockSecure:     true,
 			Status:         pushStatusActive,
 		}}
 	}
 	deliveredAll := len(subs) > 0
 	for _, sub := range subs {
+		m.mu.Lock()
+		evidence := m.evidence[carID]
+		stillValid := m.connected && evidence.PresenceLive && evidence.StableSince.Equal(stableSince) &&
+			lockSecureIsSecure(m.store.Cars[carID]) && m.hasLockSecureTargets(carID) &&
+			time.Since(evidence.LastHealthyAt) <= lockSecureHeartbeatLifetime
+		m.mu.Unlock()
+		if !stillValid {
+			return
+		}
 		event := m.makeEventFor(sub.InstallationID, sub.SourceID, carID, state, observedAt)
 		if err := m.deliverTo(sub, *event); err != nil {
 			log.Printf("[warn] lock-secure fan-out installation=%s: %v", sub.InstallationID[:8], err)
@@ -401,31 +463,20 @@ func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID 
 }
 
 func lockSecureIsSecure(state lockSecureCarState) bool {
-	// Hard prerequisites: locked + no one inside (both must be known true/false).
-	if state.Locked == nil || !*state.Locked {
+	// This is vehicle-reported presence, never proof that every seat is empty.
+	if state.Locked == nil || !*state.Locked || state.UserPresent == nil || *state.UserPresent {
 		return false
 	}
-	if state.UserPresent == nil || *state.UserPresent {
+	if state.State != "online" && state.State != "charging" {
 		return false
 	}
-	// Not driving.
-	shift := strings.ToUpper(strings.TrimSpace(state.ShiftState))
-	if shift == "D" || shift == "R" || shift == "N" {
+	if state.ShiftState != "P" {
 		return false
 	}
-	st := strings.ToLower(strings.TrimSpace(state.State))
-	if st == "driving" {
-		return false
-	}
-	// Prefer closed doors when known.
-	if state.DoorsOpen != nil && *state.DoorsOpen {
-		return false
-	}
-	if state.TrunkOpen != nil && *state.TrunkOpen {
-		return false
-	}
-	if state.FrunkOpen != nil && *state.FrunkOpen {
-		return false
+	for _, open := range []*bool{state.DoorsOpen, state.TrunkOpen, state.FrunkOpen} {
+		if open == nil || *open {
+			return false
+		}
 	}
 	return true
 }

@@ -964,8 +964,9 @@ func TestLockSecureInitialRetainedSnapshotEstablishesBaseline(t *testing.T) {
 		installationID: strings.Repeat("a", 48),
 	}
 	at := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
-	monitor.observe(1, "locked", "true", at)
-	monitor.observe(1, "is_user_present", "false", at)
+	for field, value := range map[string]string{"locked": "true", "is_user_present": "false", "state": "online", "shift_state": "P", "doors_open": "false", "trunk_open": "false", "frunk_open": "false"} {
+		monitor.observeMessage(1, field, value, at, true)
+	}
 
 	state := monitor.store.Cars[1]
 	if !state.Initialized || !state.LastSecure {
