@@ -439,7 +439,9 @@ mv "$INSTALL_DIR" "$work_dir/healthy-candidate-context"
 cp -a "$work_dir/prior-install" "$INSTALL_DIR"
 cp "$work_dir/prior-Caddyfile" "$TESLAMATE_DIR/Caddyfile"
 stack restart caddy >/dev/null
-MY_T_ALLOW_DOWNGRADE=1 "$INSTALL_DIR/install.sh" > "$log_dir/healthy-backup-assisted-rollback.log" 2>&1
+# The released overwrite-only installer cannot copy its helpers onto themselves.
+# Run the exact prior backup's installer outside its restored destination.
+MY_T_ALLOW_DOWNGRADE=1 "$work_dir/prior-install/install.sh" > "$log_dir/healthy-backup-assisted-rollback.log" 2>&1
 verify_health "$previous"
 verify_sql_reads
 source_manifest | cmp -s "$work_dir/source-baseline.sha256" - || fail 'Healthy rollback did not restore exact prior source/config.'

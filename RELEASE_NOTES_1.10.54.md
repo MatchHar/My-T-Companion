@@ -2,6 +2,8 @@
 
 ## Changes
 
+- Use the Go 1.26.9 security patch and golang.org/x/net 0.60.0 for the release
+  build and validation, without changing the Go major version.
 - Follow TeslaMate's enabled source fleet dynamically and recover a new car's
   retained MQTT baseline with bounded re-subscription retries. Reject delayed
   subscription results and old-client disconnect callbacks. Use TeslaMate 4.3's

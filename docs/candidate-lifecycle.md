@@ -62,6 +62,8 @@ canonical content comparison; no vehicle/pairing/history contents are excluded.
 Healthy rollback explicitly restores the complete prior source/configuration
 snapshot and runs its real installer. It does not pretend old overwrite-only
 installers remove54-only files, and never rewinds the durable data volume.
+The prior installer runs from the separate backup directory, not its installed
+destination: released53 otherwise attempts to copy a helper file onto itself.
 Docker-Caddy route teardown remains separate: uninstall stops Companion and
 retains its configuration/volume; fixture cleanup later removes disposable
 containers/volumes and firewall rules.

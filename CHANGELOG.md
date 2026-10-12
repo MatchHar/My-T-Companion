@@ -2,6 +2,8 @@
 
 ## 1.10.54
 
+- Build and validate with the Go 1.26.9 security patch and update the indirect
+  golang.org/x/net dependency to 0.60.0; keep the existing Go major version.
 - Refresh the enabled TeslaMate source fleet dynamically, recover new-car
   retained baselines with bounded subscription retries, and reject stale
   connection callbacks. New cars keep server notification defaults; Friend

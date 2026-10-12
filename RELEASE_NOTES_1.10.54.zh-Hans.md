@@ -2,6 +2,8 @@
 
 ## 更新内容
 
+- 发行编译及验证改用 Go 1.26.9 安全修补版和 golang.org/x/net 0.60.0，
+  保持原本 Go 主版本不变。
 - 动态跟随 TeslaMate 启用记录的来源车队，通过有界重新订阅重试恢复新车的
   MQTT 保留基线；拒绝延迟订阅结果及旧 client 的断线回调。账号车队变更后
   先明确执行 TeslaMate 4.3 的 Reload；Companion 不调用 Tesla 或唤醒车辆。
