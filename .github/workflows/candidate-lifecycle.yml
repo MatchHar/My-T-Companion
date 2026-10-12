@@ -1,0 +1,62 @@
+name: Companion candidate disposable lifecycle
+
+on:
+  pull_request:
+    paths-ignore: ["hostbox/**"]
+  push:
+    branches: [main, codex/companion-1-10-54]
+    paths-ignore: ["hostbox/**"]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Exact HEAD candidate archive, or matching immutable published 1.10.54
+        type: choice
+        options: [gitarchive, published]
+        default: gitarchive
+
+permissions:
+  contents: read
+
+concurrency:
+  group: companion-candidate-lifecycle-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  real-candidate-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Scope this acceptance fixture to release 1.10.54
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$(tr -d '[:space:]' < VERSION)" == 1.10.54 ]]; then
+            echo 'active=true' >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            echo 'This fixture requires the exact 1.10.54 release checkout.' >&2
+            exit 1
+          else
+            echo 'active=false' >> "$GITHUB_OUTPUT"
+            echo 'Not applicable to this VERSION; update the acceptance fixture for a future release.'
+          fi
+      - name: Validate script syntax
+        if: steps.scope.outputs.active == 'true'
+        run: bash -n scripts/test-candidate-lifecycle.sh
+      - name: Run real Docker/SQL/broker/installers on an empty disposable runner
+        if: steps.scope.outputs.active == 'true'
+        env:
+          MYT_DISPOSABLE_CANDIDATE: "1"
+          MYT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          MYT_CANDIDATE_MODE: ${{ inputs.mode || 'gitarchive' }}
+          GH_TOKEN: ${{ github.token }}
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS,RUNNER_TEMP,MYT_DISPOSABLE_CANDIDATE,MYT_RUNNER_ENVIRONMENT,MYT_CANDIDATE_MODE,GH_TOKEN bash scripts/test-candidate-lifecycle.sh
+      - name: Retain synthetic acceptance evidence
+        if: always() && steps.scope.outputs.active == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: companion-candidate-lifecycle
+          path: ${{ runner.temp }}/myt-candidate-lifecycle-logs/
+          if-no-files-found: warn
+          retention-days: 7
