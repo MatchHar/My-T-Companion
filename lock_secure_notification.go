@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -135,6 +134,7 @@ func (m *lockSecureNotificationMonitor) start() {
 
 func (m *lockSecureNotificationMonitor) stop() {
 	m.mu.Lock()
+	recordMQTTConnection("lock_secure", false)
 	client := m.client
 	m.client = nil
 	m.connected = false
@@ -207,8 +207,13 @@ func (m *lockSecureNotificationMonitor) connectMQTT() {
 		options.SetUsername(m.mqttUsername)
 		options.SetPassword(m.mqttPassword)
 	}
-	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+	options.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		m.mu.Lock()
+		if m.client != client {
+			m.mu.Unlock()
+			return
+		}
+		recordMQTTConnection("lock_secure", false)
 		m.connected = false
 		m.resetEvidenceLocked()
 		m.lastError = err.Error()
@@ -217,19 +222,26 @@ func (m *lockSecureNotificationMonitor) connectMQTT() {
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
 		m.mu.Lock()
+		if m.client != client || !m.started {
+			m.mu.Unlock()
+			client.Disconnect(250)
+			return
+		}
+		if !client.IsConnected() {
+			m.mu.Unlock()
+			return
+		}
+		epoch := beginMQTTConnection("lock_secure")
 		m.resetEvidenceLocked()
 		m.mu.Unlock()
-		fields := []string{
-			"locked", "is_user_present", "state", "shift_state",
-			"doors_open", "trunk_open", "frunk_open", "display_name", "healthy",
-		}
-		topics := map[string]byte{}
-		for _, field := range fields {
-			topics["teslamate/cars/+/"+field] = 1
-		}
+		topics := teslaMateMQTTTopics(lockSecureMQTTFields)
 		token := client.SubscribeMultiple(topics, m.handleMQTTMessage)
 		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
 			m.mu.Lock()
+			if m.client != client || !client.IsConnected() || !recordMQTTConnection("lock_secure", true, epoch) {
+				m.mu.Unlock()
+				return
+			}
 			m.connected = true
 			m.lastError = ""
 			m.mu.Unlock()
@@ -241,12 +253,20 @@ func (m *lockSecureNotificationMonitor) connectMQTT() {
 			err = fmt.Errorf("MQTT lock-secure subscription timed out")
 		}
 		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("lock_secure") != epoch {
+			m.mu.Unlock()
+			return
+		}
 		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
+		requestMQTTBaselineRetry()
 	})
-	m.client = mqtt.NewClient(options)
-	token := m.client.Connect()
+	client := mqtt.NewClient(options)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+	token := client.Connect()
 	if !token.WaitTimeout(15 * time.Second) {
 		m.mu.Lock()
 		m.lastError = "MQTT lock-secure connection timed out"
@@ -262,15 +282,11 @@ func (m *lockSecureNotificationMonitor) connectMQTT() {
 }
 
 func (m *lockSecureNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message mqtt.Message) {
-	parts := strings.Split(message.Topic(), "/")
-	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" {
+	carID, field, ok := acceptTeslaMateMQTTMessage(message, "lock_secure")
+	if !ok {
 		return
 	}
-	carID, err := strconv.Atoi(parts[2])
-	if err != nil || carID <= 0 {
-		return
-	}
-	m.observeMessage(carID, parts[3], strings.TrimSpace(string(message.Payload())), time.Now().UTC(), message.Retained())
+	m.observeMessage(carID, field, strings.TrimSpace(string(message.Payload())), time.Now().UTC(), message.Retained())
 }
 
 func parseMQTTBool(value string) *bool {

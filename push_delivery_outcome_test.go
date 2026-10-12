@@ -149,7 +149,7 @@ func TestDeliverJSONStillReturnsNilWhenQueued(t *testing.T) {
 		return nil, io.ErrUnexpectedEOF
 	})}
 	sub := reg.matching(1, func(s pushSubscriber) bool { return s.SoftwareUpdate })[0]
-	if err := reg.deliverJSON(sub, []byte(`{"event_id":"event-keep-nil","type":"update_available"}`)); err != nil {
+	if err := reg.deliverJSON(sub, []byte(`{"event_id":"event-keep-nil","type":"update_available","car_id":1}`)); err != nil {
 		t.Fatalf("queued deliverJSON must remain nil: %v", err)
 	}
 }

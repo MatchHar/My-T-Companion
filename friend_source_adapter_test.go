@@ -124,7 +124,7 @@ func TestFriendDatabasePoolIsSeparateBoundedAndLazy(t *testing.T) {
 	t.Setenv("DATABASE_USER", "synthetic ' user")
 	t.Setenv("DATABASE_PASS", "synthetic ' value -c not_an_option")
 	dsn := friendDatabaseDSN()
-	if strings.Contains(dsn, "postgres:") || !strings.Contains(dsn, "password='synthetic '' value -c not_an_option'") {
+	if strings.Contains(dsn, "postgres:") || !strings.Contains(dsn, `password='synthetic \' value -c not_an_option'`) {
 		t.Fatal("friend DSN must quote values instead of a postgres:? URL")
 	}
 	_, err := openFriendDatabase()

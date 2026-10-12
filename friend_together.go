@@ -4,11 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
-	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +19,7 @@ import (
 var friendTogether *ft.HTTPService
 
 func registerFriendTogether(mux *http.ServeMux) func() {
+	setFriendSQLProbeDatabase(nil)
 	friendTogether = nil
 	enabled := strings.EqualFold(getenv("FRIEND_TOGETHER_ENABLED", "false"), "true")
 	source := &friendTeslaMateSource{navigation: map[int64]friendNavigationSample{}}
@@ -32,6 +32,7 @@ func registerFriendTogether(mux *http.ServeMux) func() {
 			log.Printf("[warn] friend Together source configuration unavailable")
 		}
 		source.ownsDatabase = source.database != nil
+		setFriendSQLProbeDatabase(source.database)
 	}
 	var reader ft.SourceReader = source
 	if enabled && source.database == nil {
@@ -39,6 +40,7 @@ func registerFriendTogether(mux *http.ServeMux) func() {
 	}
 	service, err := ft.NewHTTPService(ft.HTTPConfig{Enabled: enabled, GuestOrigin: getenv("FRIEND_TOGETHER_GUEST_ORIGIN", ""), StatePath: getenv("FRIEND_TOGETHER_STATE_PATH", "/data/friend-together/state.json"), AuthenticateOwner: authorized, Source: reader})
 	if err != nil {
+		setFriendSQLProbeDatabase(nil)
 		source.stop()
 		// Do not log configured origins, state contents or credentials.
 		log.Printf("[warn] friend Together disabled: configuration or durable state unavailable")
@@ -51,7 +53,7 @@ func registerFriendTogether(mux *http.ServeMux) func() {
 	if enabled {
 		source.start()
 	}
-	return source.stop
+	return func() { setFriendSQLProbeDatabase(nil); source.stop() }
 }
 
 func registerUnavailableFriendHandlers(mux *http.ServeMux, owner func(*http.Request) bool) {
@@ -78,11 +80,15 @@ func registerUnavailableFriendHandlers(mux *http.ServeMux, owner func(*http.Requ
 // The source never turns a successful query or an unrelated MQTT packet into a
 // new location observation. Companion remains read-only and never calls Tesla.
 type friendTeslaMateSource struct {
-	database     *sql.DB
-	ownsDatabase bool
-	mu           sync.Mutex
-	navigation   map[int64]friendNavigationSample
-	client       mqtt.Client
+	database       *sql.DB
+	ownsDatabase   bool
+	mu             sync.Mutex
+	navigation     map[int64]friendNavigationSample
+	client         mqtt.Client
+	mqttManaged    bool
+	mqttAccepting  bool
+	mqttGeneration uint64
+	stopped        bool
 }
 type friendNavigationSample struct {
 	revision       int64
@@ -103,6 +109,9 @@ func (s *friendTeslaMateSource) OwnsCar(ctx context.Context, id int64) (bool, er
 }
 func (s *friendTeslaMateSource) ReadSource(ctx context.Context, key ft.SourceKey, consent int64, p ft.PermissionSet) (ft.SourceSnapshot, error) {
 	out := ft.SourceSnapshot{Source: key, State: ft.StateUnknown}
+	if !mqttCarEligible(int(key.CarID)) {
+		return out, nil
+	}
 	if s.database == nil {
 		return out, sql.ErrConnDone
 	}
@@ -212,55 +221,215 @@ const friendTrajectoryQuery = `SELECT date,latitude,longitude FROM positions
   ORDER BY date DESC,id DESC LIMIT 500`
 
 func (s *friendTeslaMateSource) start() {
+	s.mu.Lock()
+	s.mqttManaged, s.mqttAccepting, s.stopped = true, false, false
+	s.mu.Unlock()
+	registerMQTTFleetMonitor("friend_navigation", s.refreshFleetSubscription, s.reconcileFleet)
 	options := mqtt.NewClientOptions().AddBroker(getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883")).SetClientID(getenv("MQTT_CLIENT_ID", "my-t-companion") + "-friend-together").SetAutoReconnect(true).SetConnectRetry(true).SetConnectRetryInterval(10 * time.Second).SetKeepAlive(30 * time.Second).SetOrderMatters(true)
 	if username := strings.TrimSpace(getenv("MQTT_USERNAME", "")); username != "" {
 		options.SetUsername(username)
 		options.SetPassword(getenv("MQTT_PASSWORD", ""))
 	}
-	options.SetConnectionLostHandler(func(_ mqtt.Client, _ error) {
+	options.SetConnectionLostHandler(func(client mqtt.Client, _ error) {
 		s.mu.Lock()
-		for id, sample := range s.navigation {
-			sample.active = false
-			sample.observation = nil
-			s.navigation[id] = sample
+		if s.client == client {
+			s.invalidateNavigationConnectionLocked()
 		}
 		s.mu.Unlock()
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
-		token := client.Subscribe("teslamate/cars/+/active_route", 1, func(_ mqtt.Client, message mqtt.Message) {
-			s.handleNavigationMessage(message, time.Now().UnixMilli())
-		})
+		s.mu.Lock()
+		if s.client != client || s.stopped {
+			s.mu.Unlock()
+			client.Disconnect(250)
+			return
+		}
+		if !client.IsConnected() {
+			s.mu.Unlock()
+			return
+		}
+		generation, accepting := s.beginNavigationConnectionLocked()
+		if !accepting {
+			s.mu.Unlock()
+			client.Disconnect(250)
+			return
+		}
+		epoch := beginMQTTConnection("friend_navigation")
+		s.mu.Unlock()
+		token := client.SubscribeMultiple(teslaMateMQTTTopics([]string{"active_route"}), s.navigationMessageHandler(generation))
 		if !token.WaitTimeout(10*time.Second) || token.Error() != nil {
+			s.finishNavigationSubscriptionForClient(client, generation, false, epoch)
+			requestMQTTBaselineRetry()
 			log.Printf("[warn] friend Together navigation observation unavailable")
+		} else if client.IsConnected() {
+			s.finishNavigationSubscriptionForClient(client, generation, true, epoch)
 		}
 	})
-	s.client = mqtt.NewClient(options)
+	client := mqtt.NewClient(options)
+	s.mu.Lock()
+	s.client = client
+	s.mu.Unlock()
 	go func() {
-		token := s.client.Connect()
+		token := client.Connect()
 		if !token.WaitTimeout(15*time.Second) || token.Error() != nil {
 			log.Printf("[warn] friend Together navigation source disconnected")
 		}
 	}()
 }
+
+func (s *friendTeslaMateSource) refreshFleetSubscription() {
+	s.mu.Lock()
+	client, accepting, generation, stopped := s.client, s.mqttAccepting, s.mqttGeneration, s.stopped
+	epoch := mqttConnectionEpoch("friend_navigation")
+	s.mu.Unlock()
+	if client == nil || stopped || !client.IsConnected() {
+		return
+	}
+	// Failed initial SUBACK invalidates the old generation. Recover it without
+	// clearing an already-working source when merely adding another fleet member.
+	began := !accepting
+	if began {
+		s.mu.Lock()
+		if s.client != client || mqttConnectionEpoch("friend_navigation") != epoch {
+			s.mu.Unlock()
+			return
+		}
+		var ok bool
+		generation, ok = s.beginNavigationConnectionLocked()
+		s.mu.Unlock()
+		if !ok {
+			return
+		}
+	}
+	token := client.SubscribeMultiple(teslaMateMQTTTopics([]string{"active_route"}), s.navigationMessageHandler(generation))
+	if !token.WaitTimeout(5*time.Second) || token.Error() != nil {
+		if began {
+			s.finishNavigationSubscriptionForClient(client, generation, false, epoch)
+		}
+		requestMQTTBaselineRetry()
+		log.Printf("[warn] friend fleet baseline subscription did not complete")
+		return
+	}
+	if client.IsConnected() {
+		s.finishNavigationSubscriptionForClient(client, generation, true, epoch)
+	}
+}
+
 func (s *friendTeslaMateSource) handleNavigationMessage(message mqtt.Message, at int64) {
+	s.mu.Lock()
+	generation := s.mqttGeneration
+	s.mu.Unlock()
+	s.handleNavigationMessageForGeneration(message, at, generation)
+}
+
+func (s *friendTeslaMateSource) navigationMessageHandler(generations ...uint64) mqtt.MessageHandler {
+	s.mu.Lock()
+	generation := s.mqttGeneration
+	s.mu.Unlock()
+	if len(generations) > 0 {
+		generation = generations[0]
+	}
+	return func(_ mqtt.Client, message mqtt.Message) {
+		s.handleNavigationMessageForGeneration(message, time.Now().UnixMilli(), generation)
+	}
+}
+
+func (s *friendTeslaMateSource) beginNavigationConnection() (uint64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.beginNavigationConnectionLocked()
+}
+
+func (s *friendTeslaMateSource) beginNavigationConnectionLocked() (uint64, bool) {
+	if s.stopped {
+		return s.mqttGeneration, false
+	}
+	s.mqttManaged, s.mqttAccepting = true, true
+	s.mqttGeneration++
+	s.clearNavigationLocked()
+	return s.mqttGeneration, true
+}
+
+func (s *friendTeslaMateSource) finishNavigationSubscription(generation uint64, success bool, expectedEpoch ...uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.finishNavigationSubscriptionLocked(generation, success, expectedEpoch...)
+}
+
+func (s *friendTeslaMateSource) finishNavigationSubscriptionForClient(client mqtt.Client, generation uint64, success bool, epoch uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.client != client || success && !client.IsConnected() {
+		return false
+	}
+	return s.finishNavigationSubscriptionLocked(generation, success, epoch)
+}
+
+func (s *friendTeslaMateSource) finishNavigationSubscriptionLocked(generation uint64, success bool, expectedEpoch ...uint64) bool {
+	if s.stopped || generation != s.mqttGeneration {
+		return false
+	}
+	if success {
+		return recordMQTTConnection("friend_navigation", true, expectedEpoch...)
+	}
+	if len(expectedEpoch) > 0 && mqttConnectionEpoch("friend_navigation") != expectedEpoch[0] {
+		return false
+	}
+	s.mqttAccepting = false
+	s.mqttGeneration++
+	s.clearNavigationLocked()
+	recordMQTTConnection("friend_navigation", false)
+	return true
+}
+
+func (s *friendTeslaMateSource) invalidateNavigationConnection() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.invalidateNavigationConnectionLocked()
+}
+
+func (s *friendTeslaMateSource) invalidateNavigationConnectionLocked() {
+	s.mqttManaged, s.mqttAccepting = true, false
+	s.mqttGeneration++
+	s.clearNavigationLocked()
+	recordMQTTConnection("friend_navigation", false)
+}
+
+func (s *friendTeslaMateSource) clearNavigationLocked() {
+	for id, sample := range s.navigation {
+		sample.active = false
+		sample.observation = nil
+		s.navigation[id] = sample
+	}
+}
+
+func (s *friendTeslaMateSource) handleNavigationMessageForGeneration(message mqtt.Message, at int64, generation uint64) {
+	s.mu.Lock()
+	current := !s.mqttManaged || s.mqttAccepting && generation == s.mqttGeneration
+	s.mu.Unlock()
+	if !current {
+		return
+	}
+	id, field, ok := acceptTeslaMateMQTTMessage(message, "friend_navigation")
+	if !ok || field != "active_route" {
+		return
+	}
 	// Retained bootstrap has no original observation timestamp. Publishing it
 	// as new after restart would make old destinations appear live.
 	if message.Retained() || message.Duplicate() {
 		return
 	}
-	parts := strings.Split(message.Topic(), "/")
-	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" || parts[3] != "active_route" {
-		return
-	}
-	id, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil || id <= 0 {
-		return
-	}
-	s.observeNavigation(id, message.Payload(), at)
+	s.observeNavigationForGeneration(int64(id), message.Payload(), at, &generation)
 }
 func (s *friendTeslaMateSource) stop() {
-	if s.client != nil && s.client.IsConnected() {
-		s.client.Disconnect(250)
+	s.mu.Lock()
+	s.stopped = true
+	client := s.client
+	s.client = nil
+	s.invalidateNavigationConnectionLocked()
+	s.mu.Unlock()
+	if client != nil && client.IsConnected() {
+		client.Disconnect(250)
 	}
 	if s.ownsDatabase && s.database != nil {
 		_ = s.database.Close()
@@ -268,7 +437,7 @@ func (s *friendTeslaMateSource) stop() {
 }
 
 func pqKeyword(value string) string {
-	return "'" + strings.ReplaceAll(value, `'`, `''`) + "'"
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(value) + "'"
 }
 
 func friendDatabaseDSN() string {
@@ -276,7 +445,7 @@ func friendDatabaseDSN() string {
 	// postgres:?host=... URL left lib/pq on a unix socket, so OwnsCar failed
 	// with 503 source_unavailable while GET /status still looked ready.
 	return fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=%s application_name=my-t-companion-friends options='-c statement_timeout=2000 -c default_transaction_read_only=on'",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=%s application_name=my-t-companion-friends options='-c statement_timeout=2000 -c default_transaction_read_only=on -c timezone=UTC'",
 		pqKeyword(getenv("DATABASE_HOST", "database")),
 		pqKeyword(getenv("DATABASE_PORT", "5432")),
 		pqKeyword(getenv("DATABASE_USER", "teslamate")),
@@ -304,6 +473,10 @@ func openFriendDatabase() (*sql.DB, error) {
 	return pool, nil
 }
 func (s *friendTeslaMateSource) observeNavigation(id int64, payload []byte, at int64) {
+	s.observeNavigationForGeneration(id, payload, at, nil)
+}
+
+func (s *friendTeslaMateSource) observeNavigationForGeneration(id int64, payload []byte, at int64, generation *uint64) {
 	if len(payload) > 16<<10 {
 		return
 	}
@@ -314,6 +487,9 @@ func (s *friendTeslaMateSource) observeNavigation(id int64, payload []byte, at i
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if generation != nil && s.mqttManaged && (!s.mqttAccepting || *generation != s.mqttGeneration) {
+		return
+	}
 	old := s.navigation[id]
 	if at < 0 || at < old.lastObservedMS {
 		return
