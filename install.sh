@@ -298,6 +298,89 @@ fi
 mqtt_broker_url="$(
   resolve_secret MQTT_BROKER_URL "MQTT_URL" || true
 )"
+# A namespace belongs to the TeslaMate source, not the first environment block
+# of another compose service. An explicitly empty operator override is valid.
+read_live_mqtt_namespace() {
+  local container="$1" entries line value=""
+  # Quote each complete entry before line selection. Literal quotes, backslashes
+  # and embedded CR/LF remain escaped bytes and fail namespace validation; unlike
+  # the generic credential reader, this must not normalize a different source.
+  entries="$(docker inspect "$container" --format '{{range .Config.Env}}{{printf "%q\n" .}}{{end}}' 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    if [[ "$line" == '"MQTT_NAMESPACE='*'"' ]]; then
+      value="${line#\"MQTT_NAMESPACE=}"
+      value="${value%\"}"
+    fi
+  done <<< "$entries"
+  printf '%s' "$value"
+}
+
+resolve_mqtt_namespace() {
+  if [[ "${MQTT_NAMESPACE+x}" == x ]]; then
+    printf '%s' "$MQTT_NAMESPACE"
+  elif [[ -n "${TESLAMATE_CONTAINER:-}" ]]; then
+    read_live_mqtt_namespace "$TESLAMATE_CONTAINER"
+  elif [[ -f "$TESLAMATE_DIR/.env" ]] && read_env_value MQTT_NAMESPACE "$TESLAMATE_DIR/.env"; then
+    :
+  else
+    read_env_value MQTT_NAMESPACE "$ENV_FILE" || true
+  fi
+}
+# A sentinel preserves trailing LF bytes that command substitution otherwise
+# strips. Keep the resolver's exit status rather than the sentinel printf's.
+mqtt_namespace="$(resolve_mqtt_namespace; namespace_status=$?; printf '.'; exit "$namespace_status")" || fail "Unable to resolve MQTT_NAMESPACE."
+mqtt_namespace="${mqtt_namespace%.}"
+if [[ ${#mqtt_namespace} -gt 128 || "$mqtt_namespace" == *[!a-zA-Z0-9_.-]* ]]; then
+  fail "Invalid MQTT_NAMESPACE: use at most 128 ASCII letters, digits, dots, underscores or hyphens."
+fi
+
+# Accept a deliberately canonical, shell/dotenv-safe subset of Go durations:
+# decimal components with ns/us/ms/s/m/h units, at most nanosecond precision,
+# no signs, leading zeros, whitespace or shell characters. Bound every number
+# before arithmetic; the largest permitted total (24h) is exactly representable.
+valid_database_pool_duration() {
+  local value="$1"
+  [[ -n "$value" && ${#value} -le 128 && "$value" != *[!0-9.numsh]* ]] || return 1
+  LC_ALL=C awk -v duration="$value" '
+    BEGIN {
+      maximum = 86400000000000
+      factors["ns"] = 1; factors["us"] = 1000; factors["ms"] = 1000000
+      factors["s"] = 1000000000; factors["m"] = 60000000000; factors["h"] = 3600000000000
+      while (length(duration)) {
+        if (!match(duration, /^[0-9]+(\.[0-9]+)?/)) exit 1
+        number = substr(duration, 1, RLENGTH)
+        duration = substr(duration, RLENGTH + 1)
+        if (!match(duration, /^(ns|us|ms|s|m|h)/)) exit 1
+        unit = substr(duration, 1, RLENGTH)
+        duration = substr(duration, RLENGTH + 1)
+        split(number, pieces, ".")
+        whole = pieces[1]; fraction = pieces[2]
+        if (length(whole) > 14 || (length(whole) > 1 && substr(whole, 1, 1) == "0")) exit 1
+        precision = unit == "ns" ? 0 : unit == "us" ? 3 : unit == "ms" ? 6 : 9
+        if (length(fraction) > precision || whole + 0 > maximum / factors[unit]) exit 1
+        while (length(fraction) < precision) fraction = fraction "0"
+        fractional_ns = precision ? (fraction + 0) * (factors[unit] / (10 ^ precision)) : 0
+        total += (whole + 0) * factors[unit] + fractional_ns
+        if (total > maximum) exit 1
+      }
+      exit total >= 1000000000 ? 0 : 1
+    }
+  '
+}
+
+validate_database_pool_config() {
+  [[ "$database_max_open_conns" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]] || return 1
+  [[ "$database_max_idle_conns" =~ ^(0|[1-9]|[1-5][0-9]|6[0-4])$ ]] || return 1
+  (( 10#$database_max_idle_conns <= 10#$database_max_open_conns )) || return 1
+  valid_database_pool_duration "$database_conn_max_idle_time" || return 1
+  valid_database_pool_duration "$database_conn_max_lifetime" || return 1
+}
+
+database_max_open_conns="${DATABASE_MAX_OPEN_CONNS-$(read_env_value DATABASE_MAX_OPEN_CONNS "$ENV_FILE" || printf 8)}"
+database_max_idle_conns="${DATABASE_MAX_IDLE_CONNS-$(read_env_value DATABASE_MAX_IDLE_CONNS "$ENV_FILE" || printf 2)}"
+database_conn_max_idle_time="${DATABASE_CONN_MAX_IDLE_TIME-$(read_env_value DATABASE_CONN_MAX_IDLE_TIME "$ENV_FILE" || printf 5m)}"
+database_conn_max_lifetime="${DATABASE_CONN_MAX_LIFETIME-$(read_env_value DATABASE_CONN_MAX_LIFETIME "$ENV_FILE" || printf 30m)}"
+validate_database_pool_config || fail "Invalid database pool configuration: use max-open 1..64, idle 0..max-open and canonical durations from 1s to 24h (ns/us/ms/s/m/h; no whitespace or shell characters)."
 mqtt_needs_host_gateway=false
 host_mqtt_listening=false
 # Containers use docker0 / host-gateway (172.17.0.1), not 127.0.0.1.
@@ -497,6 +580,9 @@ if [[ "$SOURCE_DIR" != "$INSTALL_DIR" ]]; then
     lock_secure_notification.go
     push_subscribers.go
     friend_together.go
+    mqtt_source.go
+    mqtt_monitor_lifecycle.go
+    sql_compatibility.go
   )
   for name in "${required_go[@]}"; do
     [[ -f "$SOURCE_DIR/$name" ]] || fail "Release package missing $name"
@@ -546,7 +632,7 @@ fi
 # Always verify production sources before docker build (covers in-place reinstalls).
 for name in main.go teslamate_version.go notification.go charging_notification.go navigation_notification.go \
   parking_event_monitor.go storage_policy.go lock_secure_notification.go \
-  push_subscribers.go friend_together.go Dockerfile VERSION; do
+  push_subscribers.go friend_together.go mqtt_source.go mqtt_monitor_lifecycle.go sql_compatibility.go Dockerfile VERSION; do
   [[ -f "$INSTALL_DIR/$name" ]] || fail "Missing build file: $INSTALL_DIR/$name — re-run from a complete release package"
 done
 [[ -f "$INSTALL_DIR/internal/friendtogether/http_service.go" ]] \
@@ -573,6 +659,11 @@ umask 077
   printf 'DATABASE_NAME=%s\n' "$database_name"
   printf 'DATABASE_HOST=%s\n' "$database_host"
   printf 'MQTT_BROKER_URL=%s\n' "$mqtt_broker_url"
+  printf 'MQTT_NAMESPACE=%s\n' "$mqtt_namespace"
+  printf 'DATABASE_MAX_OPEN_CONNS=%s\n' "${database_max_open_conns:-8}"
+  printf 'DATABASE_MAX_IDLE_CONNS=%s\n' "${database_max_idle_conns:-2}"
+  printf 'DATABASE_CONN_MAX_IDLE_TIME=%s\n' "${database_conn_max_idle_time:-5m}"
+  printf 'DATABASE_CONN_MAX_LIFETIME=%s\n' "${database_conn_max_lifetime:-30m}"
   printf 'MY_T_API_TOKEN=%s\n' "$api_token"
   printf 'AUTH_PROBE_URL=%s\n' "$auth_probe_url"
   printf 'TZ=%s\n' "$timezone"
@@ -632,6 +723,11 @@ YAML
       AUTH_PROBE_URL: \${AUTH_PROBE_URL:-}
       TZ: \${TZ:-UTC}
       MQTT_BROKER_URL: "$(yaml_escape "$mqtt_broker_url")"
+      MQTT_NAMESPACE: \${MQTT_NAMESPACE:-}
+      DATABASE_MAX_OPEN_CONNS: \${DATABASE_MAX_OPEN_CONNS:-8}
+      DATABASE_MAX_IDLE_CONNS: \${DATABASE_MAX_IDLE_CONNS:-2}
+      DATABASE_CONN_MAX_IDLE_TIME: \${DATABASE_CONN_MAX_IDLE_TIME:-5m}
+      DATABASE_CONN_MAX_LIFETIME: \${DATABASE_CONN_MAX_LIFETIME:-30m}
       TESLAMATE_VERSION: \${TESLAMATE_VERSION:-}
       TESLAMATE_WEB_URL: \${TESLAMATE_WEB_URL:-http://teslamate:4000}
       PUSH_INSTALLATION_ID: \${PUSH_INSTALLATION_ID:-}

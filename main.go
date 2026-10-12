@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -76,10 +77,11 @@ type envelope struct {
 }
 
 type responseMeta struct {
-	GeneratedAt               string `json:"generated_at"`
-	StorageMode               string `json:"storage_mode"`
-	Retention                 string `json:"retention"`
-	RecommendedRefreshSeconds int    `json:"recommended_refresh_seconds"`
+	GeneratedAt               string                   `json:"generated_at"`
+	StorageMode               string                   `json:"storage_mode"`
+	Retention                 string                   `json:"retention"`
+	RecommendedRefreshSeconds int                      `json:"recommended_refresh_seconds"`
+	StateHistoryPage          *statesHistoryPagination `json:"state_history_page,omitempty"`
 }
 
 type drivePoint struct {
@@ -137,27 +139,38 @@ func main() {
 		log.Fatalf("[error] invalid TZ %q: %v", tzName, err)
 	}
 
+	if _, err := mqttNamespace(); err != nil {
+		log.Fatal(err)
+	}
 	initDB()
 	defer db.Close()
+	stopMQTTSource := startTeslaMateMQTTRuntime(db)
+	defer stopMQTTSource()
 	pushRegistry = newPushSubscriberRegistry()
 	pushRegistry.start()
 	defer pushRegistry.stop()
 	softwarePush = newSoftwareNotificationMonitorFromEnvironment()
+	registerMQTTFleetMonitor("software", softwarePush.refreshFleetSubscription, softwarePush.reconcileFleet)
 	softwarePush.start()
 	defer softwarePush.stop()
 	chargingPush = newChargingNotificationMonitorFromEnvironment()
+	registerMQTTFleetMonitor("charging", chargingPush.refreshFleetSubscription, chargingPush.reconcileFleet)
 	chargingPush.start()
 	defer chargingPush.stop()
 	navigationPush = newNavigationNotificationMonitorFromEnvironment()
+	registerMQTTFleetMonitor("navigation", navigationPush.refreshFleetSubscription, navigationPush.reconcileFleet)
 	navigationPush.start()
 	defer navigationPush.stop()
 	parkingEvents = newParkingEventMonitorFromEnvironment()
+	registerMQTTFleetMonitor("parking", parkingEvents.refreshFleetSubscription, parkingEvents.reconcileFleet)
 	parkingEvents.start()
 	defer parkingEvents.stop()
 	lockSecurePush = newLockSecureNotificationMonitorFromEnvironment()
+	registerMQTTFleetMonitor("lock_secure", lockSecurePush.refreshFleetSubscription, lockSecurePush.reconcileFleet)
 	lockSecurePush.start()
 	defer lockSecurePush.stop()
 	lowBatteryPush = newLowBatteryNotificationMonitorFromEnvironment()
+	registerMQTTFleetMonitor("low_battery", lowBatteryPush.refreshFleetSubscription, lowBatteryPush.reconcileFleet)
 	lowBatteryPush.start()
 	defer lowBatteryPush.stop()
 
@@ -614,6 +627,8 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		payload["capabilities"] = append(payload["capabilities"].([]string), "friend_together_v1")
 	}
 	addTireHistoryCapability(r.Context(), payload)
+	addSQLFeatureCapabilities(r.Context(), payload)
+	payload["mqtt_source"] = mqttFleetDiagnostics()
 	// Prefer a live read on the private TeslaMate network. Static install
 	// metadata is reported explicitly as a fallback so clients never confuse it
 	// with a fresh observation after upgrading TeslaMate independently.
@@ -700,10 +715,15 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, err := fetchStates(r.Context(), carID, startDate, endDate)
+	page, err := parseStatesHistoryPage(r.URL.Query(), carID, startDate, endDate)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "feature": sqlStatesFeature})
+		return
+	}
+	payload, pagination, err := fetchStatesPage(r.Context(), carID, startDate, endDate, page)
 	if err != nil {
 		log.Printf("[error] fetchStates car=%d: %v", carID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Unable to load state history"})
+		writeSQLFeatureError(w, sqlStatesFeature, err)
 		return
 	}
 
@@ -714,6 +734,7 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 			StorageMode:               "teslamate_source_of_truth",
 			Retention:                 "follows_teslamate_database",
 			RecommendedRefreshSeconds: 30,
+			StateHistoryPage:          pagination,
 		},
 	})
 }
@@ -760,22 +781,30 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 		return
 	}
 	values := map[string]string{}
-	if parkingEvents != nil {
+	eligible := mqttCarEligible(carID)
+	if parkingEvents != nil && eligible {
 		values = parkingEvents.currentValues(carID)
 	}
 	var software carSoftwareState
-	if softwarePush != nil {
+	if softwarePush != nil && eligible {
 		software = softwarePush.carState(carID)
 	}
 	doorDiagnostics := []parkingDoorReceipt{}
 	var presence map[string]any
-	if lockSecurePush != nil {
+	if lockSecurePush != nil && eligible {
 		presence = lockSecurePush.presenceSnapshot(carID, time.Now().UTC())
 	}
 	mqttConnected := false
-	if parkingEvents != nil {
+	if parkingEvents != nil && eligible {
 		doorDiagnostics = parkingEvents.doorDiagnostics(carID)
 		mqttConnected = parkingEvents.mqttConnected()
+	}
+	var updateAvailable any
+	availabilityStatus := software.UpdateAvailabilityStatus
+	if availabilityStatus == "available" || availabilityStatus == "not_available" {
+		updateAvailable = software.UpdateAvailable
+	} else {
+		availabilityStatus = "unconfirmed"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
@@ -796,12 +825,14 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 			"sun_roof_installed":          mqttBool(values, "sun_roof_installed"),
 			"sun_roof_state":              emptyToNil(values["sun_roof_state"]),
 			"sun_roof_percent_open":       mqttInt(values, "sun_roof_percent_open"),
-			"update_available":            software.UpdateAvailable,
+			"update_available":            updateAvailable,
+			"update_availability_status":  availabilityStatus,
 			"update_version":              emptyToNil(software.UpdateVersion),
 			"software_version":            emptyToNil(software.Version),
-			"download_percent":            software.DownloadPercent,
-			"install_percent":             software.InstallPercent,
+			"download_percent":            mqttSoftwarePercent(carID, "download_perc", software.DownloadPercent),
+			"install_percent":             mqttSoftwarePercent(carID, "install_perc", software.InstallPercent),
 			"mqtt_connected":              mqttConnected,
+			"mqtt_diagnostics":            mqttSourceDiagnostics(carID),
 			"door_mqtt_diagnostics":       doorDiagnostics,
 		},
 	})
@@ -879,7 +910,7 @@ func handleCurrentDrive(w http.ResponseWriter, r *http.Request, carIDValue strin
 	payload, err := fetchCurrentDrive(r.Context(), carID, afterPointID, limit)
 	if err != nil {
 		log.Printf("[error] fetchCurrentDrive car=%d: %v", carID, err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Unable to load current drive"})
+		writeSQLFeatureError(w, sqlCurrentDriveFeature, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, currentDriveEnvelope{
@@ -893,14 +924,18 @@ func handleCurrentDrive(w http.ResponseWriter, r *http.Request, carIDValue strin
 	})
 }
 
-func fetchCurrentDrive(ctx context.Context, carID int, afterPointID int64, limit int) (currentDriveData, error) {
+func fetchCurrentDrive(ctx context.Context, carID int, afterPointID int64, limit int) (data currentDriveData, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	data := currentDriveData{Car: carRef{CarID: carID}}
+	defer func() { err = sqlFeatureFailure(sqlCurrentDriveFeature, err) }()
+	data = currentDriveData{Car: carRef{CarID: carID}}
+	if err := checkSQLFeature(ctx, db, sqlCurrentDriveFeature); err != nil {
+		return data, err
+	}
 	var carName sql.NullString
 	if err := db.QueryRowContext(ctx, `SELECT name FROM cars WHERE id = $1`, carID).Scan(&carName); err != nil {
 		if err == sql.ErrNoRows {
-			return data, nil
+			return data, errSQLCarNotFound
 		}
 		return data, err
 	}
@@ -912,7 +947,7 @@ func fetchCurrentDrive(ctx context.Context, carID int, afterPointID int64, limit
 	var driveID int64
 	var startDate time.Time
 	var endDate sql.NullTime
-	err := db.QueryRowContext(ctx, `
+	err = db.QueryRowContext(ctx, `
 		SELECT id, start_date, end_date
 		FROM drives
 		WHERE car_id = $1 AND end_date IS NULL
@@ -927,14 +962,14 @@ func fetchCurrentDrive(ctx context.Context, carID int, afterPointID int64, limit
 
 	drive := &currentDrive{
 		DriveID:      driveID,
-		StartDate:    startDate.In(location).Format(time.RFC3339),
+		StartDate:    startDate.In(location).Format(time.RFC3339Nano),
 		IsOngoing:    !endDate.Valid,
 		DataStatus:   "waiting_for_positions",
 		Points:       []drivePoint{},
 		AfterPointID: afterPointID,
 	}
 	if endDate.Valid {
-		value := endDate.Time.In(location).Format(time.RFC3339)
+		value := endDate.Time.In(location).Format(time.RFC3339Nano)
 		drive.EndDate = &value
 	}
 
@@ -1020,7 +1055,7 @@ func scanDrivePoint(row rowScanner) (drivePoint, error) {
 		value := int(speed.Int64)
 		point.Speed = &value
 	}
-	if odometer.Valid {
+	if odometer.Valid && !math.IsNaN(odometer.Float64) && !math.IsInf(odometer.Float64, 0) && odometer.Float64 >= 0 {
 		value := odometer.Float64
 		point.Odometer = &value
 	}
@@ -1131,7 +1166,8 @@ const fetchStatesQuery = `
 			end_before.rated_battery_range_km,
 			end_sample.date,
 			end_sample.battery_level,
-			end_sample.rated_battery_range_km
+			end_sample.rated_battery_range_km,
+			s.id
 		FROM states s
 		LEFT JOIN cars c ON c.id = s.car_id
 		LEFT JOIN LATERAL (
@@ -1141,7 +1177,7 @@ const fetchStatesQuery = `
 			  AND p.date <= s.start_date
 			  AND p.date >= s.start_date - INTERVAL '30 minutes'
 			  AND (p.battery_level IS NOT NULL OR p.rated_battery_range_km IS NOT NULL)
-			ORDER BY p.date DESC
+			ORDER BY p.date DESC, p.id DESC
 			LIMIT 1
 		) start_sample ON TRUE
 		LEFT JOIN LATERAL (
@@ -1151,7 +1187,7 @@ const fetchStatesQuery = `
 			  AND p.date <= COALESCE(s.end_date, LEAST($3, NOW()))
 			  AND p.date >= COALESCE(s.end_date, LEAST($3, NOW())) - INTERVAL '30 minutes'
 			  AND (p.battery_level IS NOT NULL OR p.rated_battery_range_km IS NOT NULL)
-			ORDER BY p.date DESC
+			ORDER BY p.date DESC, p.id DESC
 			LIMIT 1
 		) end_before ON TRUE
 		LEFT JOIN LATERAL (
@@ -1162,29 +1198,57 @@ const fetchStatesQuery = `
 			  AND p.date >= s.end_date
 			  AND p.date <= s.end_date + INTERVAL '30 minutes'
 			  AND (p.battery_level IS NOT NULL OR p.rated_battery_range_km IS NOT NULL)
-			ORDER BY p.date ASC
+			ORDER BY p.date ASC, p.id ASC
 			LIMIT 1
 		) end_sample ON TRUE
 		WHERE s.car_id = $1
 		  AND s.start_date < $3
-		  AND COALESCE(s.end_date, NOW()) > $2
-		ORDER BY s.start_date ASC`
+		  AND COALESCE(s.end_date, NOW()) > $2`
 
 func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (responseData, error) {
+	data, _, err := fetchStatesPage(ctx, carID, startDate, endDate, nil)
+	return data, err
+}
+
+func fetchStatesPage(ctx context.Context, carID int, startDate, endDate time.Time, page *statesHistoryPageRequest) (data responseData, pagination *statesHistoryPagination, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
+	defer func() { err = sqlFeatureFailure(sqlStatesFeature, err) }()
+	data = responseData{Car: carRef{CarID: carID}, States: []stateInterval{}}
+	if err := checkSQLFeature(ctx, db, sqlStatesFeature); err != nil {
+		return data, nil, err
+	}
+	var name sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT name FROM cars WHERE id = $1`, carID).Scan(&name); err != nil {
+		if err == sql.ErrNoRows {
+			return data, nil, errSQLCarNotFound
+		}
+		return data, nil, err
+	}
+	if name.Valid && strings.TrimSpace(name.String) != "" {
+		data.Car.CarName = &name.String
+	}
+	query := fetchStatesQuery
+	args := []any{carID, startDate.UTC(), endDate.UTC()}
+	if page != nil && page.Cursor != nil {
+		query += ` AND (s.start_date, s.id) > ($4, $5)`
+		args = append(args, page.Cursor.Date.UTC(), page.Cursor.ID)
+	}
+	query += ` ORDER BY s.start_date ASC, s.id ASC`
+	if page != nil {
+		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, page.Limit+1)
+		pagination = &statesHistoryPagination{Limit: page.Limit}
+	}
 
-	rows, err := db.QueryContext(ctx, fetchStatesQuery, carID, startDate.UTC(), endDate.UTC())
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return responseData{}, err
+		return data, nil, err
 	}
 	defer rows.Close()
 
-	data := responseData{
-		Car:    carRef{CarID: carID},
-		States: []stateInterval{},
-	}
-
+	var lastDate time.Time
+	var lastID int64
 	for rows.Next() {
 		var (
 			state            string
@@ -1200,6 +1264,7 @@ func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (
 			endSampleDate    sql.NullTime
 			endBattery       sql.NullInt64
 			endRange         sql.NullFloat64
+			stateID          int64
 		)
 		if err := rows.Scan(
 			&state,
@@ -1215,16 +1280,21 @@ func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (
 			&endSampleDate,
 			&endBattery,
 			&endRange,
+			&stateID,
 		); err != nil {
-			return responseData{}, err
+			return data, nil, err
+		}
+		if page != nil && len(data.States) == page.Limit {
+			pagination.HasMore = true
+			break
 		}
 
 		interval := stateInterval{
 			State:     state,
-			StartDate: start.In(location).Format(time.RFC3339),
+			StartDate: start.In(location).Format(time.RFC3339Nano),
 		}
 		if end.Valid {
-			formatted := end.Time.In(location).Format(time.RFC3339)
+			formatted := end.Time.In(location).Format(time.RFC3339Nano)
 			interval.EndDate = &formatted
 		}
 		interval.StartTelemetry = makeTelemetrySample(startSampleDate, startBattery, startRange)
@@ -1238,6 +1308,7 @@ func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (
 		}
 
 		data.States = append(data.States, interval)
+		lastDate, lastID = start, stateID
 
 		if data.Car.CarName == nil && carName.Valid && strings.TrimSpace(carName.String) != "" {
 			name := carName.String
@@ -1246,10 +1317,19 @@ func fetchStates(ctx context.Context, carID int, startDate, endDate time.Time) (
 	}
 
 	if err := rows.Err(); err != nil {
-		return responseData{}, err
+		return data, nil, err
 	}
-
-	return data, nil
+	if pagination != nil {
+		pagination.ReturnedCount = len(data.States)
+		if pagination.HasMore {
+			next, err := encodeStatesHistoryCursor(statesHistoryCursor{Version: 1, CarID: carID, From: startDate.UTC(), To: endDate.UTC(), Date: lastDate.UTC(), ID: lastID})
+			if err != nil {
+				return data, nil, err
+			}
+			pagination.NextCursor = &next
+		}
+	}
+	return data, pagination, nil
 }
 
 func makeTelemetrySample(date sql.NullTime, battery sql.NullInt64, ratedRange sql.NullFloat64) *telemetrySample {
@@ -1257,13 +1337,13 @@ func makeTelemetrySample(date sql.NullTime, battery sql.NullInt64, ratedRange sq
 		return nil
 	}
 	sample := telemetrySample{
-		Date: date.Time.In(location).Format(time.RFC3339),
+		Date: date.Time.In(location).Format(time.RFC3339Nano),
 	}
 	if battery.Valid {
 		value := int(battery.Int64)
 		sample.BatteryLevel = &value
 	}
-	if ratedRange.Valid {
+	if ratedRange.Valid && !math.IsNaN(ratedRange.Float64) && !math.IsInf(ratedRange.Float64, 0) {
 		value := ratedRange.Float64
 		sample.RatedRangeKM = &value
 	}
@@ -1292,30 +1372,31 @@ func parseDateParam(value string) (time.Time, error) {
 }
 
 func initDB() {
-	host := getenv("DATABASE_HOST", "database")
-	port := getenv("DATABASE_PORT", "5432")
-	user := getenv("DATABASE_USER", "teslamate")
-	pass := getenv("DATABASE_PASS", "secret")
-	name := getenv("DATABASE_NAME", "teslamate")
-	sslmode := getenv("DATABASE_SSL", "disable")
-	timeout := getenv("DATABASE_TIMEOUT", "10")
-
-	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=%s application_name=my-t-companion options='-c statement_timeout=15000 -c default_transaction_read_only=on'",
-		host, port, user, pass, name, sslmode, timeout,
-	)
-
-	var err error
-	db, err = sql.Open("postgres", dsn)
+	pool, err := sqlPoolConfigFromEnvironment()
+	if err != nil {
+		log.Fatalf("[error] database pool configuration: %v", err)
+	}
+	db, err = sql.Open("postgres", mainDatabaseDSN())
 	if err != nil {
 		log.Fatalf("[error] database open: %v", err)
 	}
+	applySQLPoolConfig(db, pool)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err = db.PingContext(ctx); err != nil {
 		log.Fatalf("[error] database ping: %v", err)
 	}
-	log.Printf("[info] database connected")
+	log.Printf("[info] database connected; pool max_open=%d max_idle=%d idle_time=%s lifetime=%s", pool.MaxOpen, pool.MaxIdle, pool.MaxIdleTime, pool.MaxLifetime)
+}
+
+func mainDatabaseDSN() string {
+	return fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s connect_timeout=%s application_name=my-t-companion options='-c statement_timeout=15000 -c default_transaction_read_only=on -c timezone=UTC'",
+		pqKeyword(getenv("DATABASE_HOST", "database")), pqKeyword(getenv("DATABASE_PORT", "5432")),
+		pqKeyword(getenv("DATABASE_USER", "teslamate")), pqKeyword(getenv("DATABASE_PASS", "secret")),
+		pqKeyword(getenv("DATABASE_NAME", "teslamate")), pqKeyword(getenv("DATABASE_SSL", "disable")),
+		pqKeyword(getenv("DATABASE_TIMEOUT", "10")),
+	)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

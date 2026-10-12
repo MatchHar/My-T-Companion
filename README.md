@@ -582,6 +582,64 @@ Review [SECURITY.md](SECURITY.md) before exposing the API through a public
 hostname. Never include `.env`, database passwords, API tokens, Cloudflare
 service tokens, or private keys in an issue.
 
+## Companion 1.10.54 TeslaMate 4.3 hardening
+
+These changes are introduced in Companion `1.10.54`. Publishing a release does
+not update existing self-hosted Companion 1.10.53 services; the owner must
+upgrade them separately. Historical version notes above remain historical.
+
+The enabled source fleet is read every 30 seconds using
+`cars.settings_id → car_settings.id` and `car_settings.enabled`. Unknown MQTT
+car IDs request a bounded, rate-limited refresh instead of growing a cache.
+For an account fleet change, explicitly use TeslaMate 4.3's Reload first;
+Companion follows its database/MQTT and never calls Tesla or wakes a car.
+After TeslaMate discovers a new car, Companion can recover its retained
+baseline by re-subscribing; neither a retained replay nor an unknown-to-known
+value is treated as a new physical action. Removed/disabled cars stop active
+observation without deleting their database or stored event history. New cars
+still inherit each iPhone's server notification defaults unless explicitly
+overridden. Friend Together grants remain explicit per car and never expand
+automatically.
+
+A failed fleet read can use the last successful snapshot for at most five
+minutes. After that, source-dependent observations and ordinary pushes fail
+closed, even if MQTT is connected. Authenticated diagnostics distinguish an
+unavailable/stale fleet from a successfully read empty fleet, and report
+per-field receipt times, retained flags and connection epochs. Receipt time,
+including a live receipt, is not the vehicle sample time; `healthy` is not proof
+that every field is current. Unknown values remain unknown, not false or zero.
+
+Set `MQTT_NAMESPACE` to the exact TeslaMate source namespace. Empty means
+`teslamate/cars/{id}/{field}`; a non-empty value means
+`teslamate/{namespace}/cars/{id}/{field}`. Only 0–128 ASCII characters from
+`[A-Za-z0-9_.-]` are accepted, without trimming or normalization. Spaces,
+slashes, wildcards, quotes and `$` are rejected. The same installer validation
+prevents dotenv/Compose expansion from silently selecting another source.
+
+Software notifications prefer the coherent `software_update` aggregate.
+Missing or incomparable installed/latest versions are unconfirmed, not “no
+update”; an initial/retained snapshot establishes a baseline only. Separate
+legacy scalar topics cannot prove one atomic version snapshot, so their
+fallback requires live corroboration and may conservatively omit an alert
+instead of pairing availability with an old version.
+
+Before an initial delivery and each outbox retry, Companion rechecks the
+current installation, source, car eligibility and category/per-car preferences.
+No-longer-authorized queued events are dropped; an already transmitted request
+cannot be recalled. A narrowly scoped terminal event may still dismiss the
+same previously authorized charging/navigation session for an active paired
+recipient after a category is disabled or the source car is removed. It cannot
+start another card, authorize ordinary alerts or expand Friend permissions.
+An absolute charging/navigation ETA needs its own live duration/route receipt
+anchor; retained duration plus `healthy` cannot rebase it to the current clock.
+
+SQL pools remain read-only and use UTC sessions; App `TZ` only controls output
+formatting. Bounded pool settings, actual-schema feature probes and optional
+full-history pagination are documented in [COMPATIBILITY.md](COMPATIBILITY.md).
+See [DATA_LIFECYCLE.md](DATA_LIFECYCLE.md) for volatile baselines and bounded
+cleanup authorization. Local tests do not establish live new-car, forced MQTT
+reconnect, APNs or actual PostgreSQL acceptance.
+
 ## Data meaning
 
 For an `offline` interval, `start_telemetry` is the last observation at or

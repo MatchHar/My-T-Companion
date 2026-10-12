@@ -599,7 +599,7 @@ func TestPushDeliveryPersistsRetryableFailure(t *testing.T) {
 		return nil, errors.New("temporary network failure")
 	})}
 	sub := reg.matching(1, func(s pushSubscriber) bool { return s.SoftwareUpdate })[0]
-	payload := []byte(`{"event_id":"event-1","type":"update_available"}`)
+	payload := []byte(`{"event_id":"event-1","type":"update_available","car_id":1}`)
 	if err := reg.deliverJSON(sub, payload); err != nil {
 		t.Fatalf("durably queued delivery should be accepted: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestPushDeliveryPausesInvalidInstallation(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusGone, Body: http.NoBody}, nil
 	})}
 	sub := reg.matching(1, func(s pushSubscriber) bool { return s.SoftwareUpdate })[0]
-	err := reg.deliverJSON(sub, []byte(`{"event_id":"event-2","type":"update_available"}`))
+	err := reg.deliverJSON(sub, []byte(`{"event_id":"event-2","type":"update_available","car_id":1}`))
 	if err == nil {
 		t.Fatal("permanent invalid-installation response must be reported")
 	}
@@ -841,7 +841,9 @@ func TestRelayRetryAfterDefersDurableOutboxRetry(t *testing.T) {
 		RelayURL:       relayURL,
 		RelaySecret:    secret,
 		Status:         pushStatusActive,
+		LockSecure:     true,
 	}
+	reg.store.Subscribers = []pushSubscriber{sub}
 	reg.http = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusConflict,
@@ -849,7 +851,7 @@ func TestRelayRetryAfterDefersDurableOutboxRetry(t *testing.T) {
 			Body:       http.NoBody,
 		}, nil
 	})}
-	payload := []byte(`{"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"vehicle_lock_secure"}`)
+	payload := []byte(`{"event_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"vehicle_lock_secure","car_id":1}`)
 	started := time.Now().UTC()
 	if err := reg.deliverJSON(sub, payload); err != nil {
 		t.Fatal(err)

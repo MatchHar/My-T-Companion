@@ -40,6 +40,86 @@ My T 胎压历史页面需等待兼容的 App 构建发布。旧客户端的停�
 TeslaMate 历史。版本发布、线上接口验收与签名目录推广是独立步骤，本地测试
 通过不代表这些步骤已经完成。
 
+## Companion 1.10.54 TeslaMate 4.3 兼容性
+
+本节功能由 Companion `1.10.54` 引入；既有自托管的 Companion 1.10.53 服务
+只有升级后才会改变。
+动态车队／基线恢复、通知政策和逐字段接收／ETA 限制见
+[1.10.54 README 章节](README.zh-Hans.md#companion-11054-teslamate-43-加固)与
+[数据生命周期](DATA_LIFECYCLE.zh-Hans.md#companion-11054-观察生命周期)。
+不代表新车、强制 MQTT 重连或 APNs 已完成现场验收。
+
+`MQTT_NAMESPACE` 必须完全一致：空值保留 `teslamate/cars/{id}/{field}`，
+非空使用 `teslamate/{namespace}/cars/{id}/{field}`。0–128 个字符必须全部
+属于 ASCII `[A-Za-z0-9_.-]`，不去空白或规范化。运行时及安装器拒绝空白、
+斜线、通配符、引号和 `$`；此字符集避免 dotenv／Compose 展开改变来源隔离。
+
+已审查 [4.3.0 官方发布](https://github.com/teslamate-org/teslamate/releases/tag/v4.3.0)
+及 [4.2.0 → 4.3.0 源码差异](https://github.com/teslamate-org/teslamate/compare/v4.2.0...v4.3.0)，
+两版相关历史表迁移没有变化。这不代表 TeslaMate 数据库成为版本化公开接口，
+也不代表完整矩阵或所有部署已完成线上验收。Companion 的 `states`、
+`current_drive`、`friend_source`、`mqtt_fleet` SQL 能力现按实际字段、运算符的有时限只读探测判定，不以
+TeslaMate 版本白名单阻止功能；胎压历史继续使用既有独立探测。
+
+已验证身份的能力响应新增 `sql_features` 下这四组能力，分别包含 `status`（`available`、
+`unsupported_schema`、`unknown`）、`supported`（`true`、`false`、`null`）
+及已净化的 `error`。失败只移除受影响的能力字符串。状态/当前行程请求遇到缺表、缺字段或不兼容
+运算符返回 HTTP 501 `states_unsupported` / `current_drive_unsupported`；
+连接、权限或超时错误返回 HTTP 503 `states_unavailable` /
+`current_drive_unavailable`，两者均包含 `feature`。未知车辆返回 HTTP 404
+`car_not_found`；已存在但没有历史或当前行程的车辆仍返回有效空结果。
+接口不会泄露原始 SQL 错误或凭据。
+
+朋友同行探测使用实际独立连接池与车辆归属、最新位置、轨迹查询；停用或无
+可用连接池时报告结构支持未知，不宣称可用。`mqtt_fleet` 检查实际
+`cars.settings_id → car_settings.id` 关联及布尔值 `car_settings.enabled`
+记录开关。车辆清单结构不可用时，不宣称依赖即时 MQTT 的功能和
+`friend_together_v1` 可用；SQL 状态/行程历史、已存导航历史与推送偏好设置
+仍独立可用。结构探测不代表车辆遥测新鲜或朋友同行服务完全就绪。四组探测
+并行执行，每组最多两秒，且遵守更早的请求取消。
+
+主只读 SQL 连接池有独立上限，朋友同行保留独立连接池。两者固定 UTC 会话，
+避免无时区的历史时间被服务器本地时区重新解释；App `TZ` 只格式化响应。
+显式配置无效时
+启动失败且不会回显配置值；时长使用 Go 格式，如 `5m` 或 `30m`。
+
+| 环境变量 | 默认值 | 有效范围 |
+| --- | --- | --- |
+| `DATABASE_MAX_OPEN_CONNS` | `8` | 1–64 |
+| `DATABASE_MAX_IDLE_CONNS` | `2` | 0–64，且不超过 max-open |
+| `DATABASE_CONN_MAX_IDLE_TIME` | `5m` | 1s–24h |
+| `DATABASE_CONN_MAX_LIFETIME` | `30m` | 1s–24h |
+
+安装器写入 `.env` 前要求标准十进制连接数，以及使用 `ns/us/ms/s/m/h` 的
+ASCII 时长分量（例如 `1h30m` 或 `1.5s`）。时长分量最多 14 位整数及 9 位
+小数，且不得超过该单位的纳秒精度。正负号、前导零、空白及 shell 字符会被
+拒绝而非规范化；直接配置运行环境仍可使用上述范围内的 Go 时长语法。
+
+已验证身份的 `database_pool` 诊断提供 max-open 上限、当前使用量及累计等待
+次数/时间。采用 [Go SQL 连接池控制](https://go.dev/doc/database/manage-connections)，
+不修改 PostgreSQL 服务端上限、数据库结构或索引。
+
+状态历史未传 `limit` 和 `cursor` 时保留原本完整响应。可选
+`limit=1..2000` 启用游标分页（仅传游标时默认 1000），能力名为
+`state_history_keyset_pagination_v1`。`meta.state_history_page` 返回
+`limit`、`returned_count`、`has_more`、`next_cursor`。用相同车辆、
+`startDate`、`endDate` 和返回的不透明游标继续读取，直到 `has_more=false`。
+按 `(start_date,id)` 排序，相同状态时间戳不会丢失记录。重叠区间保留真实
+起点，包括 16 天或更长的停车；不新增日期范围上限，也不静默截断历史。
+游标由进程签名，重启或切换服务器后 HTTP 400 `invalid_cursor` 表示需重读
+该窗口并去重。各页为实时读取而非数据库快照；开放区间变化后应重读窗口。
+状态及位置源时间保留小数秒，旧位置不会伪装成当前观察；缺失遥测仍为 null，
+不会变成零。
+
+本地驱动/HTTP 测试覆盖连接池上限、结构分类、取消、空值、小数秒、旧/相同
+时间戳、未知车辆与分页，但不等同于执行 PostgreSQL 查询。独立可选测试
+`TestSQLLocalPostgresTemporalStatesAndPagination` 只通过既有严格回环地址
+`MYT_FRIEND_LOCAL_POSTGRES_URL` 夹具使用临时表（数据库名
+`myt_friend_fixture`，必须显式端口）。未明确准备夹具时测试报告跳过，实际
+该次本地 PostgreSQL 执行仍未验证；另行执行的合成夹具以对应版本 CI 结果
+为准。本地或 CI 测试都不证明正式部署、真车行为或 APNs 投递。Companion
+不迁移 TeslaMate 表／索引，发布版本也不会部署服务。
+
 ## 必要基础环境
 
 - 运行 Docker Engine 与 Docker Compose v2 的 Linux 主机。
@@ -72,4 +152,5 @@ TeslaMate 历史。版本发布、线上接口验收与签名目录推广是独�
 - 其他代理布局必须提供并验证 `MY_T_BASE_URL`；只在本机可用且未经验证的服务会报告为未完成，而不是成功。
 - 默认 TeslaMate 目录为 `/opt/teslamate`；其他布局使用 `TESLAMATE_DIR`。
 - 默认数据库 Compose 服务名为 `database`。
-- 历史状态响应暂未分页；客户端应请求有边界的停车时段。
+- 旧式历史状态请求为兼容性仍完整回传；客户端应限定时间窗口，并对大型历史
+  使用上述可选游标分页。查询失败返回错误，不会把部分数据作为成功结果。

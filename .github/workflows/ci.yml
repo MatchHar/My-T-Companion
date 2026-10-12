@@ -23,18 +23,58 @@ jobs:
 
   test:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: myt_friend_fixture
+          POSTGRES_USER: myt_fixture
+          POSTGRES_PASSWORD: synthetic-ci-only
+        ports:
+          - "127.0.0.1:55432:5432"
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U myt_fixture -d myt_friend_fixture"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      # Fixed synthetic loopback service, never a repository secret or DATABASE_*.
+      # The fixture also rejects other hosts/databases/query options and creates
+      # only connection-local TEMP relations with search_path=pg_temp.
+      MYT_FRIEND_LOCAL_POSTGRES_URL: postgres://myt_fixture:synthetic-ci-only@127.0.0.1:55432/myt_friend_fixture
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./...
+      - name: Execute isolated PostgreSQL 18 fixtures without skips
+        run: |
+          set -euo pipefail
+          [[ "$MYT_FRIEND_LOCAL_POSTGRES_URL" == 'postgres://myt_fixture:synthetic-ci-only@127.0.0.1:55432/myt_friend_fixture' ]]
+          results="$RUNNER_TEMP/companion-postgres-acceptance.jsonl"
+          go test -json -count=1 -run '^(TestFriendLocalPostgresSchemaAndSource|TestSQLLocalPostgresTemporalStatesAndPagination)$' . | tee "$results"
+          jq -s -e '
+            . as $events |
+            ["TestFriendLocalPostgresSchemaAndSource", "TestSQLLocalPostgresTemporalStatesAndPagination"] as $required |
+            all($required[]; . as $name | any($events[]; .Action == "pass" and .Test == $name)) and
+            all($events[]; .Action != "skip" and .Action != "fail")
+          ' "$results" >/dev/null
+      - run: go test -count=1 ./...
       - run: go vet ./...
       - run: go test -race ./...
       - name: Scan Go dependencies for reachable vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-      - run: bash -n install.sh update.sh uninstall.sh backup.sh restore.sh storage-status.sh scripts/build-release.sh scripts/publish-release.sh scripts/test-updater.sh scripts/test-release-publishing.sh scripts/test-release-source.sh scripts/check-docker-sources.sh scripts/check-network-boundary.sh scripts/check-push-secret-boundary.sh scripts/verify-release-source.sh scripts/verify-hostbox-catalog.sh scripts/verify-documentation-parity.sh
+      - run: >-
+          bash -n install.sh install-recommended.sh update.sh uninstall.sh backup.sh
+          restore.sh storage-status.sh install-source-transaction.sh
+          scripts/build-release.sh scripts/publish-release.sh scripts/test-updater.sh
+          scripts/test-upgrade-policy.sh scripts/test-catalog-updater.sh
+          scripts/test-install-source-transaction.sh scripts/test-install-friend-together-env.sh
+          scripts/test-release-publishing.sh scripts/test-release-source.sh
+          scripts/check-docker-sources.sh scripts/check-network-boundary.sh
+          scripts/check-push-secret-boundary.sh scripts/verify-release-source.sh
+          scripts/verify-hostbox-catalog.sh scripts/verify-documentation-parity.sh
       - run: scripts/check-docker-sources.sh
       - run: scripts/check-network-boundary.sh
       - run: scripts/check-push-secret-boundary.sh
@@ -44,6 +84,7 @@ jobs:
       - run: sudo bash scripts/test-upgrade-policy.sh
       - run: sudo bash scripts/test-catalog-updater.sh
       - run: bash -n install-source-transaction.sh scripts/test-install-source-transaction.sh && bash scripts/test-install-source-transaction.sh
+      - run: bash scripts/test-install-friend-together-env.sh
       - run: scripts/test-release-publishing.sh
       - run: scripts/test-release-source.sh
       - run: docker build --tag myt/companion:ci .

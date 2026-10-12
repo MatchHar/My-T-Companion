@@ -886,9 +886,14 @@ func TestParseDateParam(t *testing.T) {
 
 func TestCapabilitiesRequiresAuthentication(t *testing.T) {
 	oldToken, oldProbe := apiToken, authProbeURL
+	oldDB, oldRuntime := db, mqttSourceRuntime.Load()
 	apiToken, authProbeURL = "test-token", ""
+	db = nil
+	mqttSourceRuntime.Store(nil)
 	t.Cleanup(func() {
 		apiToken, authProbeURL = oldToken, oldProbe
+		db = oldDB
+		mqttSourceRuntime.Store(oldRuntime)
 	})
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
@@ -911,6 +916,10 @@ func TestCapabilitiesRequiresAuthentication(t *testing.T) {
 			MinimumVersion     string `json:"minimum_version"`
 			RecommendedVersion string `json:"recommended_version"`
 		} `json:"app_compatibility"`
+		SQLFeatures map[string]struct {
+			Status    string `json:"status"`
+			Supported *bool  `json:"supported"`
+		} `json:"sql_features"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode capabilities: %v", err)
@@ -925,8 +934,11 @@ func TestCapabilitiesRequiresAuthentication(t *testing.T) {
 			break
 		}
 	}
-	if !foundDoorDetail {
-		t.Fatal("door_detail_status capability is missing")
+	if foundDoorDetail {
+		t.Fatal("active MQTT capability must not be claimed without a usable fleet SQL source")
+	}
+	if fleet, ok := payload.SQLFeatures[sqlMQTTFleetFeature]; !ok || fleet.Status != "unknown" || fleet.Supported != nil {
+		t.Fatalf("missing source must report unknown/null, not unsupported or available: %+v", payload.SQLFeatures)
 	}
 }
 

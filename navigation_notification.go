@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,23 +25,27 @@ const navigationUpdateMinimumInterval = 10 * time.Second
 const navigationPushHistoryLimit = 200
 const navigationMinimumVerifiedDistanceKM = 0.05
 const navigationStartAlertGrace = 8 * time.Second
+
 // Mid-drive destination changes within this window collapse into one banner.
 const navigationRerouteAlertMinimumInterval = 45 * time.Second
+
 // If already this close to the previous destination, skip a reroute start banner
 // (arrival handling wins).
 const navigationRerouteNearArrivalKM = 0.5
 const navigationRerouteNearArrivalMinutes = 3
 
+var navigationMQTTFields = []string{"display_name", "state", "geofence", "active_route", "healthy"}
+
 type navigationLiveActivityEvent struct {
-	EventID               string   `json:"event_id"`
-	InstallationID        string   `json:"installation_id"`
-	SourceID              string   `json:"source_id,omitempty"`
-	CarID                 int      `json:"car_id"`
-	VehicleName           string   `json:"vehicle_name,omitempty"`
-	Type                  string   `json:"type"`
-	SessionID             string   `json:"session_id"`
-	Destination           string   `json:"destination"`
-	StartName             string   `json:"start_name,omitempty"`
+	EventID        string `json:"event_id"`
+	InstallationID string `json:"installation_id"`
+	SourceID       string `json:"source_id,omitempty"`
+	CarID          int    `json:"car_id"`
+	VehicleName    string `json:"vehicle_name,omitempty"`
+	Type           string `json:"type"`
+	SessionID      string `json:"session_id"`
+	Destination    string `json:"destination"`
+	StartName      string `json:"start_name,omitempty"`
 	// origin = first navigation of a parked/start trip; reroute = mid-drive destination change.
 	LegKind               string   `json:"leg_kind,omitempty"`
 	OmitStart             bool     `json:"omit_start,omitempty"`
@@ -61,6 +64,7 @@ type navigationLiveActivityEvent struct {
 	Revision        int    `json:"revision,omitempty"`
 	LegPhase        string `json:"leg_phase,omitempty"`
 	ObservedAt      string `json:"observed_at"`
+	ObservationMode string `json:"observation_mode,omitempty"`
 	// Unscoped Companion session identity. session_id is rewritten per source
 	// at fan-out; this field lets outbox reconciliation find the original leg.
 	LogicalSessionID string `json:"logical_session_id,omitempty"`
@@ -131,6 +135,8 @@ type carNavigationState struct {
 	StartAlertDelivered   bool     `json:"start_alert_delivered"`
 	LastQueuedAt          string   `json:"last_queued_at,omitempty"`
 	LastObservedAt        string   `json:"last_observed_at,omitempty"`
+	ObservationMode       string   `json:"observation_mode,omitempty"`
+	SessionObservedAt     string   `json:"session_observed_at,omitempty"`
 }
 
 type navigationNotificationStore struct {
@@ -148,6 +154,8 @@ type navigationPushHistorySession struct {
 	StartName                string                           `json:"start_name,omitempty"`
 	Destination              string                           `json:"destination"`
 	StartedAt                string                           `json:"started_at"`
+	FirstObservedAt          string                           `json:"first_observed_at,omitempty"`
+	ObservationMode          string                           `json:"observation_mode,omitempty"`
 	EndedAt                  string                           `json:"ended_at,omitempty"`
 	EndReason                string                           `json:"end_reason,omitempty"`
 	StartRemainingDistanceKM *float64                         `json:"start_remaining_distance_km,omitempty"`
@@ -180,48 +188,66 @@ type navigationPushHistoryStore struct {
 }
 
 type navigationNotificationMonitor struct {
-	mu              sync.Mutex
-	store           navigationNotificationStore
-	history         navigationPushHistoryStore
-	statePath       string
-	historyPath     string
-	installationID  string
-	relayURL        string
-	relaySecret     string
-	mqttBroker      string
-	mqttUsername    string
-	mqttPassword    string
-	client          mqtt.Client
-	httpClient      *http.Client
-	enabled         bool
-	connected       bool
-	started         bool
-	workerStarted   bool
-	lastEventAt     *time.Time
-	lastError       string
-	queue           chan navigationLiveActivityEvent
-	priorityQueue   chan navigationLiveActivityEvent
+	mu                 sync.Mutex
+	store              navigationNotificationStore
+	history            navigationPushHistoryStore
+	statePath          string
+	historyPath        string
+	installationID     string
+	relayURL           string
+	relaySecret        string
+	mqttBroker         string
+	mqttUsername       string
+	mqttPassword       string
+	client             mqtt.Client
+	httpClient         *http.Client
+	enabled            bool
+	connected          bool
+	started            bool
+	workerStarted      bool
+	lastEventAt        *time.Time
+	lastError          string
+	queue              chan navigationLiveActivityEvent
+	priorityQueue      chan navigationLiveActivityEvent
 	pending            map[int]*time.Timer
 	pendingStartAlerts map[int]*time.Timer
 	enriching          map[int]string
-	distanceReader  func(int) (int64, *float64, bool)
-	startNameReader func(int) string
+	distanceReader     func(int) (int64, *float64, bool)
+	startNameReader    func(int) string
+	mqttBaselines      map[int]navigationMQTTBaseline
+	mqttManaged        bool
+}
+
+type navigationMQTTBaseline struct {
+	stateReceived        bool
+	routeReceived        bool
+	liveState            bool
+	liveRoute            bool
+	healthy              bool
+	unhealthy            bool
+	seenInactive         bool
+	liveRouteAt          time.Time
+	retainedChangedRoute *navigationRouteCandidate
+}
+
+func (b navigationMQTTBaseline) ready() bool {
+	return !b.unhealthy && b.stateReceived && b.routeReceived && (b.liveState || b.liveRoute || b.healthy)
 }
 
 func newNavigationNotificationMonitorFromEnvironment() *navigationNotificationMonitor {
 	statePath := getenv("NAVIGATION_PUSH_STATE_PATH", "/data/navigation-live-activities.json")
 	monitor := &navigationNotificationMonitor{
-		statePath:      statePath,
-		historyPath:    filepath.Join(filepath.Dir(statePath), "navigation-push-history.json"),
-		installationID: strings.TrimSpace(os.Getenv("PUSH_INSTALLATION_ID")),
-		relayURL:       strings.TrimSpace(os.Getenv("PUSH_RELAY_URL")),
-		relaySecret:    strings.TrimSpace(os.Getenv("PUSH_RELAY_SECRET")),
-		mqttBroker:     getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
-		mqttUsername:   strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
-		mqttPassword:   strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
-		httpClient:     newPushRelayHTTPClient(15 * time.Second),
-		queue:          make(chan navigationLiveActivityEvent, 128),
-		priorityQueue:  make(chan navigationLiveActivityEvent, 16),
+		statePath:          statePath,
+		historyPath:        filepath.Join(filepath.Dir(statePath), "navigation-push-history.json"),
+		installationID:     strings.TrimSpace(os.Getenv("PUSH_INSTALLATION_ID")),
+		relayURL:           strings.TrimSpace(os.Getenv("PUSH_RELAY_URL")),
+		relaySecret:        strings.TrimSpace(os.Getenv("PUSH_RELAY_SECRET")),
+		mqttBroker:         getenv("MQTT_BROKER_URL", "tcp://mosquitto:1883"),
+		mqttUsername:       strings.TrimSpace(os.Getenv("MQTT_USERNAME")),
+		mqttPassword:       strings.TrimSpace(os.Getenv("MQTT_PASSWORD")),
+		httpClient:         newPushRelayHTTPClient(15 * time.Second),
+		queue:              make(chan navigationLiveActivityEvent, 128),
+		priorityQueue:      make(chan navigationLiveActivityEvent, 16),
 		pending:            map[int]*time.Timer{},
 		pendingStartAlerts: map[int]*time.Timer{},
 		enriching:          map[int]string{},
@@ -278,21 +304,34 @@ func (m *navigationNotificationMonitor) start() {
 		options.SetUsername(m.mqttUsername)
 		options.SetPassword(m.mqttPassword)
 	}
-	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+	options.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		m.mu.Lock()
+		if m.client != client {
+			m.mu.Unlock()
+			return
+		}
+		m.resetMQTTBaselineLocked()
+		recordMQTTConnection("navigation", false)
 		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
-		token := client.SubscribeMultiple(map[string]byte{
-			"teslamate/cars/+/display_name": 1,
-			"teslamate/cars/+/state":        1,
-			"teslamate/cars/+/geofence":     1,
-			"teslamate/cars/+/active_route": 1,
-		}, m.handleMQTTMessage)
+		m.mu.Lock()
+		if m.client != client || !client.IsConnected() {
+			m.mu.Unlock()
+			return
+		}
+		m.resetMQTTBaselineLocked()
+		epoch := beginMQTTConnection("navigation")
+		m.mu.Unlock()
+		token := client.SubscribeMultiple(teslaMateMQTTTopics(navigationMQTTFields), m.handleMQTTMessage)
 		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
 			m.mu.Lock()
+			if m.client != client || !client.IsConnected() || !recordMQTTConnection("navigation", true, epoch) {
+				m.mu.Unlock()
+				return
+			}
 			m.connected = true
 			m.lastError = ""
 			m.mu.Unlock()
@@ -304,8 +343,14 @@ func (m *navigationNotificationMonitor) start() {
 			err = fmt.Errorf("MQTT navigation subscription timed out")
 		}
 		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("navigation") != epoch {
+			m.mu.Unlock()
+			return
+		}
+		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
+		requestMQTTBaselineRetry()
 	})
 	client := mqtt.NewClient(options)
 	m.mu.Lock()
@@ -327,6 +372,8 @@ func (m *navigationNotificationMonitor) start() {
 
 func (m *navigationNotificationMonitor) stop() {
 	m.mu.Lock()
+	recordMQTTConnection("navigation", false)
+	m.resetMQTTBaselineLocked()
 	for carID, timer := range m.pending {
 		timer.Stop()
 		delete(m.pending, carID)
@@ -338,6 +385,72 @@ func (m *navigationNotificationMonitor) stop() {
 	m.mu.Unlock()
 	if client != nil && client.IsConnected() {
 		client.Disconnect(250)
+	}
+}
+
+func (m *navigationNotificationMonitor) refreshFleetSubscription() {
+	m.mu.Lock()
+	client := m.client
+	m.mu.Unlock()
+	if client == nil || !client.IsConnected() {
+		return
+	}
+	epoch := mqttConnectionEpoch("navigation")
+	token := client.SubscribeMultiple(teslaMateMQTTTopics(navigationMQTTFields), m.handleMQTTMessage)
+	if !token.WaitTimeout(10*time.Second) || token.Error() != nil {
+		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("navigation") != epoch {
+			m.mu.Unlock()
+			return
+		}
+		m.lastError = "MQTT navigation fleet subscription failed"
+		m.mu.Unlock()
+		requestMQTTBaselineRetry()
+		return
+	}
+	m.mu.Lock()
+	if m.client != client || !client.IsConnected() || !recordMQTTConnection("navigation", true, epoch) {
+		m.mu.Unlock()
+		return
+	}
+	m.connected = true
+	if m.lastError == "MQTT navigation fleet subscription failed" || m.lastError == "MQTT navigation subscription timed out" {
+		m.lastError = ""
+	}
+	m.mu.Unlock()
+}
+
+func (m *navigationNotificationMonitor) reconcileFleet(cars map[int]bool) {
+	m.mu.Lock()
+	var cleanup []navigationLiveActivityEvent
+	for id, state := range m.store.Cars {
+		if cars[id] {
+			continue
+		}
+		if timer := m.pending[id]; timer != nil {
+			timer.Stop()
+			delete(m.pending, id)
+		}
+		m.cancelStartAlertLocked(id)
+		delete(m.mqttBaselines, id)
+		delete(m.enriching, id)
+		if state.Active && state.SessionID != "" {
+			if pushRegistry != nil {
+				pushRegistry.rememberKnownLiveActivityCleanup(id, "navigation_live_activity", state.SessionID)
+			}
+			event := m.makeEventLocked(id, &state, "navigation_ended", time.Now().UTC())
+			event.ObservationMode = "source_membership_cleanup"
+			event.EndReason = "stale"
+			event.endReasonOverride = "stale"
+			event.liveActivityOnly = true // local cleanup is not an observed trip end/arrival
+			cleanup = append(cleanup, event)
+		}
+		delete(m.store.Cars, id)
+	}
+	_ = m.saveLocked()
+	m.mu.Unlock()
+	for _, event := range cleanup {
+		m.enqueue(event)
 	}
 }
 
@@ -405,21 +518,48 @@ func (m *navigationNotificationMonitor) loadPairing() {
 }
 
 func (m *navigationNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message mqtt.Message) {
-	parts := strings.Split(message.Topic(), "/")
-	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" {
+	carID, field, ok := acceptTeslaMateMQTTMessage(message, "navigation")
+	if !ok || message.Duplicate() {
 		return
 	}
-	carID, err := strconv.Atoi(parts[2])
-	if err != nil || carID <= 0 {
-		return
-	}
-	m.observe(carID, parts[3], strings.TrimSpace(string(message.Payload())), time.Now().UTC())
+	m.observeMessage(carID, field, string(message.Payload()), time.Now().UTC(), message.Retained(), true)
 }
 
 func (m *navigationNotificationMonitor) observe(carID int, field, value string, observedAt time.Time) {
+	m.observeMessage(carID, field, value, observedAt, false, false)
+}
+
+func (m *navigationNotificationMonitor) resetMQTTBaseline() {
 	m.mu.Lock()
+	m.resetMQTTBaselineLocked()
+	m.mu.Unlock()
+}
+
+func (m *navigationNotificationMonitor) resetMQTTBaselineLocked() {
+	m.mqttManaged = true
+	m.mqttBaselines = map[int]navigationMQTTBaseline{}
+	for id, timer := range m.pending {
+		timer.Stop()
+		delete(m.pending, id)
+	}
+	for id := range m.pendingStartAlerts {
+		m.cancelStartAlertLocked(id)
+	}
+}
+
+func (m *navigationNotificationMonitor) observeMessage(carID int, field, value string, observedAt time.Time, retained, managed bool) {
+	m.mu.Lock()
+	if managed {
+		m.mqttManaged = true
+	}
+	if m.mqttBaselines == nil {
+		m.mqttBaselines = map[int]navigationMQTTBaseline{}
+	}
+	baseline := m.mqttBaselines[carID]
 	state := m.store.Cars[carID]
-	state.LastObservedAt = observedAt.Format(time.RFC3339)
+	if !retained && field == "active_route" {
+		state.LastObservedAt = observedAt.Format(time.RFC3339)
+	}
 	wasActive := state.Active
 	snapshot := cloneCarNavigationState(state)
 	routeInvalid := false
@@ -430,6 +570,11 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		state.DisplayName = collapsedDisplayName(value)
 	case "state":
 		state.VehicleState = strings.ToLower(normalizedMQTTValue(value))
+		baseline.stateReceived = chargingVehicleStateKnown(state.VehicleState)
+		baseline.liveState = !retained && baseline.stateReceived
+		if baseline.stateReceived && navigationVehicleStateIsParkingEvidence(state.VehicleState) {
+			baseline.seenInactive = true
+		}
 	case "geofence":
 		state.Geofence = normalizedMQTTValue(value)
 		if state.Geofence != "" {
@@ -437,6 +582,24 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 		}
 	case "active_route":
 		candidate := parseActiveRouteCandidate(value)
+		baseline.retainedChangedRoute = nil
+		baseline.routeReceived = !candidate.Invalid
+		baseline.liveRoute = !retained && baseline.routeReceived
+		if baseline.liveRoute {
+			baseline.liveRouteAt = observedAt
+		}
+		if retained {
+			if !candidate.Invalid && (!wasActive || navigationDestinationEqual(state.Destination, candidate.Destination)) {
+				applyRouteCandidate(&state, candidate)
+			} else if !candidate.Invalid {
+				stagePendingCandidate(&state, candidate, observedAt)
+				baseline.routeReceived = false
+				baseline.retainedChangedRoute = &candidate
+			} else if !wasActive {
+				clearCommittedRoute(&state)
+			}
+			break
+		}
 		if candidate.Invalid {
 			routeInvalid = true
 			if !wasActive {
@@ -465,9 +628,35 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 				applyRouteCandidate(&state, candidate)
 			}
 		}
+	case "healthy":
+		baseline.healthy = !retained && strings.TrimSpace(value) == "true"
+		baseline.unhealthy = strings.TrimSpace(value) != "true"
 	default:
 		m.mu.Unlock()
 		return
+	}
+	m.mqttBaselines[carID] = baseline
+	if m.mqttManaged && !retained && baseline.healthy && !baseline.unhealthy && baseline.stateReceived &&
+		state.VehicleState == "driving" && wasActive && state.SessionID != "" && baseline.retainedChangedRoute != nil {
+		endEvent, startEvent := m.recoverChangedRetainedRouteLocked(carID, &state, *baseline.retainedChangedRoute, observedAt)
+		m.store.Cars[carID] = state
+		_ = m.saveLocked()
+		sessionID := state.SessionID
+		m.mu.Unlock()
+		m.enqueue(endEvent)
+		m.enqueue(startEvent)
+		m.requestNavigationEnrichment(carID, sessionID)
+		return
+	}
+	if m.mqttManaged && (retained || !baseline.ready()) {
+		// A live terminal observation may still dismiss an existing card.
+		terminal := !retained && wasActive && ((field == "active_route" && routeInvalid) || (field == "state" && navigationVehicleStateIsParkingEvidence(state.VehicleState)))
+		if !terminal {
+			m.store.Cars[carID] = state
+			_ = m.saveLocked()
+			m.mu.Unlock()
+			return
+		}
 	}
 
 	// Destination and confirmed driving are sufficient to start. TeslaMate can
@@ -492,6 +681,11 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 
 	if shouldBeActive && (!wasActive || state.SessionID == "") {
 		m.beginNavigationLegLocked(&state, carID, observedAt)
+		if m.mqttManaged && !(baseline.liveState && baseline.liveRoute && baseline.seenInactive) {
+			state.ObservationMode = "recovered_current_snapshot"
+			state.SessionStartedAt = ""
+			state.StartAlertDelivered = true
+		}
 		sessionID := state.SessionID
 		event := m.enqueueNavigationStartedLocked(carID, &state, observedAt)
 		m.store.Cars[carID] = state
@@ -567,6 +761,49 @@ func (m *navigationNotificationMonitor) observe(carID int, field, value string, 
 	}
 }
 
+// A different retained destination proves neither when the old leg ended nor
+// when this one began. A live healthy receipt may recover its current card,
+// but only as a separate receipt-only session, never as an ordinary trip event.
+func (m *navigationNotificationMonitor) recoverChangedRetainedRouteLocked(carID int, state *carNavigationState, candidate navigationRouteCandidate, observedAt time.Time) (navigationLiveActivityEvent, navigationLiveActivityEvent) {
+	if timer := m.pending[carID]; timer != nil {
+		timer.Stop()
+		delete(m.pending, carID)
+	}
+	m.cancelStartAlertLocked(carID)
+	oldSessionID := state.SessionID
+	if pushRegistry != nil {
+		pushRegistry.rememberKnownLiveActivityCleanup(carID, "navigation_live_activity", oldSessionID)
+	}
+	old := cloneCarNavigationState(*state)
+	old.Active = false
+	old.LegPhase = navigationLegPhaseEnded
+	end := m.makeEventLocked(carID, &old, "navigation_ended", observedAt)
+	end.ObservationMode = "recovered_session_cleanup"
+	end.EndReason, end.endReasonOverride = "stale", "stale"
+	end.TripEndedAt, end.DurationMinutes = nil, nil
+	end.liveActivityOnly = true
+	state.Revision = old.Revision
+	clearCommittedRoute(state)
+	applyRouteCandidate(state, candidate)
+	m.beginNavigationLegLocked(state, carID, observedAt)
+	// Include the previous logical session and receipt nanoseconds so recovery
+	// cannot collide with an old leg that happened to start in the same second.
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:recovery:%s:%d", m.installationID, carID, oldSessionID, observedAt.UnixNano())))
+	state.SessionID = "navigation-" + hex.EncodeToString(digest[:16])
+	state.ObservationMode = "recovered_current_snapshot"
+	state.SessionStartedAt = ""
+	state.LastObservedAt = "" // the previous live route belonged to the old leg
+	state.StartName = ""
+	state.StartAlertDelivered = true
+	baseline := m.mqttBaselines[carID]
+	baseline.routeReceived = true
+	baseline.retainedChangedRoute = nil
+	m.mqttBaselines[carID] = baseline
+	start := m.enqueueNavigationStartedLocked(carID, state, observedAt)
+	start.OmitStart = true
+	return end, start
+}
+
 func (m *navigationNotificationMonitor) beginNavigationLegLocked(state *carNavigationState, carID int, observedAt time.Time) {
 	state.Active = true
 	state.LegPhase = navigationLegPhaseActive
@@ -575,6 +812,8 @@ func (m *navigationNotificationMonitor) beginNavigationLegLocked(state *carNavig
 	state.HasVerifiedTrajectory = false
 	state.SessionID = navigationSessionID(m.installationID, carID, 0, observedAt)
 	state.SessionStartedAt = observedAt.Format(time.RFC3339)
+	state.SessionObservedAt = observedAt.Format(time.RFC3339)
+	state.ObservationMode = "mqtt_live_transition"
 	state.Sequence = 0
 	state.StartDelivered = false
 	state.StartAlertDelivered = false
@@ -643,7 +882,6 @@ func (m *navigationNotificationMonitor) commitRedirectedLegLocked(
 	return endEvent, startEvent, state.SessionID
 }
 
-
 func (m *navigationNotificationMonitor) cancelStartAlertLocked(carID int) {
 	if m.pendingStartAlerts == nil {
 		return
@@ -669,7 +907,7 @@ func (m *navigationNotificationMonitor) flushStartAlert(carID int, sessionID str
 	defer m.mu.Unlock()
 	m.cancelStartAlertLocked(carID)
 	state := m.store.Cars[carID]
-	if !state.Active || state.SessionID != sessionID || state.StartAlertDelivered {
+	if !state.Active || state.SessionID != sessionID || state.StartAlertDelivered || (m.mqttManaged && !m.mqttBaselines[carID].ready()) {
 		return
 	}
 	if state.LegKind != "reroute" && strings.TrimSpace(state.StartName) == "" {
@@ -695,6 +933,12 @@ func (m *navigationNotificationMonitor) flushStartAlert(carID int, sessionID str
 }
 
 func (m *navigationNotificationMonitor) enqueueNavigationStartedLocked(carID int, state *carNavigationState, observedAt time.Time) navigationLiveActivityEvent {
+	baseline := m.mqttBaselines[carID]
+	if state.ObservationMode == "recovered_current_snapshot" || (m.mqttManaged && !(baseline.liveState && baseline.liveRoute && baseline.seenInactive)) {
+		event := m.makeEventLocked(carID, state, "navigation_started", observedAt)
+		event.liveActivityOnly = true
+		return event
+	}
 	if strings.TrimSpace(state.LegKind) == "" {
 		state.LegKind = "origin"
 	}
@@ -854,6 +1098,9 @@ func navigationShouldBeActive(routeInvalid bool, state carNavigationState) bool 
 }
 
 func (m *navigationNotificationMonitor) scheduleUpdateLocked(carID int, observedAt time.Time) {
+	if m.mqttManaged && !m.mqttBaselines[carID].ready() {
+		return
+	}
 	state := m.store.Cars[carID]
 	if !state.Active || !state.StartDelivered || state.SessionID == "" {
 		return
@@ -880,7 +1127,7 @@ func (m *navigationNotificationMonitor) flushUpdate(carID int) {
 	m.mu.Lock()
 	delete(m.pending, carID)
 	state := m.store.Cars[carID]
-	if !state.Active || !state.StartDelivered {
+	if !state.Active || !state.StartDelivered || (m.mqttManaged && !m.mqttBaselines[carID].ready()) {
 		m.mu.Unlock()
 		return
 	}
@@ -897,6 +1144,11 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 	eventType string,
 	observedAt time.Time,
 ) navigationLiveActivityEvent {
+	mode := state.ObservationMode
+	baseline := m.mqttBaselines[carID]
+	if m.mqttManaged && !(baseline.liveState && baseline.liveRoute && baseline.seenInactive) {
+		mode = "recovered_current_snapshot"
+	}
 	state.Sequence++
 	state.LastQueuedAt = observedAt.Format(time.RFC3339)
 	driven := cloneFloat(state.DrivenDistanceKM)
@@ -907,8 +1159,16 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		total = &value
 	}
 	var eta *int64
-	if state.RemainingMinutes != nil {
-		value := observedAt.Add(time.Duration(*state.RemainingMinutes) * time.Minute).Unix()
+	remainingMinutes := cloneInt(state.RemainingMinutes)
+	if m.mqttManaged && !baseline.liveRoute {
+		remainingMinutes = nil
+	}
+	if state.RemainingMinutes != nil && (!m.mqttManaged || baseline.liveRoute) {
+		base := observedAt
+		if m.mqttManaged {
+			base = baseline.liveRouteAt
+		}
+		value := base.Add(time.Duration(*state.RemainingMinutes) * time.Minute).Unix()
 		eta = &value
 	}
 	var tripStartedUnix *int64
@@ -951,7 +1211,7 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		LegKind:               state.LegKind,
 		OmitStart:             state.LegKind == "reroute",
 		RemainingDistanceKM:   cloneFloat(state.RemainingDistanceKM),
-		RemainingMinutes:      cloneInt(state.RemainingMinutes),
+		RemainingMinutes:      remainingMinutes,
 		EstimatedArrivalAt:    eta,
 		ArrivalBatteryLevel:   cloneInt(state.ArrivalBatteryLevel),
 		DrivenDistanceKM:      driven,
@@ -963,6 +1223,7 @@ func (m *navigationNotificationMonitor) makeEventLocked(
 		Revision:              state.Revision,
 		LegPhase:              legPhase,
 		ObservedAt:            observedAt.Format(time.RFC3339),
+		ObservationMode:       mode,
 	}
 	if eventType == "navigation_ended" {
 		event.EndReason = navigationEndReason(event)
@@ -1149,6 +1410,9 @@ func (m *navigationNotificationMonitor) replayActiveStartsMatching(
 		if shouldReplay != nil && !shouldReplay(carID) {
 			continue
 		}
+		if m.mqttManaged && !m.mqttBaselines[carID].ready() {
+			continue
+		}
 		if !state.Active || state.SessionID == "" || strings.TrimSpace(state.Destination) == "" {
 			continue
 		}
@@ -1246,7 +1510,10 @@ func (m *navigationNotificationMonitor) reconcileRestoredSessionsNow(startedAt t
 		if observedAt.After(startedAt) {
 			continue
 		}
-		// No fresh retained MQTT state arrived after restart. End the orphan
+		if m.mqttManaged && m.mqttBaselines[carID].ready() {
+			continue // current-snapshot recovery has liveness, not a new route timestamp
+		}
+		// No live route or confirmed current-snapshot recovery after restart. End the orphan
 		// rather than silently deleting it and leaving the Lock Screen stuck.
 		state.Active = false
 		state.LegPhase = navigationLegPhaseEnded
@@ -1283,8 +1550,12 @@ func (m *navigationNotificationMonitor) expireStaleSessions(now time.Time) {
 		return
 	}
 	for carID, state := range m.store.Cars {
+		startedAt := state.SessionStartedAt
+		if startedAt == "" {
+			startedAt = state.SessionObservedAt
+		}
 		if !state.Active || state.SessionID == "" ||
-			!timestampIsOlderThan(state.SessionStartedAt, now, navigationTransientMaximumAge) {
+			!timestampIsOlderThan(startedAt, now, navigationTransientMaximumAge) {
 			continue
 		}
 		if timer := m.pending[carID]; timer != nil {
@@ -1310,7 +1581,9 @@ func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEven
 	var laOutcome pushDeliveryOutcome
 	var laErr error
 	if !event.alertOnly {
-		laOutcome, laErr = m.deliverTo(event, func(s pushSubscriber) bool { return s.wantsNavigationLiveActivity(event.CarID) })
+		laOutcome, laErr = m.deliverTo(event, func(s pushSubscriber) bool {
+			return pushSubscriberWantsEvent(s, event.CarID, "navigation_live_activity", event.Type == "navigation_ended", event.SessionID)
+		})
 	}
 	if event.liveActivityOnly {
 		return laOutcome, laErr
@@ -1525,7 +1798,9 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 			VehicleName:        event.VehicleName,
 			StartName:          strings.TrimSpace(event.StartName),
 			Destination:        event.Destination,
-			StartedAt:          event.ObservedAt,
+			StartedAt:          navigationHistoryStartAt(event),
+			FirstObservedAt:    event.ObservedAt,
+			ObservationMode:    event.ObservationMode,
 			LastEventType:      event.Type,
 			LastDeliveryStatus: delivery,
 			UpdatedAt:          now,
@@ -1541,7 +1816,9 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		session.DrivenDistanceKM = cloneFloat(event.DrivenDistanceKM)
 		session.TotalDistanceKM = cloneFloat(event.TotalDistanceKM)
 		if event.Type == "navigation_ended" {
-			session.EndedAt = event.ObservedAt
+			if event.ObservationMode != "recovered_session_cleanup" {
+				session.EndedAt = event.ObservedAt
+			}
 			session.EndReason = navigationEndReason(event)
 			session.EndRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
 			session.EndRemainingMinutes = cloneInt(event.RemainingMinutes)
@@ -1551,7 +1828,7 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		session := m.history.Sessions[idx]
 		// Delivery workers can complete out of order. Once ended, no old start
 		// or update may rewrite the final leg snapshot in App-readable history.
-		if (session.EndedAt != "" && event.Type != "navigation_ended") ||
+		if ((session.EndedAt != "" || session.LastEventType == "navigation_ended") && event.Type != "navigation_ended") ||
 			(event.Revision > 0 && session.Revision > event.Revision) {
 			return
 		}
@@ -1569,7 +1846,13 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 			session.Destination = event.Destination
 		}
 		if session.StartedAt == "" {
-			session.StartedAt = event.ObservedAt
+			session.StartedAt = navigationHistoryStartAt(event)
+		}
+		if session.FirstObservedAt == "" {
+			session.FirstObservedAt = event.ObservedAt
+		}
+		if event.ObservationMode != "" {
+			session.ObservationMode = event.ObservationMode
 		}
 		if session.StartRemainingDistanceKM == nil && event.RemainingDistanceKM != nil {
 			session.StartRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
@@ -1595,7 +1878,9 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		}
 		session.UpdatedAt = now
 		if event.Type == "navigation_ended" {
-			session.EndedAt = event.ObservedAt
+			if event.ObservationMode != "recovered_session_cleanup" {
+				session.EndedAt = event.ObservedAt
+			}
 			session.EndReason = navigationEndReason(event)
 			session.EndRemainingDistanceKM = cloneFloat(event.RemainingDistanceKM)
 			session.EndRemainingMinutes = cloneInt(event.RemainingMinutes)
@@ -1606,6 +1891,16 @@ func (m *navigationNotificationMonitor) recordHistoryEventLocked(event navigatio
 		m.history.Sessions = m.history.Sessions[:navigationPushHistoryLimit]
 	}
 	_ = m.saveHistoryLocked()
+}
+
+func navigationHistoryStartAt(event navigationLiveActivityEvent) string {
+	if event.ObservationMode == "recovered_current_snapshot" || event.ObservationMode == "recovered_session_cleanup" {
+		if event.TripStartedAt == nil {
+			return ""
+		}
+		return time.Unix(*event.TripStartedAt, 0).UTC().Format(time.RFC3339)
+	}
+	return event.ObservedAt
 }
 
 func (m *navigationNotificationMonitor) recordInstallationDelivery(event navigationLiveActivityEvent, installationID, eventID, status string) {

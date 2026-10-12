@@ -52,6 +52,105 @@ and updater backup for rollback; reverting Companion does not remove TeslaMate
 history. Release publication, live endpoint acceptance and signed-catalog
 promotion are separate gates, not implied by local tests.
 
+## Companion 1.10.54 TeslaMate 4.3 compatibility
+
+These features are introduced in Companion `1.10.54`; existing self-hosted
+Companion 1.10.53 services change only after an upgrade. Dynamic fleet/baseline recovery, notification
+policy and per-field receipt/ETA limitations are described in the
+[1.10.54 README section](README.md#companion-11054-teslamate-43-hardening)
+and [data lifecycle](DATA_LIFECYCLE.md#companion-11054-observation-lifecycle).
+No live new-car, forced MQTT reconnect or APNs acceptance is implied.
+
+`MQTT_NAMESPACE` is exact: empty retains `teslamate/cars/{id}/{field}`; otherwise
+use `teslamate/{namespace}/cars/{id}/{field}`. Its 0–128 characters must all be
+ASCII `[A-Za-z0-9_.-]`. No trimming/normalization occurs. The runtime and installer
+reject whitespace, slashes, wildcards, quotes and `$`; the restricted alphabet
+prevents dotenv/Compose expansion from changing source isolation.
+
+The [official 4.3.0 release](https://github.com/teslamate-org/teslamate/releases/tag/v4.3.0)
+and [4.2.0 → 4.3.0 source comparison](https://github.com/teslamate-org/teslamate/compare/v4.2.0...v4.3.0)
+were audited. The relevant historical table migrations did not change between
+these tags. This does not make TeslaMate's database a versioned public API or
+constitute live acceptance of every deployment in the matrix. Companion's
+`states`, `current_drive`, `friend_source` and `mqtt_fleet` SQL capabilities now depend on bounded, read-only
+probes of the installed columns and operators, not a TeslaMate version allowlist.
+The existing independent tire-history probe remains in place.
+
+Authenticated capabilities include these four groups under `sql_features`.
+Each has `status` (`available`,
+`unsupported_schema`, or `unknown`), `supported` (`true`, `false`, or `null`),
+and a sanitized `error` code. Only the affected capability strings are removed
+on failure. State/current-drive requests with missing relations/columns or incompatible operators yield HTTP 501
+`states_unsupported` / `current_drive_unsupported`; connection, permission and
+timeout failures yield HTTP 503 `states_unavailable` / `current_drive_unavailable`.
+Both responses also identify `feature`. Unknown car IDs yield HTTP 404
+`car_not_found`; an existing car with no history/current drive remains a valid
+empty result. Raw SQL errors and credentials are never returned to clients.
+
+Friend source probing uses its actual independent pool and the ownership,
+latest-position and trajectory query shapes; when disabled or without a pool,
+its schema support is unknown rather than claimed available. `mqtt_fleet`
+checks the actual `cars.settings_id → car_settings.id` join and boolean
+`car_settings.enabled` logging flag. Without a usable fleet schema, active
+MQTT-dependent claims and `friend_together_v1` are omitted; SQL state/drive
+history, stored navigation history and push-preference configuration remain
+independent. A schema probe is not a claim of fresh vehicle telemetry or complete
+Friend service readiness. The four feature probes run concurrently, with a
+two-second per-feature bound (also respecting earlier request cancellation).
+
+The main read-only SQL pool is independently bounded; Friend Together keeps its
+separate pool. Both use UTC sessions so timestamp-without-zone history is not
+reinterpreted by a server-local timezone; App `TZ` formats responses only.
+Invalid explicit settings stop startup without echoing their
+values. Durations use Go notation such as `5m` or `30m`.
+
+| Environment setting | Default | Valid range |
+| --- | --- | --- |
+| `DATABASE_MAX_OPEN_CONNS` | `8` | 1–64 |
+| `DATABASE_MAX_IDLE_CONNS` | `2` | 0–64 and no greater than max-open |
+| `DATABASE_CONN_MAX_IDLE_TIME` | `5m` | 1s–24h |
+| `DATABASE_CONN_MAX_LIFETIME` | `30m` | 1s–24h |
+
+Before writing `.env`, the installer requires canonical decimal counts and
+ASCII duration components using `ns/us/ms/s/m/h` (for example `1h30m` or `1.5s`).
+Duration components allow up to 14 integer digits and up to nine fractional
+digits, bounded by the unit's nanosecond precision. Signs, leading zeros,
+whitespace and shell characters are rejected, not normalized; direct runtime
+configuration still accepts Go duration syntax within the ranges above.
+
+Authenticated `database_pool` diagnostics expose the configured max-open bound,
+current usage and cumulative connection-wait counts/time. These limits follow
+the [Go SQL connection-pool controls](https://go.dev/doc/database/manage-connections);
+they do not alter PostgreSQL's server limits, schema or indexes.
+
+State history preserves its existing complete response when neither `limit`
+nor `cursor` is supplied. Optional `limit=1..2000` enables keyset pagination
+(default 1000 when only a cursor is supplied), advertised as
+`state_history_keyset_pagination_v1`. `meta.state_history_page` reports `limit`,
+`returned_count`, `has_more` and `next_cursor`. Continue with the same car,
+`startDate` and `endDate` and the returned opaque cursor until `has_more=false`.
+Ordering uses `(start_date,id)`, so equal state timestamps do not lose rows.
+An overlapping interval keeps its original start, even for a 16-day or longer
+parking session; there is no new date-window cap or silent record truncation.
+The cursor is signed per process: after a restart/server switch, HTTP 400
+`invalid_cursor` requires restarting the requested window and deduplicating it.
+Pages are live reads, not a database snapshot; re-read the window when an open
+interval changes. Source state and position times retain fractional seconds;
+an old position is not relabeled as a current observation. Missing telemetry
+remains null, not zero.
+
+Local driver/HTTP tests validate pool limits, schema classification, cancellation,
+nulls, fractional/old/equal timestamps, unknown cars and pagination. They do not
+execute PostgreSQL query semantics. The separate optional test
+`TestSQLLocalPostgresTemporalStatesAndPagination` uses only disposable TEMP
+tables through the existing strictly loopback `MYT_FRIEND_LOCAL_POSTGRES_URL`
+fixture (`myt_friend_fixture` database, explicit port). If that fixture is not
+explicitly provisioned, the test reports a skip and actual local PostgreSQL
+execution remains unverified in that local run; consult the matching release CI
+results for separately executed synthetic fixtures. Neither local nor CI tests
+prove production deployment, real-car behavior or APNs delivery. Companion does
+not migrate TeslaMate tables/indexes, and publication does not deploy the service.
+
 ## Required baseline
 
 - Linux host with Docker Engine and Docker Compose v2.
@@ -90,5 +189,6 @@ Every stable release must record results for:
 - The default TeslaMate directory is `/opt/teslamate`; override it with
   `TESLAMATE_DIR` for another layout.
 - The default database Compose service is `database`.
-- Historical state responses are not yet paginated; clients should request
-  bounded parking-session time windows.
+- Legacy historical-state requests remain unpaginated for compatibility;
+  clients should use bounded time windows and opt into the cursor pagination
+  above for large histories. Query failures are errors, never partial success.

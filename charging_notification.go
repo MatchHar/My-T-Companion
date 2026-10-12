@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ const (
 	fastChargingUpdateMinimumInterval = 15 * time.Second
 	fastChargingPowerThresholdKW      = 50.0
 )
+
+var chargingMQTTFields = []string{"display_name", "state", "charging_state", "battery_level", "charge_limit_soc", "rated_battery_range_km", "charger_power", "time_to_full_charge", "healthy"}
 
 type chargingLiveActivityEvent struct {
 	EventID              string   `json:"event_id"`
@@ -45,6 +48,7 @@ type chargingLiveActivityEvent struct {
 	RemainingSeconds     *int     `json:"remaining_seconds,omitempty"`
 	EstimatedCompleteAt  *int64   `json:"estimated_complete_at,omitempty"`
 	ObservedAt           string   `json:"observed_at"`
+	ObservationMode      string   `json:"observation_mode,omitempty"`
 	targetInstallationID string
 }
 
@@ -65,6 +69,7 @@ type carChargingState struct {
 	StartDelivered    bool     `json:"start_delivered"`
 	Sequence          int      `json:"sequence"`
 	LastQueuedAt      string   `json:"last_queued_at,omitempty"`
+	ObservationMode   string   `json:"observation_mode,omitempty"`
 }
 
 type chargingNotificationStore struct {
@@ -93,6 +98,21 @@ type chargingNotificationMonitor struct {
 	workerStarted  bool
 	pending        map[int]*time.Timer
 	queue          chan chargingLiveActivityEvent
+	mqttBaselines  map[int]chargingMQTTBaseline
+	mqttManaged    bool
+}
+
+type chargingMQTTBaseline struct {
+	stateReceived   bool
+	chargeReceived  bool
+	batteryReceived bool
+	rangeReceived   bool
+	liveState       bool
+	healthy         bool
+	unhealthy       bool
+	seenNotCharging bool
+	timeToFullLive  bool
+	timeToFullAt    time.Time
 }
 
 func newChargingNotificationMonitorFromEnvironment() *chargingNotificationMonitor {
@@ -152,26 +172,35 @@ func (m *chargingNotificationMonitor) start() {
 		options.SetUsername(m.mqttUsername)
 		options.SetPassword(m.mqttPassword)
 	}
-	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+	options.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		m.mu.Lock()
+		if m.client != client {
+			m.mu.Unlock()
+			return
+		}
+		m.resetMQTTBaselineLocked()
+		recordMQTTConnection("charging", false)
 		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
 		log.Printf("[warn] charging MQTT disconnected: %v", err)
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
-		token := client.SubscribeMultiple(map[string]byte{
-			"teslamate/cars/+/display_name":           1,
-			"teslamate/cars/+/state":                  1,
-			"teslamate/cars/+/charging_state":         1,
-			"teslamate/cars/+/battery_level":          1,
-			"teslamate/cars/+/charge_limit_soc":       1,
-			"teslamate/cars/+/rated_battery_range_km": 1,
-			"teslamate/cars/+/charger_power":          1,
-			"teslamate/cars/+/time_to_full_charge":    1,
-		}, m.handleMQTTMessage)
+		m.mu.Lock()
+		if m.client != client || !client.IsConnected() {
+			m.mu.Unlock()
+			return
+		}
+		m.resetMQTTBaselineLocked()
+		epoch := beginMQTTConnection("charging")
+		m.mu.Unlock()
+		token := client.SubscribeMultiple(teslaMateMQTTTopics(chargingMQTTFields), m.handleMQTTMessage)
 		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
 			m.mu.Lock()
+			if m.client != client || !client.IsConnected() || !recordMQTTConnection("charging", true, epoch) {
+				m.mu.Unlock()
+				return
+			}
 			m.connected = true
 			m.lastError = ""
 			m.mu.Unlock()
@@ -183,9 +212,14 @@ func (m *chargingNotificationMonitor) start() {
 			err = fmt.Errorf("MQTT charging subscription timed out")
 		}
 		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("charging") != epoch {
+			m.mu.Unlock()
+			return
+		}
 		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
+		requestMQTTBaselineRetry()
 	})
 	client := mqtt.NewClient(options)
 	m.mu.Lock()
@@ -208,6 +242,8 @@ func (m *chargingNotificationMonitor) start() {
 
 func (m *chargingNotificationMonitor) stop() {
 	m.mu.Lock()
+	recordMQTTConnection("charging", false)
+	m.resetMQTTBaselineLocked()
 	for carID, timer := range m.pending {
 		timer.Stop()
 		delete(m.pending, carID)
@@ -219,6 +255,67 @@ func (m *chargingNotificationMonitor) stop() {
 	m.mu.Unlock()
 	if client != nil && client.IsConnected() {
 		client.Disconnect(250)
+	}
+}
+
+func (m *chargingNotificationMonitor) refreshFleetSubscription() {
+	m.mu.Lock()
+	client := m.client
+	m.mu.Unlock()
+	if client == nil || !client.IsConnected() {
+		return
+	}
+	epoch := mqttConnectionEpoch("charging")
+	token := client.SubscribeMultiple(teslaMateMQTTTopics(chargingMQTTFields), m.handleMQTTMessage)
+	if !token.WaitTimeout(10*time.Second) || token.Error() != nil {
+		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("charging") != epoch {
+			m.mu.Unlock()
+			return
+		}
+		m.lastError = "MQTT charging fleet subscription failed"
+		m.mu.Unlock()
+		requestMQTTBaselineRetry()
+		return
+	}
+	m.mu.Lock()
+	if m.client != client || !client.IsConnected() || !recordMQTTConnection("charging", true, epoch) {
+		m.mu.Unlock()
+		return
+	}
+	m.connected = true
+	if m.lastError == "MQTT charging fleet subscription failed" || m.lastError == "MQTT charging subscription timed out" {
+		m.lastError = ""
+	}
+	m.mu.Unlock()
+}
+
+func (m *chargingNotificationMonitor) reconcileFleet(cars map[int]bool) {
+	m.mu.Lock()
+	var cleanup []chargingLiveActivityEvent
+	for id, state := range m.store.Cars {
+		if cars[id] {
+			continue
+		}
+		if timer := m.pending[id]; timer != nil {
+			timer.Stop()
+			delete(m.pending, id)
+		}
+		delete(m.mqttBaselines, id)
+		if state.Active && state.SessionID != "" {
+			if pushRegistry != nil {
+				pushRegistry.rememberKnownLiveActivityCleanup(id, "charging_live_activity", state.SessionID)
+			}
+			event := m.makeEventLocked(id, &state, "charging_ended", time.Now().UTC())
+			event.ObservationMode = "source_membership_cleanup"
+			cleanup = append(cleanup, event)
+		}
+		delete(m.store.Cars, id)
+	}
+	_ = m.saveLocked()
+	m.mu.Unlock()
+	for _, event := range cleanup {
+		m.enqueue(event)
 	}
 }
 
@@ -286,19 +383,41 @@ func (m *chargingNotificationMonitor) loadPairing() {
 }
 
 func (m *chargingNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message mqtt.Message) {
-	parts := strings.Split(message.Topic(), "/")
-	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" {
+	carID, field, ok := acceptTeslaMateMQTTMessage(message, "charging")
+	if !ok || message.Duplicate() {
 		return
 	}
-	carID, err := strconv.Atoi(parts[2])
-	if err != nil || carID <= 0 {
-		return
-	}
-	m.observe(carID, parts[3], strings.TrimSpace(string(message.Payload())), time.Now().UTC())
+	m.observeMessage(carID, field, string(message.Payload()), time.Now().UTC(), message.Retained(), true)
 }
 
 func (m *chargingNotificationMonitor) observe(carID int, field, value string, observedAt time.Time) {
+	m.observeMessage(carID, field, value, observedAt, false, false)
+}
+
+func (m *chargingNotificationMonitor) resetMQTTBaseline() {
 	m.mu.Lock()
+	m.resetMQTTBaselineLocked()
+	m.mu.Unlock()
+}
+
+func (m *chargingNotificationMonitor) resetMQTTBaselineLocked() {
+	m.mqttManaged = true
+	m.mqttBaselines = map[int]chargingMQTTBaseline{}
+	for id, timer := range m.pending {
+		timer.Stop()
+		delete(m.pending, id)
+	}
+}
+
+func (m *chargingNotificationMonitor) observeMessage(carID int, field, value string, observedAt time.Time, retained, managed bool) {
+	m.mu.Lock()
+	if managed {
+		m.mqttManaged = true
+	}
+	if m.mqttBaselines == nil {
+		m.mqttBaselines = map[int]chargingMQTTBaseline{}
+	}
+	baseline := m.mqttBaselines[carID]
 	state := m.store.Cars[carID]
 	wasActive := state.Active
 	switch field {
@@ -306,21 +425,53 @@ func (m *chargingNotificationMonitor) observe(carID int, field, value string, ob
 		state.DisplayName = normalizedMQTTValue(value)
 	case "state":
 		state.VehicleState = strings.ToLower(normalizedMQTTValue(value))
+		baseline.stateReceived = chargingVehicleStateKnown(state.VehicleState)
+		baseline.liveState = !retained && baseline.stateReceived
 	case "charging_state":
 		state.ChargingState = strings.ToLower(normalizedMQTTValue(value))
+		baseline.chargeReceived = parkingEventValueKnown("charging_state", state.ChargingState)
+		if !retained {
+			baseline.liveState = baseline.chargeReceived
+		}
 	case "battery_level":
 		state.BatteryLevel = parseBoundedInt(value, 0, 100)
+		baseline.batteryReceived = state.BatteryLevel != nil
 	case "charge_limit_soc":
 		state.ChargeLimitSOC = parseBoundedInt(value, 0, 100)
 	case "rated_battery_range_km":
 		state.RatedRangeKM = parseBoundedFloat(value, 0, 1000)
+		baseline.rangeReceived = state.RatedRangeKM != nil
 	case "charger_power":
 		state.ChargerPowerKW = parseBoundedFloat(value, 0, 350)
 	case "time_to_full_charge":
 		state.TimeToFullHours = parseBoundedFloat(value, 0, 168)
+		baseline.timeToFullLive = !retained && state.TimeToFullHours != nil
+		if baseline.timeToFullLive {
+			baseline.timeToFullAt = observedAt
+		}
+	case "healthy":
+		baseline.healthy = !retained && strings.TrimSpace(value) == "true"
+		baseline.unhealthy = strings.TrimSpace(value) != "true"
 	default:
 		m.mu.Unlock()
 		return
+	}
+	if baseline.stateReceived && baseline.chargeReceived && state.VehicleState != "charging" && state.ChargingState != "charging" {
+		baseline.seenNotCharging = true
+	}
+	m.mqttBaselines[carID] = baseline
+	m.store.Cars[carID] = state
+	if m.mqttManaged && (retained || !m.chargingMQTTReadyLocked(carID)) {
+		// Clearing an existing card needs a real, coherent terminal state, not
+		// fresh numerical card values. Null SOC/range must not strand it.
+		terminal := !retained && wasActive && (field == "state" || field == "charging_state") &&
+			baseline.stateReceived && baseline.chargeReceived &&
+			state.VehicleState != "charging" && state.ChargingState != "charging"
+		if !terminal {
+			_ = m.saveLocked()
+			m.mu.Unlock()
+			return
+		}
 	}
 
 	isCharging := state.VehicleState == "charging" || state.ChargingState == "charging"
@@ -330,7 +481,12 @@ func (m *chargingNotificationMonitor) observe(carID int, field, value string, ob
 		state.Active = true
 		state.StartBatteryLevel = *state.BatteryLevel
 		state.StartRatedRangeKM = cloneFloat(state.RatedRangeKM)
+		state.ObservationMode = "mqtt_live_transition"
 		state.SessionStartedAt = observedAt.Format(time.RFC3339)
+		if m.mqttManaged && (!baseline.liveState || !baseline.seenNotCharging) {
+			state.ObservationMode = "recovered_current_snapshot"
+			state.SessionStartedAt = "" // physical/source start time is unknown
+		}
 		state.SessionID = chargingSessionID(m.installationID, carID, observedAt)
 		state.Sequence = 0
 		state.StartDelivered = false
@@ -378,6 +534,9 @@ func (m *chargingNotificationMonitor) observe(carID int, field, value string, ob
 }
 
 func (m *chargingNotificationMonitor) scheduleUpdateLocked(carID int, observedAt time.Time) {
+	if m.mqttManaged && !m.chargingMQTTReadyLocked(carID) {
+		return
+	}
 	state := m.store.Cars[carID]
 	if !state.StartDelivered || state.SessionID == "" || state.BatteryLevel == nil {
 		return
@@ -406,7 +565,7 @@ func (m *chargingNotificationMonitor) flushUpdate(carID int) {
 	m.mu.Lock()
 	delete(m.pending, carID)
 	state := m.store.Cars[carID]
-	if !state.Active || !state.StartDelivered || state.BatteryLevel == nil {
+	if !state.Active || !state.StartDelivered || state.BatteryLevel == nil || (m.mqttManaged && !m.chargingMQTTReadyLocked(carID)) {
 		m.mu.Unlock()
 		return
 	}
@@ -418,6 +577,10 @@ func (m *chargingNotificationMonitor) flushUpdate(carID int) {
 }
 
 func (m *chargingNotificationMonitor) makeEventLocked(carID int, state *carChargingState, eventType string, observedAt time.Time) chargingLiveActivityEvent {
+	mode := state.ObservationMode
+	if m.mqttManaged && (!m.mqttBaselines[carID].liveState || !m.mqttBaselines[carID].seenNotCharging) {
+		mode = "recovered_current_snapshot"
+	}
 	state.Sequence++
 	state.LastQueuedAt = observedAt.Format(time.RFC3339)
 	target := 100
@@ -444,9 +607,17 @@ func (m *chargingNotificationMonitor) makeEventLocked(carID int, state *carCharg
 	var estimated *int64
 	if state.TimeToFullHours != nil {
 		seconds := int(*state.TimeToFullHours * 3600)
-		remaining = &seconds
-		value := observedAt.Add(time.Duration(seconds) * time.Second).Unix()
-		estimated = &value
+		// Retained duration has no sample timestamp; a healthy receipt cannot
+		// rebase it into a newly predicted completion time.
+		if !m.mqttManaged || m.mqttBaselines[carID].timeToFullLive {
+			remaining = &seconds
+			base := observedAt
+			if m.mqttManaged {
+				base = m.mqttBaselines[carID].timeToFullAt
+			}
+			value := base.Add(time.Duration(seconds) * time.Second).Unix()
+			estimated = &value
+		}
 	}
 	idInput := fmt.Sprintf("%s:%s:%s:%d", m.installationID, state.SessionID, eventType, state.Sequence)
 	idHash := sha256.Sum256([]byte(idInput))
@@ -468,7 +639,23 @@ func (m *chargingNotificationMonitor) makeEventLocked(carID int, state *carCharg
 		RemainingSeconds:    remaining,
 		EstimatedCompleteAt: estimated,
 		ObservedAt:          observedAt.Format(time.RFC3339),
+		ObservationMode:     mode,
 	}
+}
+
+func (m *chargingNotificationMonitor) chargingMQTTReadyLocked(carID int) bool {
+	b := m.mqttBaselines[carID]
+	s := m.store.Cars[carID]
+	consistent := (s.VehicleState == "charging") == (s.ChargingState == "charging")
+	return b.stateReceived && b.chargeReceived && b.batteryReceived && b.rangeReceived && consistent && !b.unhealthy && (b.liveState || b.healthy)
+}
+
+func chargingVehicleStateKnown(value string) bool {
+	switch value {
+	case "charging", "driving", "online", "asleep", "offline":
+		return true
+	}
+	return false
 }
 
 func (m *chargingNotificationMonitor) enqueue(event chargingLiveActivityEvent) {
@@ -499,6 +686,9 @@ func (m *chargingNotificationMonitor) replayActiveStartsMatching(
 	now := time.Now().UTC()
 	for carID, state := range m.store.Cars {
 		if shouldReplay != nil && !shouldReplay(carID) {
+			continue
+		}
+		if m.mqttManaged && !m.chargingMQTTReadyLocked(carID) {
 			continue
 		}
 		if !state.Active || state.SessionID == "" || state.BatteryLevel == nil {
@@ -562,7 +752,7 @@ func (m *chargingNotificationMonitor) deliver(event chargingLiveActivityEvent) e
 	subs := []pushSubscriber{}
 	if pushRegistry != nil {
 		subs = pushRegistry.matching(event.CarID, func(s pushSubscriber) bool {
-			return s.wantsChargingLiveActivity(event.CarID) &&
+			return pushSubscriberWantsEvent(s, event.CarID, "charging_live_activity", event.Type == "charging_ended", event.SessionID) &&
 				(event.targetInstallationID == "" || s.InstallationID == event.targetInstallationID)
 		})
 	} else if m.installationID != "" {
@@ -723,7 +913,7 @@ func parseBoundedInt(value string, minimum, maximum int) *int {
 
 func parseBoundedFloat(value string, minimum, maximum float64) *float64 {
 	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-	if err != nil || parsed < minimum || parsed > maximum {
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < minimum || parsed > maximum {
 		return nil
 	}
 	return &parsed

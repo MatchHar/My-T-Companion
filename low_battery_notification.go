@@ -119,6 +119,7 @@ func (m *lowBatteryNotificationMonitor) start() {
 func (m *lowBatteryNotificationMonitor) stop() {
 	m.stopOnce.Do(func() { close(m.stopCh) })
 	m.mu.Lock()
+	recordMQTTConnection("low_battery", false)
 	for _, timer := range m.timers {
 		timer.Stop()
 	}
@@ -147,20 +148,40 @@ func (m *lowBatteryNotificationMonitor) connectMQTT() {
 		options.SetUsername(m.mqttUsername)
 		options.SetPassword(m.mqttPassword)
 	}
-	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+	options.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		m.mu.Lock()
+		if m.client != client {
+			m.mu.Unlock()
+			return
+		}
+		recordMQTTConnection("low_battery", false)
+		m.resetObservationBaselineLocked()
 		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
-		topics := map[string]byte{}
-		for _, field := range []string{"display_name", "state", "shift_state", "charging_state", "battery_level"} {
-			topics["teslamate/cars/+/"+field] = 1
+		m.mu.Lock()
+		if m.client != client || !m.started {
+			m.mu.Unlock()
+			client.Disconnect(250)
+			return
 		}
+		if !client.IsConnected() {
+			m.mu.Unlock()
+			return
+		}
+		epoch := beginMQTTConnection("low_battery")
+		m.resetObservationBaselineLocked()
+		m.mu.Unlock()
+		topics := teslaMateMQTTTopics(lowBatteryMQTTFields)
 		token := client.SubscribeMultiple(topics, m.handleMQTTMessage)
 		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
 			m.mu.Lock()
+			if m.client != client || !client.IsConnected() || !recordMQTTConnection("low_battery", true, epoch) {
+				m.mu.Unlock()
+				return
+			}
 			m.connected = true
 			m.lastError = ""
 			m.mu.Unlock()
@@ -168,6 +189,10 @@ func (m *lowBatteryNotificationMonitor) connectMQTT() {
 			return
 		}
 		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("low_battery") != epoch {
+			m.mu.Unlock()
+			return
+		}
 		m.connected = false
 		if err := token.Error(); err != nil {
 			m.lastError = err.Error()
@@ -175,9 +200,13 @@ func (m *lowBatteryNotificationMonitor) connectMQTT() {
 			m.lastError = "MQTT low-battery subscription timed out"
 		}
 		m.mu.Unlock()
+		requestMQTTBaselineRetry()
 	})
-	m.client = mqtt.NewClient(options)
-	token := m.client.Connect()
+	client := mqtt.NewClient(options)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+	token := client.Connect()
 	if !token.WaitTimeout(15 * time.Second) {
 		m.mu.Lock()
 		m.lastError = "MQTT low-battery connection timed out"
@@ -192,18 +221,37 @@ func (m *lowBatteryNotificationMonitor) connectMQTT() {
 }
 
 func (m *lowBatteryNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message mqtt.Message) {
-	parts := strings.Split(message.Topic(), "/")
-	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" {
+	carID, field, ok := acceptTeslaMateMQTTMessage(message, "low_battery")
+	if !ok {
 		return
 	}
-	carID, err := strconv.Atoi(parts[2])
-	if err != nil || carID <= 0 {
-		return
-	}
-	m.observe(carID, parts[3], strings.TrimSpace(string(message.Payload())), time.Now().UTC())
+	m.observeMessage(carID, field, strings.TrimSpace(string(message.Payload())), time.Now().UTC(), message.Retained())
 }
 
 func (m *lowBatteryNotificationMonitor) observe(carID int, field, raw string, observedAt time.Time) {
+	m.observeMessage(carID, field, raw, observedAt, false)
+}
+
+func (m *lowBatteryNotificationMonitor) resetObservationBaseline() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resetObservationBaselineLocked()
+}
+
+func (m *lowBatteryNotificationMonitor) resetObservationBaselineLocked() {
+	for id, timer := range m.timers {
+		timer.Stop()
+		delete(m.timers, id)
+	}
+	for id, state := range m.store.Cars {
+		state.Initialized = false
+		state.State, state.ShiftState, state.ChargingState = "", "", ""
+		state.BatteryLevel = nil
+		m.store.Cars[id] = state
+	}
+}
+
+func (m *lowBatteryNotificationMonitor) observeMessage(carID int, field, raw string, observedAt time.Time, retained bool) {
 	m.mu.Lock()
 	state := m.store.Cars[carID]
 	if state.Actions == nil {
@@ -221,6 +269,9 @@ func (m *lowBatteryNotificationMonitor) observe(carID int, field, raw string, ob
 	case "battery_level":
 		value, err := strconv.Atoi(raw)
 		if err != nil || value < 0 || value > 100 {
+			state.BatteryLevel = nil
+			state.Initialized = false
+			m.store.Cars[carID] = state
 			m.mu.Unlock()
 			return
 		}
@@ -229,7 +280,15 @@ func (m *lowBatteryNotificationMonitor) observe(carID int, field, raw string, ob
 		m.mu.Unlock()
 		return
 	}
-	state.LastObservedAt = observedAt.Format(time.RFC3339)
+	if retained {
+		// Even a later retained replay is a baseline, never a new low episode.
+		state.Initialized = false
+	} else {
+		state.LastObservedAt = observedAt.Format(time.RFC3339)
+	}
+	if state.State == "" || state.ChargingState == "" {
+		state.Initialized = false
+	}
 	m.store.Cars[carID] = state
 	_ = m.saveStateLocked()
 	if previous := m.timers[carID]; previous != nil {
@@ -253,14 +312,21 @@ func (m *lowBatteryNotificationMonitor) evaluate(carID int, observedAt time.Time
 	if !state.Initialized {
 		state.Initialized = true
 		state.LastEligible = eligible
+		if *state.BatteryLevel >= lowBatteryRearmPercent {
+			state.Latched, state.SevereLatched = false, false
+			state.EpisodeID = ""
+			state.Actions = map[string]lowBatteryActionState{}
+		}
 		// The first complete retained MQTT snapshot establishes a baseline only.
 		// If the car is already low, latch that episode without notifying so a
 		// later retained/topic refresh cannot masquerade as a fresh transition.
 		if eligible {
 			state.Latched = true
 			state.SevereLatched = *state.BatteryLevel < lowBatterySeverePercent
-			state.EpisodeID = newLowBatteryEpisodeID(carID, observedAt)
-			state.Actions = map[string]lowBatteryActionState{}
+			if state.EpisodeID == "" {
+				state.EpisodeID = newLowBatteryEpisodeID(carID, observedAt)
+				state.Actions = map[string]lowBatteryActionState{}
+			}
 		}
 		m.store.Cars[carID] = state
 		_ = m.saveStateLocked()
@@ -351,6 +417,13 @@ func (m *lowBatteryNotificationMonitor) fanOut(carID int, state lowBatteryCarSta
 		return sub.wantsLowBattery(carID) && (onlyInstallation == "" || sub.InstallationID == onlyInstallation)
 	})
 	for _, sub := range subs {
+		m.mu.Lock()
+		current, exists := m.store.Cars[carID]
+		currentEpisode := exists && current.Initialized && current.EpisodeID == state.EpisodeID && lowBatteryEligible(current)
+		m.mu.Unlock()
+		if !currentEpisode {
+			return
+		}
 		baseID := fmt.Sprintf("%d:%s:%s", carID, state.EpisodeID, eventType)
 		event := lowBatteryPushEvent{
 			EventID: targetPushEventID(baseID, sub.InstallationID, eventType), InstallationID: sub.InstallationID,
@@ -424,6 +497,11 @@ func (m *lowBatteryNotificationMonitor) processDueReminders(now time.Time) {
 	due := []dueReminder{}
 	m.mu.Lock()
 	for carID, state := range m.store.Cars {
+		// A reconnect may temporarily invalidate the current eligibility. Keep
+		// an expired snooze pending until a complete baseline is known again.
+		if !state.Initialized || state.BatteryLevel == nil || state.State == "" || state.ChargingState == "" || !mqttCarEligible(carID) {
+			continue
+		}
 		for installationID, action := range state.Actions {
 			if action.Action != "snooze_4h" || action.SnoozeUntil == "" {
 				continue

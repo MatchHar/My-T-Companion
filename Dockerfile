@@ -1,4 +1,4 @@
-FROM golang:1.26.6-alpine AS build
+FROM golang:1.26.9-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -15,6 +15,9 @@ RUN test -f lock_secure_notification.go \
   && test -f push_subscribers.go \
   && test -f teslamate_version.go \
   && test -f friend_together.go \
+  && test -f mqtt_source.go \
+  && test -f mqtt_monitor_lifecycle.go \
+  && test -f sql_compatibility.go \
   && test -f internal/friendtogether/http_service.go \
   && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/states-api .
 

@@ -18,6 +18,7 @@ const (
 	defaultParkingEventRetentionDays = 0
 	defaultParkingEventMaximum       = 50000
 	parkingEventPersistenceDelay     = 50 * time.Millisecond
+	maximumParkingCurrentCars        = 256
 )
 
 type parkingObservedEvent struct {
@@ -80,6 +81,8 @@ type parkingEventMonitor struct {
 	persistCh     chan struct{}
 	persistStopCh chan struct{}
 	persistDoneCh chan struct{}
+	baselines     map[int]map[string]bool
+	lastReceipt   map[int]time.Time
 }
 
 func newParkingEventMonitorFromEnvironment() *parkingEventMonitor {
@@ -124,21 +127,36 @@ func (m *parkingEventMonitor) start() {
 		options.SetUsername(m.mqttUsername)
 		options.SetPassword(m.mqttPassword)
 	}
-	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+	options.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		m.mu.Lock()
+		if m.client != client {
+			m.mu.Unlock()
+			return
+		}
+		m.resetMQTTBaselineLocked()
+		recordMQTTConnection("parking", false)
 		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
 		log.Printf("[warn] parking-event MQTT disconnected: %v", err)
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
-		topics := map[string]byte{}
-		for _, field := range parkingEventMQTTFields {
-			topics["teslamate/cars/+/"+field] = 1
+		m.mu.Lock()
+		if m.client != client || !client.IsConnected() {
+			m.mu.Unlock()
+			return
 		}
+		m.resetMQTTBaselineLocked()
+		epoch := beginMQTTConnection("parking")
+		m.mu.Unlock()
+		topics := teslaMateMQTTTopics(parkingEventMQTTFields)
 		token := client.SubscribeMultiple(topics, m.handleMQTTMessage)
 		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
 			m.mu.Lock()
+			if m.client != client || !client.IsConnected() || !recordMQTTConnection("parking", true, epoch) {
+				m.mu.Unlock()
+				return
+			}
 			m.connected = true
 			m.lastError = ""
 			m.mu.Unlock()
@@ -150,12 +168,20 @@ func (m *parkingEventMonitor) start() {
 			err = fmt.Errorf("MQTT parking-event subscription timed out")
 		}
 		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("parking") != epoch {
+			m.mu.Unlock()
+			return
+		}
 		m.connected = false
 		m.lastError = err.Error()
 		m.mu.Unlock()
+		requestMQTTBaselineRetry()
 	})
-	m.client = mqtt.NewClient(options)
-	token := m.client.Connect()
+	client := mqtt.NewClient(options)
+	m.mu.Lock()
+	m.client = client
+	m.mu.Unlock()
+	token := client.Connect()
 	if !token.WaitTimeout(15 * time.Second) {
 		m.mu.Lock()
 		m.lastError = "MQTT parking-event connection timed out"
@@ -171,10 +197,68 @@ func (m *parkingEventMonitor) start() {
 }
 
 func (m *parkingEventMonitor) stop() {
-	if m.client != nil && m.client.IsConnected() {
-		m.client.Disconnect(250)
+	m.mu.Lock()
+	recordMQTTConnection("parking", false)
+	client := m.client
+	m.client = nil
+	m.connected = false
+	m.baselines = nil
+	m.mu.Unlock()
+	if client != nil && client.IsConnected() {
+		client.Disconnect(250)
 	}
 	m.stopPersistenceWorker()
+}
+
+func (m *parkingEventMonitor) refreshFleetSubscription() {
+	m.mu.RLock()
+	client := m.client
+	m.mu.RUnlock()
+	if client == nil || !client.IsConnected() {
+		return
+	}
+	epoch := mqttConnectionEpoch("parking")
+	token := client.SubscribeMultiple(teslaMateMQTTTopics(parkingEventMQTTFields), m.handleMQTTMessage)
+	if !token.WaitTimeout(10*time.Second) || token.Error() != nil {
+		m.mu.Lock()
+		if m.client != client || mqttConnectionEpoch("parking") != epoch {
+			m.mu.Unlock()
+			return
+		}
+		m.lastError = "MQTT parking-event fleet subscription failed"
+		m.mu.Unlock()
+		requestMQTTBaselineRetry()
+		return
+	}
+	m.mu.Lock()
+	if m.client != client || !client.IsConnected() || !recordMQTTConnection("parking", true, epoch) {
+		m.mu.Unlock()
+		return
+	}
+	m.connected = true
+	if m.lastError == "MQTT parking-event fleet subscription failed" || m.lastError == "MQTT parking-event subscription timed out" {
+		m.lastError = ""
+	}
+	m.mu.Unlock()
+}
+
+func (m *parkingEventMonitor) reconcileFleet(cars map[int]bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id := range m.store.Cars {
+		if cars[id] {
+			continue
+		}
+		delete(m.store.Cars, id)
+		delete(m.baselines, id)
+		delete(m.lastReceipt, id)
+	}
+	for key, receipt := range m.store.DoorReceipts {
+		if !cars[receipt.CarID] {
+			delete(m.store.DoorReceipts, key)
+		}
+	}
+	m.persistLocked()
 }
 
 var parkingEventMQTTFields = []string{
@@ -208,26 +292,46 @@ var parkingEventMQTTFields = []string{
 }
 
 func (m *parkingEventMonitor) handleMQTTMessage(_ mqtt.Client, message mqtt.Message) {
-	parts := strings.Split(message.Topic(), "/")
-	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" {
+	carID, field, ok := acceptTeslaMateMQTTMessage(message, "parking")
+	if !ok || message.Duplicate() {
 		return
 	}
-	carID, err := strconv.Atoi(parts[2])
-	if err != nil || carID <= 0 {
-		return
-	}
-	m.observe(carID, parts[3], strings.TrimSpace(string(message.Payload())), time.Now().UTC())
+	m.observeMessage(carID, field, string(message.Payload()), time.Now().UTC(), message.Retained())
 }
 
 func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observedAt time.Time) {
+	m.observeMessage(carID, field, rawValue, observedAt, false)
+}
+
+func (m *parkingEventMonitor) resetMQTTBaseline() {
+	m.mu.Lock()
+	m.resetMQTTBaselineLocked()
+	m.mu.Unlock()
+}
+
+func (m *parkingEventMonitor) resetMQTTBaselineLocked() {
+	m.baselines = nil
+}
+
+func (m *parkingEventMonitor) observeMessage(carID int, field, rawValue string, observedAt time.Time, retained bool) {
 	value := strings.ToLower(normalizedMQTTValue(rawValue))
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.boundCurrentCarsLocked(carID, observedAt)
+	if m.baselines == nil {
+		m.baselines = map[int]map[string]bool{}
+	}
+	if m.baselines[carID] == nil {
+		m.baselines[carID] = map[string]bool{}
+	}
 
 	state := m.store.Cars[carID]
 	if state.Values == nil {
 		state.Values = map[string]string{}
 	}
+	// A null-only scalar receipt still owns a current-cache slot. Otherwise its
+	// baseline/receipt maps could grow while Cars remained empty.
+	m.store.Cars[carID] = state
 	switch field {
 	case "battery_level":
 		parsed := parseBoundedInt(value, 0, 100)
@@ -249,24 +353,27 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 		return
 	}
 
-	previous, initialized := state.Values[field]
+	previous := state.Values[field]
+	initialized := m.baselines[carID][field]
+	known := parkingEventValueKnown(field, value)
+	m.baselines[carID][field] = known
 	state.Values[field] = value
 	m.store.Cars[carID] = state
 
 	// Retained MQTT values arrive at every subscription. The first observation
 	// establishes a baseline only; it must never be presented as a transition.
+	if retained || !known || !initialized {
+		if isNamedDoorField(field) {
+			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, true)
+		}
+		m.persistLocked()
+		return
+	}
 	if previous == value {
 		if isNamedDoorField(field) {
 			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, false)
 			m.persistLocked()
 		}
-		return
-	}
-	if !initialized {
-		if isNamedDoorField(field) {
-			m.recordDoorReceiptLocked(carID, field, value, observedAt, false, true)
-		}
-		m.persistLocked()
 		return
 	}
 	eventType := parkingEventType(field, previous, value)
@@ -277,7 +384,6 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 		m.persistLocked()
 		return
 	}
-	m.pruneLocked(observedAt)
 	event := parkingObservedEvent{
 		ID:              fmt.Sprintf("%d-%d-%s", carID, observedAt.UnixNano(), eventType),
 		CarID:           carID,
@@ -292,10 +398,54 @@ func (m *parkingEventMonitor) observe(carID int, field, rawValue string, observe
 		ObservationMode: "teslamate_mqtt_first_observed",
 	}
 	m.store.Events = append(m.store.Events, event)
+	m.pruneLocked(observedAt)
 	if isNamedDoorField(field) {
 		m.recordDoorReceiptLocked(carID, field, value, observedAt, true, false)
 	}
 	m.persistLocked()
+}
+
+func parkingEventValueKnown(field, value string) bool {
+	switch field {
+	case "charging_state":
+		switch value {
+		case "disconnected", "starting", "charging", "stopped", "complete", "nopower":
+			return true
+		}
+	case "sun_roof_state":
+		return value == "open" || value == "vent" || value == "moving" || value == "closed"
+	default:
+		return value == "true" || value == "false"
+	}
+	return false
+}
+
+// Bound only disposable current caches; historical events keep their own policy.
+func (m *parkingEventMonitor) boundCurrentCarsLocked(carID int, observedAt time.Time) {
+	if m.lastReceipt == nil {
+		m.lastReceipt = map[int]time.Time{}
+	}
+	for {
+		_, exists := m.store.Cars[carID]
+		if len(m.store.Cars) <= maximumParkingCurrentCars && (len(m.store.Cars) < maximumParkingCurrentCars || exists) {
+			break
+		}
+		oldestID := 0
+		var oldest time.Time
+		for id := range m.store.Cars {
+			at := m.lastReceipt[id]
+			if oldestID == 0 || at.Before(oldest) || (at.Equal(oldest) && id < oldestID) {
+				oldestID, oldest = id, at
+			}
+		}
+		delete(m.store.Cars, oldestID)
+		delete(m.baselines, oldestID)
+		delete(m.lastReceipt, oldestID)
+		for _, field := range namedDoorMQTTFields {
+			delete(m.store.DoorReceipts, doorReceiptKey(oldestID, field))
+		}
+	}
+	m.lastReceipt[carID] = observedAt
 }
 
 func parkingEventType(field, previous, value string) string {

@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.10.54
+
+- Build and validate with the Go 1.26.9 security patch and update the indirect
+  golang.org/x/net dependency to 0.60.0; keep the existing Go major version.
+- Refresh the enabled TeslaMate source fleet dynamically, recover new-car
+  retained baselines with bounded subscription retries, and reject stale
+  connection callbacks. New cars keep server notification defaults; Friend
+  Together sharing still requires explicit per-car authorization.
+- Treat retained/unknown parking and software observations as baselines, not
+  new actions. Prefer coherent software-update aggregates and preserve unknown
+  values; the conservative legacy scalar fallback can omit an unconfirmed alert.
+- Recheck current installation, source, car and notification preferences before
+  initial delivery and retries. Only exact previously authorized Live Activity
+  sessions retain terminal cleanup after ordinary notifications are disabled.
+- Keep recovered charging/navigation snapshots and ETA anchors honest, preserve
+  pending low-battery snoozes across unknown reconnects, and expose authenticated
+  per-field receipt/connection diagnostics without inventing vehicle sample times.
+- Share strict MQTT namespaces across monitors and safely preserve namespace/pool
+  configuration during installation. Bound UTC read-only SQL pools and feature
+  probes; add optional state-history keyset pagination without truncating legacy
+  responses or changing TeslaMate tables/indexes.
+- Local synthetic regression/race/vet and cross-build checks passed; both opt-in
+  PostgreSQL fixtures were skipped locally. Real new-car, broker/ACL reconnect,
+  APNs delivery, load and the complete version matrix remain separate acceptance
+  work. Publishing this release does not upgrade existing self-hosted services.
+
 ## 1.10.51
 
 - Add authenticated, read-only tire-pressure history from existing TeslaMate

@@ -70,17 +70,29 @@ type softwareNotificationEvent struct {
 }
 
 type carSoftwareState struct {
-	DisplayName     string `json:"display_name,omitempty"`
-	Version         string `json:"version,omitempty"`
-	UpdateAvailable bool   `json:"update_available"`
-	UpdateVersion   string `json:"update_version,omitempty"`
-	DownloadPercent int    `json:"download_percent,omitempty"`
-	InstallPercent  int    `json:"install_percent,omitempty"`
+	DisplayName              string `json:"display_name,omitempty"`
+	Version                  string `json:"version,omitempty"`
+	UpdateAvailable          bool   `json:"update_available"`
+	UpdateVersion            string `json:"update_version,omitempty"`
+	UpdateAvailabilityStatus string `json:"update_availability_status,omitempty"`
+	DownloadPercent          int    `json:"download_percent,omitempty"`
+	InstallPercent           int    `json:"install_percent,omitempty"`
 }
 
 type softwareNotificationStore struct {
 	Cars      map[int]carSoftwareState `json:"cars"`
 	Delivered map[string]string        `json:"delivered"`
+}
+
+// Connection-local evidence is deliberately not restored from disk. A retained
+// receipt supplies a baseline, never the time of an installation/update event.
+type softwareObservationBaseline struct {
+	Epoch                uint64
+	AggregateSeen        bool
+	AggregateInitialized bool
+	VersionKnown         bool
+	AvailableKnown       bool
+	LiveUpdateVersion    string
 }
 
 type softwarePushPairing struct {
@@ -90,24 +102,27 @@ type softwarePushPairing struct {
 }
 
 type softwareNotificationMonitor struct {
-	mu             sync.Mutex
-	store          softwareNotificationStore
-	statePath      string
-	installationID string
-	relayURL       string
-	relaySecret    string
-	mqttBroker     string
-	mqttClientID   string
-	mqttUsername   string
-	mqttPassword   string
-	client         mqtt.Client
-	httpClient     *http.Client
-	inFlight       map[string]bool
-	enabled        bool
-	connected      bool
-	lastEventAt    *time.Time
-	lastError      string
-	started        bool
+	mu               sync.Mutex
+	store            softwareNotificationStore
+	statePath        string
+	installationID   string
+	relayURL         string
+	relaySecret      string
+	mqttBroker       string
+	mqttClientID     string
+	mqttUsername     string
+	mqttPassword     string
+	client           mqtt.Client
+	httpClient       *http.Client
+	inFlight         map[string]bool
+	enabled          bool
+	connected        bool
+	lastEventAt      *time.Time
+	lastError        string
+	started          bool
+	observations     map[int]softwareObservationBaseline
+	generation       uint64
+	observationEpoch uint64
 }
 
 func newSoftwareNotificationMonitorFromEnvironment() *softwareNotificationMonitor {
@@ -157,29 +172,42 @@ func (m *softwareNotificationMonitor) start() {
 		SetConnectRetry(true).
 		SetConnectRetryInterval(10 * time.Second).
 		SetKeepAlive(30 * time.Second).
-		SetOrderMatters(false)
+		SetOrderMatters(true)
 	if m.mqttUsername != "" {
 		options.SetUsername(m.mqttUsername)
 		options.SetPassword(m.mqttPassword)
 	}
-	options.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+	options.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		m.mu.Lock()
+		if m.client != client {
+			m.mu.Unlock()
+			return
+		}
 		m.connected = false
+		m.resetObservationBaselineLocked()
 		m.lastError = err.Error()
+		recordMQTTConnection("software", false)
 		m.mu.Unlock()
 		log.Printf("[warn] TeslaMate MQTT disconnected: %v", err)
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
-		token := client.SubscribeMultiple(map[string]byte{
-			"teslamate/cars/+/display_name":     1,
-			"teslamate/cars/+/version":          1,
-			"teslamate/cars/+/update_available": 1,
-			"teslamate/cars/+/update_version":   1,
-			"teslamate/cars/+/download_perc":    1,
-			"teslamate/cars/+/install_perc":     1,
-		}, m.handleMQTTMessage)
+		m.mu.Lock()
+		if m.client != client || !m.started || !client.IsConnected() {
+			m.mu.Unlock()
+			client.Disconnect(250)
+			return
+		}
+		m.resetObservationBaselineLocked()
+		generation := m.generation
+		epoch := beginMQTTConnection("software")
+		m.mu.Unlock()
+		token := client.SubscribeMultiple(softwareNotificationTopics(), m.handleMQTTMessage)
 		if token.WaitTimeout(10*time.Second) && token.Error() == nil {
 			m.mu.Lock()
+			if m.client != client || m.generation != generation || !client.IsConnected() || !recordMQTTConnection("software", true, epoch) {
+				m.mu.Unlock()
+				return
+			}
 			m.connected = true
 			m.lastError = ""
 			m.mu.Unlock()
@@ -191,9 +219,16 @@ func (m *softwareNotificationMonitor) start() {
 			err = fmt.Errorf("MQTT subscription timed out")
 		}
 		m.mu.Lock()
+		if m.client != client || m.generation != generation || mqttConnectionEpoch("software") != epoch {
+			m.mu.Unlock()
+			return
+		}
 		m.connected = false
+		m.resetObservationBaselineLocked()
 		m.lastError = err.Error()
+		recordMQTTConnection("software", false)
 		m.mu.Unlock()
+		requestMQTTBaselineRetry()
 		log.Printf("[error] TeslaMate MQTT subscribe: %v", err)
 	})
 
@@ -213,6 +248,62 @@ func (m *softwareNotificationMonitor) start() {
 		m.lastError = err.Error()
 		m.mu.Unlock()
 		log.Printf("[warn] TeslaMate MQTT initial connection: %v", err)
+	}
+}
+
+func softwareNotificationTopics() map[string]byte {
+	return teslaMateMQTTTopics([]string{
+		"display_name", "version", "update_available", "update_version",
+		"software_update", "download_perc", "install_perc",
+	})
+}
+
+// A new fleet member may publish before the DB inventory refresh completes.
+// Resubscribe for its retained baseline without invalidating other cars' evidence.
+func (m *softwareNotificationMonitor) refreshFleetSubscription() {
+	m.mu.Lock()
+	client, generation := m.client, m.generation
+	epoch := mqttConnectionEpoch("software")
+	m.mu.Unlock()
+	if client == nil || !client.IsConnected() {
+		return
+	}
+	token := client.SubscribeMultiple(softwareNotificationTopics(), m.handleMQTTMessage)
+	if !token.WaitTimeout(5*time.Second) || token.Error() != nil {
+		requestMQTTBaselineRetry()
+		log.Printf("[warn] software fleet baseline subscription did not complete")
+		return
+	}
+	m.mu.Lock()
+	if m.client != client || m.generation != generation || !client.IsConnected() || !recordMQTTConnection("software", true, epoch) {
+		m.mu.Unlock()
+		return
+	}
+	m.connected = true
+	m.lastError = ""
+	m.mu.Unlock()
+}
+
+// Preserve notification dedupe history, but do not let a removed/disabled car's
+// last state become the baseline if that source-local ID is enabled again.
+func (m *softwareNotificationMonitor) reconcileFleet(cars map[int]bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	changed := false
+	for carID := range m.store.Cars {
+		if !cars[carID] {
+			delete(m.store.Cars, carID)
+			delete(m.observations, carID)
+			changed = true
+		}
+	}
+	for carID := range m.observations {
+		if !cars[carID] {
+			delete(m.observations, carID)
+		}
+	}
+	if changed {
+		_ = m.saveLocked()
 	}
 }
 
@@ -296,6 +387,8 @@ func (m *softwareNotificationMonitor) stop() {
 	m.client = nil
 	m.connected = false
 	m.started = false
+	m.resetObservationBaselineLocked()
+	recordMQTTConnection("software", false)
 	m.mu.Unlock()
 	if client != nil && client.IsConnected() {
 		client.Disconnect(250)
@@ -303,52 +396,136 @@ func (m *softwareNotificationMonitor) stop() {
 }
 
 func (m *softwareNotificationMonitor) handleMQTTMessage(_ mqtt.Client, message mqtt.Message) {
-	parts := strings.Split(message.Topic(), "/")
-	if len(parts) != 4 || parts[0] != "teslamate" || parts[1] != "cars" {
+	carID, field, ok := acceptTeslaMateMQTTMessage(message, "software")
+	if !ok || message.Duplicate() {
 		return
 	}
-	carID, err := strconv.Atoi(parts[2])
-	if err != nil || carID <= 0 {
-		return
-	}
-	field := parts[3]
 	switch field {
-	case "display_name", "version", "update_available", "update_version", "download_perc", "install_perc":
+	case "display_name", "version", "update_available", "update_version", "software_update", "download_perc", "install_perc":
 	default:
 		return
 	}
-	m.observe(carID, field, strings.TrimSpace(string(message.Payload())), time.Now().UTC())
+	m.observeMessage(carID, field, strings.TrimSpace(string(message.Payload())), time.Now().UTC(), message.Retained())
 }
 
 func (m *softwareNotificationMonitor) observe(carID int, field, value string, observedAt time.Time) {
+	m.observeMessage(carID, field, value, observedAt, false)
+}
+
+func (m *softwareNotificationMonitor) resetObservationBaselineLocked() {
+	m.observations = map[int]softwareObservationBaseline{}
+	m.generation++
+}
+
+func (m *softwareNotificationMonitor) observeMessage(carID int, field, value string, observedAt time.Time, retained bool) {
 	m.mu.Lock()
+	if m.observations == nil {
+		m.observations = map[int]softwareObservationBaseline{}
+	}
 	state := m.store.Cars[carID]
 	previous := state
+	baseline, hasBaseline := m.observations[carID]
+	if !hasBaseline {
+		m.observationEpoch++
+		baseline.Epoch = m.observationEpoch
+	}
+	var eventType, eventVersion string
 	switch field {
 	case "display_name":
 		state.DisplayName = normalizedMQTTValue(value)
 	case "version":
-		state.Version = normalizedMQTTValue(value)
+		if !baseline.AggregateSeen {
+			state.Version = normalizedMQTTValue(value)
+			_, comparable := softwareVersionIsNewer(state.Version, previous.Version)
+			if !retained && baseline.VersionKnown && comparable && softwareVersionIdentity(previous.Version) != softwareVersionIdentity(state.Version) {
+				eventType, eventVersion = "update_installed", state.Version
+			}
+			_, baseline.VersionKnown = softwareVersionIsNewer(state.Version, state.Version)
+		}
 	case "update_available":
-		state.UpdateAvailable = strings.EqualFold(value, "true") || value == "1"
+		if !baseline.AggregateSeen {
+			parsed := parseMQTTBool(value)
+			baseline.AvailableKnown = parsed != nil
+			state.UpdateAvailable = parsed != nil && *parsed
+			// Separate scalar topics cannot prove that a version received before
+			// this availability transition belongs to it. Require a subsequent
+			// live version; the aggregate path avoids this conservative omission.
+			baseline.LiveUpdateVersion = ""
+			state.UpdateAvailabilityStatus = "unconfirmed"
+			if parsed != nil && !*parsed {
+				state.UpdateAvailabilityStatus = "not_available"
+			}
+		}
 	case "update_version":
-		state.UpdateVersion = normalizedMQTTValue(value)
+		if !baseline.AggregateSeen {
+			state.UpdateVersion = normalizedMQTTValue(value)
+			if retained {
+				baseline.LiveUpdateVersion = ""
+			} else if baseline.AvailableKnown && state.UpdateAvailable {
+				baseline.LiveUpdateVersion = state.UpdateVersion
+			} else {
+				baseline.LiveUpdateVersion = ""
+			}
+		}
+	case "software_update":
+		var aggregate struct {
+			InstalledVersion *string `json:"installed_version"`
+			LatestVersion    *string `json:"latest_version"`
+		}
+		baseline.AggregateSeen = true
+		if json.Unmarshal([]byte(value), &aggregate) != nil || aggregate.InstalledVersion == nil || aggregate.LatestVersion == nil ||
+			normalizedMQTTValue(*aggregate.InstalledVersion) == "" || normalizedMQTTValue(*aggregate.LatestVersion) == "" {
+			baseline.AggregateInitialized = false
+			state.Version, state.UpdateVersion, state.UpdateAvailable = "", "", false
+			state.UpdateAvailabilityStatus = "unconfirmed"
+			break
+		}
+		state.Version = normalizedMQTTValue(*aggregate.InstalledVersion)
+		state.UpdateVersion = normalizedMQTTValue(*aggregate.LatestVersion)
+		newer, comparable := softwareVersionIsNewer(state.UpdateVersion, state.Version)
+		state.UpdateAvailable = comparable && newer
+		state.UpdateAvailabilityStatus = "unconfirmed"
+		if comparable {
+			state.UpdateAvailabilityStatus = "not_available"
+			if newer {
+				state.UpdateAvailabilityStatus = "available"
+			}
+		}
+		if softwareVersionIdentity(state.UpdateVersion) == softwareVersionIdentity(state.Version) {
+			state.UpdateVersion = ""
+		}
+		if !retained && baseline.AggregateInitialized {
+			// Installed progress wins when the same publication remembers an
+			// older latest-version field. A later update requires its own change.
+			_, installedComparable := softwareVersionIsNewer(state.Version, previous.Version)
+			if installedComparable && softwareVersionIdentity(previous.Version) != softwareVersionIdentity(state.Version) {
+				eventType, eventVersion = "update_installed", state.Version
+			} else if state.UpdateAvailable && (!previous.UpdateAvailable || softwareVersionIdentity(previous.UpdateVersion) != softwareVersionIdentity(state.UpdateVersion)) {
+				eventType, eventVersion = "update_available", state.UpdateVersion
+			}
+		}
+		baseline.AggregateInitialized = comparable
 	case "download_perc":
 		state.DownloadPercent, _ = strconv.Atoi(value)
 	case "install_perc":
 		state.InstallPercent, _ = strconv.Atoi(value)
+	default:
+		m.mu.Unlock()
+		return
 	}
+	// Legacy availability needs a live version observed in this connection. An
+	// availability=true message alone must never reuse an old retained version.
+	if !retained && !baseline.AggregateSeen && field == "update_version" &&
+		baseline.AvailableKnown && state.UpdateAvailable && baseline.LiveUpdateVersion != "" &&
+		softwareVersionIdentity(baseline.LiveUpdateVersion) != softwareVersionIdentity(state.Version) {
+		if newer, known := softwareVersionIsNewer(baseline.LiveUpdateVersion, state.Version); known && newer {
+			state.UpdateAvailabilityStatus = "available"
+			eventType, eventVersion = "update_available", baseline.LiveUpdateVersion
+		}
+	}
+	m.observations[carID] = baseline
 	m.store.Cars[carID] = state
 	_ = m.saveLocked()
-
-	var eventType, eventVersion string
-	if state.UpdateAvailable && state.UpdateVersion != "" &&
-		(!previous.UpdateAvailable || previous.UpdateVersion != state.UpdateVersion) {
-		eventType, eventVersion = "update_available", state.UpdateVersion
-	} else if field == "version" && previous.Version != "" && state.Version != "" &&
-		previous.Version != state.Version {
-		eventType, eventVersion = "update_installed", state.Version
-	}
 	if eventType == "" {
 		m.mu.Unlock()
 		return
@@ -363,9 +540,10 @@ func (m *softwareNotificationMonitor) observe(carID int, field, value string, ob
 		return
 	}
 	m.inFlight[originID] = true
+	generation := m.generation
 	m.mu.Unlock()
 
-	go m.fanOutSoftware(originID, carID, state, eventType, eventVersion, observedAt)
+	go m.fanOutSoftware(originID, carID, state, eventType, eventVersion, observedAt, generation, baseline.Epoch)
 }
 
 func (m *softwareNotificationMonitor) fanOutSoftware(
@@ -374,6 +552,8 @@ func (m *softwareNotificationMonitor) fanOutSoftware(
 	state carSoftwareState,
 	eventType, eventVersion string,
 	observedAt time.Time,
+	generation uint64,
+	observationEpoch uint64,
 ) {
 	defer func() {
 		m.mu.Lock()
@@ -394,6 +574,13 @@ func (m *softwareNotificationMonitor) fanOutSoftware(
 	}
 	deliveredAll := len(subs) > 0
 	for _, sub := range subs {
+		m.mu.Lock()
+		baseline, known := m.observations[carID]
+		current := m.generation == generation && known && baseline.Epoch == observationEpoch
+		m.mu.Unlock()
+		if !current {
+			return
+		}
 		event := m.makeEvent(sub.InstallationID, sub.SourceID, carID, state, eventType, eventVersion, observedAt)
 		if err := m.deliverTo(sub, *event); err != nil {
 			log.Printf("[warn] software fan-out installation=%s: %v", sub.InstallationID[:8], err)
@@ -476,7 +663,14 @@ func relaySecretBytes(value string) []byte {
 func (m *softwareNotificationMonitor) carState(carID int) carSoftwareState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.store.Cars[carID]
+	state := m.store.Cars[carID]
+	baseline, known := m.observations[carID]
+	if !known || baseline.AggregateSeen && !baseline.AggregateInitialized ||
+		!baseline.AggregateSeen && !baseline.AvailableKnown {
+		state.UpdateAvailable = false
+		state.UpdateAvailabilityStatus = "unconfirmed"
+	}
+	return state
 }
 
 func (m *softwareNotificationMonitor) status() map[string]any {
@@ -539,6 +733,62 @@ func normalizedMQTTValue(value string) string {
 	default:
 		return strings.TrimSpace(value)
 	}
+}
+
+// TeslaMate's installed string can include a build hash while latest is the
+// first token. Hash-only changes are not software installations.
+func softwareVersionIdentity(value string) string {
+	parts := strings.Fields(normalizedMQTTValue(value))
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
+}
+
+// Do not invent an ordering for unrecognized labels. Numeric dotted versions
+// establish that a remembered latest value is genuinely ahead of installed.
+func softwareVersionIsNewer(latest, installed string) (bool, bool) {
+	parse := func(raw string) ([]uint64, bool) {
+		parts := strings.Split(softwareVersionIdentity(raw), ".")
+		if len(parts) < 2 || len(parts) > 8 {
+			return nil, false
+		}
+		values := make([]uint64, len(parts))
+		for i, part := range parts {
+			if part == "" {
+				return nil, false
+			}
+			for _, char := range part {
+				if char < '0' || char > '9' {
+					return nil, false
+				}
+			}
+			value, err := strconv.ParseUint(part, 10, 32)
+			if err != nil {
+				return nil, false
+			}
+			values[i] = value
+		}
+		return values, true
+	}
+	left, leftOK := parse(latest)
+	right, rightOK := parse(installed)
+	if !leftOK || !rightOK {
+		return false, false
+	}
+	for i := 0; i < len(left) || i < len(right); i++ {
+		var l, r uint64
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		if l != r {
+			return l > r, true
+		}
+	}
+	return false, true
 }
 
 func collapsedDisplayName(value string) string {

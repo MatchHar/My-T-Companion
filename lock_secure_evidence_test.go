@@ -32,12 +32,22 @@ func TestSettledLockDeliversPerVehicleOnceWithoutRealNetwork(t *testing.T) {
 	for _, id := range []int{1, 2} {
 		state := presenceFixture()
 		state.Locked = parseMQTTBool("false")
+		// The previous car's asynchronous fan-out also reads this map.
+		m.mu.Lock()
 		m.store.Cars[id] = state
+		m.mu.Unlock()
 		m.observe(id, "is_user_present", "false", at)
 		m.observe(id, "healthy", "true", at)
 		m.observe(id, "locked", "true", at)
+		m.mu.Lock()
 		timer := m.pending[id]
-		timer.Stop()
+		if timer != nil {
+			timer.Stop()
+		}
+		m.mu.Unlock()
+		if timer == nil {
+			t.Fatal("lock didn't schedule")
+		}
 		m.finishPending(id, timer)
 	}
 	seen := map[int]bool{}
@@ -66,7 +76,10 @@ func TestSettledLockDeliversPerVehicleOnceWithoutRealNetwork(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	m.observe(1, "healthy", "true", time.Now())
-	if m.pending[1] != nil {
+	m.mu.Lock()
+	pending := m.pending[1] != nil
+	m.mu.Unlock()
+	if pending {
 		t.Fatal("heartbeat rescheduled consumed episode")
 	}
 	select {
@@ -263,21 +276,33 @@ func TestPendingTimerCancelledOnUnlockAndCarsIndependent(t *testing.T) {
 	for _, id := range []int{1, 2} {
 		s := presenceFixture()
 		s.Locked = parseMQTTBool("false")
+		m.mu.Lock()
 		m.store.Cars[id] = s
+		m.mu.Unlock()
 		m.observe(id, "is_user_present", "false", now)
 		m.observe(id, "healthy", "true", now)
 		m.observe(id, "locked", "true", now)
 	}
+	m.mu.Lock()
 	old := m.pending[1]
-	if old == nil || m.pending[2] == nil {
+	secondPending := m.pending[2] != nil
+	m.mu.Unlock()
+	if old == nil || !secondPending {
 		t.Fatal("lock didn't schedule")
 	}
 	m.observe(1, "locked", "false", now.Add(time.Second))
-	if m.pending[1] != nil || m.pending[2] == nil {
+	m.mu.Lock()
+	firstPending := m.pending[1] != nil
+	secondPending = m.pending[2] != nil
+	m.mu.Unlock()
+	if firstPending || !secondPending {
 		t.Fatal("cancel leaked across vehicles")
 	}
 	m.finishPending(1, old)
-	if len(m.inFlight) != 0 {
+	m.mu.Lock()
+	inFlight := len(m.inFlight)
+	m.mu.Unlock()
+	if inFlight != 0 {
 		t.Fatal("cancelled timer sent notification")
 	}
 }

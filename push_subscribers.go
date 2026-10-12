@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -150,6 +151,9 @@ type pushSubscriberStore struct {
 	Subscribers      []pushSubscriber `json:"subscribers"`
 	Outbox           []queuedPush     `json:"outbox,omitempty"`
 	VehicleNamespace string           `json:"vehicle_namespace,omitempty"`
+	// A local authorization record permits only cleanup for the same previously
+	// admitted installation/source/car/session after its ordinary preference is off.
+	LiveActivitySessions map[string]string `json:"live_activity_sessions,omitempty"`
 }
 
 type vehicleRegistrationReport struct {
@@ -172,6 +176,8 @@ type queuedPush struct {
 }
 
 type pushPayloadMetadata struct {
+	InstallationID   string `json:"installation_id,omitempty"`
+	SourceID         string `json:"source_id,omitempty"`
 	Revision         int    `json:"revision,omitempty"`
 	EventID          string `json:"event_id"`
 	Type             string `json:"type"`
@@ -194,6 +200,174 @@ type pushDeliveryResult struct {
 	Outcome pushDeliveryOutcome
 	Status  int
 	Err     error
+}
+
+var errPushNoLongerEligible = errors.New("push event no longer eligible")
+
+// Used by monitor fan-out to select possible terminal cleanup recipients. The
+// registry still checks the current source and an authorized session before POST.
+func pushSubscriberWantsEvent(sub pushSubscriber, carID int, feature string, terminal bool, sessionID string) bool {
+	if terminal && strings.TrimSpace(sessionID) != "" {
+		return true
+	}
+	switch feature {
+	case "charging_live_activity":
+		return sub.wantsChargingLiveActivity(carID)
+	case "navigation_live_activity":
+		return sub.wantsNavigationLiveActivity(carID)
+	default:
+		return false
+	}
+}
+
+func pushEventFeature(eventType string) (string, bool) {
+	switch eventType {
+	case "update_available", "update_installed":
+		return "software_update", false
+	case "vehicle_lock_secure":
+		return "lock_secure", false
+	case "vehicle_low_battery", "vehicle_low_battery_severe", "vehicle_low_battery_reminder":
+		return "low_battery", false
+	case "charging_started", "charging_updated":
+		return "charging_live_activity", false
+	case "charging_ended":
+		return "charging_live_activity", true
+	case "navigation_started", "navigation_updated":
+		return "navigation_live_activity", false
+	case "navigation_ended":
+		return "navigation_live_activity", true
+	case "destination_trip_started", "destination_trip_arrived":
+		return "navigation_trip_alerts", false
+	default:
+		return "", false
+	}
+}
+
+func subscriberWantsPushFeature(sub pushSubscriber, carID int, feature string) bool {
+	switch feature {
+	case "software_update":
+		return sub.wantsSoftwareUpdate(carID)
+	case "lock_secure":
+		return sub.wantsLockSecure(carID)
+	case "low_battery":
+		return sub.wantsLowBattery(carID)
+	case "charging_live_activity":
+		return sub.wantsChargingLiveActivity(carID)
+	case "navigation_live_activity":
+		return sub.wantsNavigationLiveActivity(carID)
+	case "navigation_trip_alerts":
+		return sub.wantsNavigationTripAlerts(carID)
+	default:
+		return false
+	}
+}
+
+func liveActivityAuthorizationKey(sub pushSubscriber, metadata pushPayloadMetadata, feature string) string {
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(sub.SourceID)), strconv.Itoa(metadata.CarID), feature, metadata.SessionID,
+	}, ":")))
+	return sub.InstallationID + ":" + hex.EncodeToString(digest[:])
+}
+
+func (r *pushSubscriberRegistry) deliverySubscriber(installationID string, metadata pushPayloadMetadata) (pushSubscriber, bool) {
+	feature, terminal := pushEventFeature(metadata.Type)
+	if feature == "" || metadata.CarID <= 0 || (metadata.InstallationID != "" && metadata.InstallationID != installationID) {
+		return pushSubscriber{}, false
+	}
+	r.mu.Lock()
+	index := r.indexLocked(installationID)
+	if index < 0 {
+		r.mu.Unlock()
+		return pushSubscriber{}, false
+	}
+	sub := r.store.Subscribers[index]
+	key := liveActivityAuthorizationKey(sub, metadata, feature)
+	authorizedAt := r.store.LiveActivitySessions[key]
+	r.mu.Unlock()
+	if !validPushSubscriber(sub) || sub.Status != pushStatusActive ||
+		strings.ToLower(strings.TrimSpace(metadata.SourceID)) != strings.ToLower(strings.TrimSpace(sub.SourceID)) {
+		return pushSubscriber{}, false
+	}
+	ordinaryAllowed := subscriberWantsPushFeature(sub, metadata.CarID, feature) && mqttCarEligible(metadata.CarID)
+	if terminal {
+		if strings.TrimSpace(metadata.SessionID) == "" {
+			return pushSubscriber{}, false
+		}
+		known := authorizedAt != "" && !timestampIsOlderThan(authorizedAt, time.Now().UTC(), chargingTransientMaximumAge)
+		if !known {
+			known = monitorKnowsLiveActivitySession(sub, metadata, feature)
+		}
+		return sub, ordinaryAllowed || known
+	}
+	return sub, ordinaryAllowed
+}
+
+// Migration path for a session started before the authorization map existed.
+// Session matching stays source/car scoped and never uses a vehicle name/VIN.
+func monitorKnowsLiveActivitySession(sub pushSubscriber, metadata pushPayloadMetadata, feature string) bool {
+	if feature == "charging_live_activity" && chargingPush != nil {
+		chargingPush.mu.Lock()
+		state := chargingPush.store.Cars[metadata.CarID]
+		chargingPush.mu.Unlock()
+		return state.SessionID != "" && scopedLiveActivitySessionID(state.SessionID, sub.SourceID, "charge") == metadata.SessionID
+	}
+	if feature == "navigation_live_activity" && navigationPush != nil {
+		navigationPush.mu.Lock()
+		state := navigationPush.store.Cars[metadata.CarID]
+		navigationPush.mu.Unlock()
+		return state.SessionID != "" && scopedLiveActivitySessionID(state.SessionID, sub.SourceID, "navigation") == metadata.SessionID
+	}
+	return false
+}
+
+func (r *pushSubscriberRegistry) rememberLiveActivitySession(sub pushSubscriber, metadata pushPayloadMetadata) {
+	feature, terminal := pushEventFeature(metadata.Type)
+	if terminal || metadata.SessionID == "" || feature != "charging_live_activity" && feature != "navigation_live_activity" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.store.LiveActivitySessions == nil {
+		r.store.LiveActivitySessions = map[string]string{}
+	}
+	now := time.Now().UTC()
+	r.store.LiveActivitySessions[liveActivityAuthorizationKey(sub, metadata, feature)] = now.Format(time.RFC3339)
+	pruneTimestampMap(r.store.LiveActivitySessions, now, chargingTransientMaximumAge, 1024)
+	if err := r.saveLocked(); err != nil {
+		log.Printf("[warn] live activity authorization save: %v", err)
+	}
+}
+
+// Upgrade migration: fleet reconciliation is about to remove an existing
+// monitor session. Keep only its exact authenticated terminal-cleanup identity;
+// this does not authorize a new start/update or expand a subscriber's source.
+// The caller may hold a monitor lock, so this must never reenter monitor state.
+func (r *pushSubscriberRegistry) rememberKnownLiveActivityCleanup(carID int, feature, logicalSessionID string) {
+	if r == nil || carID <= 0 || strings.TrimSpace(logicalSessionID) == "" ||
+		(feature != "charging_live_activity" && feature != "navigation_live_activity") {
+		return
+	}
+	kind := "charge"
+	if feature == "navigation_live_activity" {
+		kind = "navigation"
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.store.LiveActivitySessions == nil {
+		r.store.LiveActivitySessions = map[string]string{}
+	}
+	now := time.Now().UTC()
+	for _, sub := range r.store.Subscribers {
+		if sub.Status != pushStatusActive || !validPushSubscriber(sub) {
+			continue
+		}
+		metadata := pushPayloadMetadata{CarID: carID, SessionID: scopedLiveActivitySessionID(logicalSessionID, sub.SourceID, kind)}
+		r.store.LiveActivitySessions[liveActivityAuthorizationKey(sub, metadata, feature)] = now.Format(time.RFC3339)
+	}
+	pruneTimestampMap(r.store.LiveActivitySessions, now, chargingTransientMaximumAge, 1024)
+	if err := r.saveLocked(); err != nil {
+		log.Printf("[warn] existing live activity cleanup authorization save: %v", err)
+	}
 }
 
 type pushDeliveryResolution struct {
@@ -349,6 +523,7 @@ func (r *pushSubscriberRegistry) load() {
 		}
 	}
 	stored.Outbox = validOutbox
+	pruneTimestampMap(stored.LiveActivitySessions, now, chargingTransientMaximumAge, 1024)
 	r.store = stored
 }
 
@@ -596,6 +771,7 @@ func (r *pushSubscriberRegistry) unsubscribe(installationID string) (map[string]
 		}
 		r.store.Subscribers = nil
 		r.store.Outbox = nil
+		r.store.LiveActivitySessions = nil
 		if err := r.saveLocked(); err != nil {
 			return nil, err
 		}
@@ -847,6 +1023,9 @@ func (r *pushSubscriberRegistry) deliverJSONResult(sub pushSubscriber, payload [
 		return pushDeliveryResult{Outcome: pushDeliveryFailed, Err: fmt.Errorf("invalid push event payload")}
 	}
 	status, retryAfter, body, err := r.postJSON(sub, payload)
+	if errors.Is(err, errPushNoLongerEligible) {
+		return pushDeliveryResult{Outcome: pushDeliveryExpired}
+	}
 	if err == nil && status >= 200 && status < 300 {
 		return pushDeliveryResult{Outcome: pushDeliveryAPNsAccepted, Status: status}
 	}
@@ -893,6 +1072,25 @@ func classifyRelayResponse(status int, body []byte) pushDeliveryOutcome {
 }
 
 func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (int, time.Duration, []byte, error) {
+	var metadata pushPayloadMetadata
+	if json.Unmarshal(payload, &metadata) != nil {
+		return 0, 0, nil, errPushNoLongerEligible
+	}
+	// Resolve immediately before creating the HTTP request. Never trust the
+	// subscriber/preferences/source copied when fan-out or queuing began.
+	current, eligible := r.deliverySubscriber(sub.InstallationID, metadata)
+	if !eligible {
+		return 0, 0, nil, errPushNoLongerEligible
+	}
+	sub = current
+	r.rememberLiveActivitySession(sub, metadata)
+	// Recording a durable cleanup binding can involve disk I/O. Recheck after
+	// that work, before taking the credentials/preferences used for this request.
+	current, eligible = r.deliverySubscriber(sub.InstallationID, metadata)
+	if !eligible {
+		return 0, 0, nil, errPushNoLongerEligible
+	}
+	sub = current
 	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -1177,6 +1375,11 @@ func (r *pushSubscriberRegistry) retryDue(now time.Time) {
 			continue
 		}
 		status, retryAfter, body, err := r.postJSON(sub, item.Payload)
+		if errors.Is(err, errPushNoLongerEligible) {
+			r.removeOutboxItem(item.ID)
+			r.notifyDeliveryResolution(outboxResolution(item, string(pushDeliveryExpired)))
+			continue
+		}
 		if err == nil && status >= 200 && status < 300 {
 			r.removeOutboxItem(item.ID)
 			r.notifyDeliveryResolution(outboxResolution(item, string(pushDeliveryAPNsAccepted)))
@@ -1281,6 +1484,11 @@ func (r *pushSubscriberRegistry) pauseInvalidSubscriber(installationID string) {
 }
 
 func (r *pushSubscriberRegistry) removeOutboxForLocked(installationID string) {
+	for key := range r.store.LiveActivitySessions {
+		if strings.HasPrefix(key, installationID+":") {
+			delete(r.store.LiveActivitySessions, key)
+		}
+	}
 	next := r.store.Outbox[:0]
 	for _, item := range r.store.Outbox {
 		if item.InstallationID != installationID {
@@ -1291,6 +1499,11 @@ func (r *pushSubscriberRegistry) removeOutboxForLocked(installationID string) {
 }
 
 func (r *pushSubscriberRegistry) removeOutboxExceptLocked(installationID string) {
+	for key := range r.store.LiveActivitySessions {
+		if !strings.HasPrefix(key, installationID+":") {
+			delete(r.store.LiveActivitySessions, key)
+		}
+	}
 	next := r.store.Outbox[:0]
 	for _, item := range r.store.Outbox {
 		if item.InstallationID == installationID {
