@@ -53,10 +53,10 @@ jobs:
           set -euo pipefail
           [[ "$MYT_FRIEND_LOCAL_POSTGRES_URL" == 'postgres://myt_fixture:synthetic-ci-only@127.0.0.1:55432/myt_friend_fixture' ]]
           results="$RUNNER_TEMP/companion-postgres-acceptance.jsonl"
-          go test -json -count=1 -run '^(TestFriendLocalPostgresSchemaAndSource|TestSQLLocalPostgresTemporalStatesAndPagination)$' . | tee "$results"
+          go test -json -count=1 -run '^(TestChargingDatabaseLocalPostgresExactSessionAndDisabledCars|TestFriendLocalPostgresSchemaAndSource|TestSQLLocalPostgresTemporalStatesAndPagination)$' . | tee "$results"
           jq -s -e '
             . as $events |
-            ["TestFriendLocalPostgresSchemaAndSource", "TestSQLLocalPostgresTemporalStatesAndPagination"] as $required |
+            ["TestChargingDatabaseLocalPostgresExactSessionAndDisabledCars", "TestFriendLocalPostgresSchemaAndSource", "TestSQLLocalPostgresTemporalStatesAndPagination"] as $required |
             all($required[]; . as $name | any($events[]; .Action == "pass" and .Test == $name)) and
             all($events[]; .Action != "skip" and .Action != "fail")
           ' "$results" >/dev/null

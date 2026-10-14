@@ -24,13 +24,13 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # read-only commands, without modifying the runner's global Git configuration.
 candidate_git() { git -c safe.directory="$repo_dir" -C "$repo_dir" "$@"; }
 [[ -z "$(candidate_git status --porcelain)" ]] || fail 'Candidate checkout is not clean.'
-previous=1.10.53
-target=1.10.54
+previous=1.10.54
+target=1.10.55
 repository=MatchHar/My-T-Companion
-previous_digest=3796860cb8b85faa50baa70a2da1e01b033261d699cf446b07f6e3af15c10831
+previous_digest=b8611149da3fbe6b4ba15f4f233d2bdfa25add1db0f663ea29f5508e094b0249
 mode="${MYT_CANDIDATE_MODE:-gitarchive}"
 [[ "$mode" == gitarchive || "$mode" == published ]] || fail 'Mode must be gitarchive or published.'
-[[ "$(candidate_git show HEAD:VERSION | tr -d '[:space:]')" == "$target" ]] || fail 'Exact HEAD must have VERSION 1.10.54.'
+[[ "$(candidate_git show HEAD:VERSION | tr -d '[:space:]')" == "$target" ]] || fail 'Exact HEAD must have VERSION 1.10.55.'
 bridge=myt-candidate0
 ! ip link show "$bridge" >/dev/null 2>&1 || fail 'Fixture bridge already exists.'
 if ss -H -lnt '( sport = :80 or sport = :8083 )' | grep -q .; then fail 'Fixture ports are occupied.'; fi
@@ -123,7 +123,7 @@ jq -n --arg mode "$mode" --arg commit "$(candidate_git rev-parse HEAD)" \
   --arg candidate_sha256 "$candidate_digest" --arg previous_sha256 "$previous_digest" \
   '{mode:$mode,head_commit:$commit,candidate_sha256:$candidate_sha256,previous_sha256:$previous_sha256,
     candidate_attestation_verified:($mode=="published"),runtime_data:"synthetic only"}' > "$log_dir/source-evidence.json"
-gate 'Immutable 1.10.53 digest/checksum/provenance verified; exact clean HEAD candidate archive recorded'
+gate 'Immutable 1.10.54 digest/checksum/provenance verified; exact clean HEAD candidate archive recorded'
 
 # The negative archive is intentionally NOT the publication candidate. Only its
 # Dockerfile differs, forcing a real Docker build failure after installer copy.
@@ -237,6 +237,8 @@ CREATE TABLE positions (
   rated_battery_range_km numeric, latitude numeric, longitude numeric, odometer numeric, address_id integer
 );
 CREATE TABLE charging_processes (id bigint PRIMARY KEY, car_id integer REFERENCES cars(id), position_id bigint REFERENCES positions(id), start_date timestamp(6), end_date timestamp(6));
+CREATE TABLE charges (id bigint PRIMARY KEY, charging_process_id bigint REFERENCES charging_processes(id), date timestamp(6), charger_power numeric, battery_level integer, rated_battery_range_km numeric);
+CREATE INDEX ON charges(charging_process_id, date DESC, id DESC);
 CREATE TABLE geofences (id integer PRIMARY KEY, name text);
 CREATE TABLE addresses (id integer PRIMARY KEY, name text, display_name text);
 CREATE INDEX ON positions(car_id);
@@ -296,6 +298,40 @@ verify_sql_reads() {
   [[ "$(curl --silent --max-time 10 -o /dev/null -w '%{http_code}' http://127.0.0.1/api/v1/cars/1/tire-pressure-history)" == 401 ]] || fail 'Unauthenticated SQL history accepted.'
 }
 mqtt_pub() { stack exec -T mosquitto mosquitto_pub -h localhost "$@"; }
+verify_charging_observation_candidate() {
+  local status_url=http://127.0.0.1/api/v1/cars/1/companion-status expected
+  # The clean install has no push credentials or subscribers. This exercises
+  # passive SQL/cache/owner GET only; never enable a notification to test it.
+  stack exec -T database psql -U fixture_admin -d teslamate -v ON_ERROR_STOP=1 <<'SQL'
+INSERT INTO charging_processes(id,car_id,start_date) VALUES(201,1,timezone('UTC',now())-interval '10 minutes');
+INSERT INTO charges VALUES
+ (2011,201,timezone('UTC',now())-interval '30 seconds',7,49,290),
+ (2012,201,timezone('UTC',now())-interval '1 second',7,50,295);
+SQL
+  for expected in fresh data_gap terminal_confirmed; do
+    if [[ "$expected" == data_gap ]]; then
+      stack exec -T database psql -U fixture_admin -d teslamate -v ON_ERROR_STOP=1 -c \
+        "UPDATE charges SET date=(SELECT start_date FROM charging_processes WHERE id=201)+(CASE id WHEN 2011 THEN interval '2 minutes' ELSE interval '3 minutes' END) WHERE charging_process_id=201;" >/dev/null
+    elif [[ "$expected" == terminal_confirmed ]]; then
+      stack exec -T database psql -U fixture_admin -d teslamate -v ON_ERROR_STOP=1 -c \
+        "UPDATE charging_processes SET end_date=timezone('UTC',now()) WHERE id=201;" >/dev/null
+    fi
+    for _ in $(seq 1 40); do
+      request "$status_url" > "$work_dir/charging-$expected.json"
+      jq -e --arg expected "$expected" '.data.charging_observation | .status == $expected and .source == "teslamate_database" and .charging_process_id == 201 and .checked_at != null and .last_sample_at != null and ((.error // "") == "")' \
+        "$work_dir/charging-$expected.json" >/dev/null && break
+      sleep 1
+    done
+    jq -e --arg expected "$expected" '.data.charging_observation | .status == $expected and .source == "teslamate_database" and .charging_process_id == 201 and .checked_at != null and .last_sample_at != null and ((.error // "") == "")' \
+      "$work_dir/charging-$expected.json" >/dev/null
+  done
+  jq -e '.data.charging_observation | .sample_age_seconds > 180 and .process_ended_at == null' "$work_dir/charging-data_gap.json" >/dev/null
+  jq -e '.data.charging_observation | .process_ended_at != null and .terminal_confirmed_at != null and .terminal_sample_gap_seconds > 180' "$work_dir/charging-terminal_confirmed.json" >/dev/null
+  cp "$work_dir"/charging-{fresh,data_gap,terminal_confirmed}.json "$log_dir/"
+  # All synthetic mutations finish before the preservation baseline is renewed
+  # by verify_mqtt_candidate below. Never change the application's SELECT role.
+  gate 'Passive owner charging diagnostics: fresh sample, immutable data gap and same-process terminal; no push enabled'
+}
 verify_mqtt_candidate() {
   local status_url=http://127.0.0.1/api/v1/cars/1/companion-status cid epoch
   for pair in 'locked false' 'battery_level 50' 'rated_battery_range_km 300'; do
@@ -344,6 +380,7 @@ export MQTT_NAMESPACE=fixture-430
 "$work_dir/source/$target/install.sh" > "$log_dir/clean-candidate.log" 2>&1
 verify_health "$target"
 verify_sql_reads
+verify_charging_observation_candidate
 verify_mqtt_candidate
 "$INSTALL_DIR/uninstall.sh" > "$log_dir/clean-uninstall.log" 2>&1
 [[ -z "$(companion ps -q companion)" && -f "$INSTALL_DIR/.env" ]] || fail 'Clean uninstall lost configuration or kept service.'
@@ -404,7 +441,7 @@ verify_preservation() {
   database_manifest | cmp -s "$work_dir/database-baseline.sha256" - || fail 'Source database content changed.'
 }
 verify_preservation
-gate 'Prior immutable53 actual install and synthetic configuration/pairing/history/volume baselines captured'
+gate 'Prior immutable54 actual install and synthetic configuration/pairing/history/volume baselines captured'
 
 if MY_T_VERSION="$target" MY_T_EXPECTED_SHA256="$fault_digest" MY_T_RELEASE_BASE_URL="$transport/fault" \
   "$INSTALL_DIR/update.sh" > "$log_dir/failed-candidate-recovery.log" 2>&1; then
@@ -416,7 +453,7 @@ verify_health "$previous"
 source_manifest | cmp -s "$work_dir/source-baseline.sha256" - || fail 'Failed upgrade did not restore exact source/configuration.'
 cmp -s "$work_dir/prior-Caddyfile" "$TESLAMATE_DIR/Caddyfile" || fail 'Failed build changed proxy configuration.'
 verify_preservation
-gate 'Real candidate Docker build failure; released53 updater invokes real previous installer; healthy exact-source/data recovery'
+gate 'Real candidate Docker build failure; released54 updater invokes real previous installer; healthy exact-source/data recovery'
 upgrade_candidate() {
   MY_T_VERSION="$target" MY_T_EXPECTED_SHA256="$candidate_digest" MY_T_RELEASE_BASE_URL="$target_base" \
     "$INSTALL_DIR/update.sh" > "$log_dir/$1.log" 2>&1
@@ -426,7 +463,7 @@ verify_health "$target"
 verify_sql_reads
 verify_preservation
 [[ "$(<"$INSTALL_DIR/RELEASE_SHA256")" == "$candidate_digest" ]] || fail 'Installed target digest mismatch.'
-gate 'Real digest-pinned53 to exact54 candidate upgrade; prior values/pairing/history/durable data retained'
+gate 'Real digest-pinned54 to exact55 candidate upgrade; prior values/pairing/history/durable data retained'
 upgrade_candidate same-version-repeat
 verify_health "$target"
 verify_preservation
@@ -446,7 +483,7 @@ verify_health "$previous"
 verify_sql_reads
 source_manifest | cmp -s "$work_dir/source-baseline.sha256" - || fail 'Healthy rollback did not restore exact prior source/config.'
 verify_preservation
-gate 'Backup-assisted healthy rollback runs real immutable53 installer; no new source leftovers or durable-data rewind'
+gate 'Backup-assisted healthy rollback runs real immutable54 installer; no new source leftovers or durable-data rewind'
 upgrade_candidate final-upgrade
 verify_health "$target"
 verify_sql_reads
