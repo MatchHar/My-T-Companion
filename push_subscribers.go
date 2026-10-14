@@ -184,6 +184,7 @@ type pushPayloadMetadata struct {
 	SessionID        string `json:"session_id,omitempty"`
 	LogicalSessionID string `json:"logical_session_id,omitempty"`
 	CarID            int    `json:"car_id,omitempty"`
+	ObservedAt       string `json:"observed_at,omitempty"`
 }
 
 type pushDeliveryOutcome string
@@ -298,6 +299,9 @@ func (r *pushSubscriberRegistry) deliverySubscriber(installationID string, metad
 			known = monitorKnowsLiveActivitySession(sub, metadata, feature)
 		}
 		return sub, ordinaryAllowed || known
+	}
+	if feature == "charging_live_activity" && chargingPush != nil {
+		ordinaryAllowed = ordinaryAllowed && chargingPush.chargingPayloadCurrent(sub, metadata)
 	}
 	return sub, ordinaryAllowed
 }
@@ -997,6 +1001,38 @@ func (r *pushSubscriberRegistry) addDeliveryResolver(fn pushDeliveryResolver) {
 	r.mu.Unlock()
 }
 
+// The monitor must not duplicate a queued push-to-start while its exact
+// authenticated source/session and actual sample are still usable. This is
+// only a scheduling check; postJSON independently revalidates before HTTP.
+func (r *pushSubscriberRegistry) hasPendingChargingStart(carID int, logicalSessionID string, now time.Time) bool {
+	if r == nil || logicalSessionID == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, item := range r.store.Outbox {
+		var metadata pushPayloadMetadata
+		if json.Unmarshal(item.Payload, &metadata) != nil || metadata.Type != "charging_started" || metadata.CarID != carID || metadata.InstallationID != item.InstallationID {
+			continue
+		}
+		at, clockErr := time.Parse(time.RFC3339Nano, metadata.ObservedAt)
+		expires, expiryErr := time.Parse(time.RFC3339, item.ExpiresAt)
+		if clockErr != nil || expiryErr != nil || at.After(now) || now.Sub(at) > chargingSampleMaximumAge || !expires.After(now) {
+			continue
+		}
+		index := r.indexLocked(item.InstallationID)
+		if index < 0 {
+			continue
+		}
+		sub := r.store.Subscribers[index]
+		if sub.Status == pushStatusActive && validPushSubscriber(sub) && sub.wantsChargingLiveActivity(carID) &&
+			metadata.SourceID == sub.SourceID && metadata.SessionID == scopedLiveActivitySessionID(logicalSessionID, sub.SourceID, "charge") {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *pushSubscriberRegistry) notifyDeliveryResolution(resolution pushDeliveryResolution) {
 	if r == nil {
 		return
@@ -1076,6 +1112,17 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	if json.Unmarshal(payload, &metadata) != nil {
 		return 0, 0, nil, errPushNoLongerEligible
 	}
+	var chargingContext context.Context
+	if feature, _ := pushEventFeature(metadata.Type); feature == "charging_live_activity" && chargingPush != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		release, err := chargingPush.acquireChargingDelivery(ctx)
+		if err != nil {
+			return 0, 0, nil, err
+		}
+		defer release()
+		chargingContext = ctx
+	}
 	// Resolve immediately before creating the HTTP request. Never trust the
 	// subscriber/preferences/source copied when fan-out or queuing began.
 	current, eligible := r.deliverySubscriber(sub.InstallationID, metadata)
@@ -1093,8 +1140,12 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	sub = current
 	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))
 	_, _ = signature.Write(payload)
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
+	ctx := chargingContext
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, officialSoftwarePushRelayURL, bytes.NewReader(payload))
 	if err != nil {
 		return 0, 0, nil, err

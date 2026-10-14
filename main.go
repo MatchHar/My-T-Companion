@@ -155,8 +155,12 @@ func main() {
 	defer softwarePush.stop()
 	chargingPush = newChargingNotificationMonitorFromEnvironment()
 	registerMQTTFleetMonitor("charging", chargingPush.refreshFleetSubscription, chargingPush.reconcileFleet)
+	stopChargingObservation := chargingPush.startDatabaseObservation(db)
 	chargingPush.start()
-	defer chargingPush.stop()
+	defer func() {
+		stopChargingObservation()
+		chargingPush.stop()
+	}()
 	navigationPush = newNavigationNotificationMonitorFromEnvironment()
 	registerMQTTFleetMonitor("navigation", navigationPush.refreshFleetSubscription, navigationPush.reconcileFleet)
 	navigationPush.start()
@@ -799,6 +803,10 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 		doorDiagnostics = parkingEvents.doorDiagnostics(carID)
 		mqttConnected = parkingEvents.mqttConnected()
 	}
+	var chargingObservation any
+	if chargingPush != nil && eligible {
+		chargingObservation = chargingPush.chargingObservation(carID, time.Now().UTC())
+	}
 	var updateAvailable any
 	availabilityStatus := software.UpdateAvailabilityStatus
 	if availabilityStatus == "available" || availabilityStatus == "not_available" {
@@ -810,6 +818,7 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 		"data": map[string]any{
 			"car_id":                      carID,
 			"presence_observation":        presence,
+			"charging_observation":        chargingObservation,
 			"locked":                      mqttBool(values, "locked"),
 			"doors_open":                  mqttBool(values, "doors_open"),
 			"driver_front_door_open":      mqttBool(values, "driver_front_door_open"),

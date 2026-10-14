@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.10.55
+
+- Reconcile charging Live Activities with bounded, passive, read-only TeslaMate
+  charging-process/sample observations. Use exact process/start identity and
+  persisted sample timestamps; MQTT replay or repeated reads cannot refresh old
+  power/SOC/range or invent a physical stop/sleep time.
+- Handle fresh database samples arriving after the MQTT baseline without waiting
+  for another MQTT message. Keep existing coherent readiness, fleet eligibility,
+  polling intervals and delivery throttles; do not wake vehicles.
+- Bind live remaining-time receipts to the already-known charging process and
+  reject old ETA reuse across a new process or a same-process stop/resume.
+- Revalidate nonterminal charging events immediately before delivery and durable
+  retries. Serialize charging delivery with a bounded cancellable gate so a late
+  start cannot resurrect a terminated activity. Distinguish actual acceptance,
+  queued work and ineligible drops; only accepted starts count as delivered.
+- Add owner-authenticated optional `charging_observation` diagnostics. Existing
+  App foreground charge reads remain separate; this does not add FSD telemetry,
+  migrate TeslaMate tables/indexes or upgrade any other stack component.
+- Require three real isolated PostgreSQL fixture gates without skips in CI and
+  target the disposable lifecycle fixture at exact55 with immutable54 rollback.
+  Real APNs, physical charging, production load and untested source schemas
+  remain separate acceptance work. Publishing alone does not upgrade servers.
+
 ## 1.10.54
 
 - Build and validate with the Go 1.26.9 security patch and update the indirect

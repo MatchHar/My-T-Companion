@@ -4,12 +4,12 @@ on:
   pull_request:
     paths-ignore: ["hostbox/**"]
   push:
-    branches: [main, codex/companion-1-10-54]
+    branches: [main, codex/companion-charge-sleep-release-20261014]
     paths-ignore: ["hostbox/**"]
   workflow_dispatch:
     inputs:
       mode:
-        description: Exact HEAD candidate archive, or matching immutable published 1.10.54
+        description: Exact HEAD candidate archive, or matching immutable published 1.10.55
         type: choice
         options: [gitarchive, published]
         default: gitarchive
@@ -27,19 +27,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Scope this acceptance fixture to release 1.10.54
+      - name: Scope this acceptance fixture to release 1.10.55
         id: scope
-        env:
-          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [[ "$(tr -d '[:space:]' < VERSION)" == 1.10.54 ]]; then
+          if [[ "$(tr -d '[:space:]' < VERSION)" == 1.10.55 ]]; then
             echo 'active=true' >> "$GITHUB_OUTPUT"
-          elif [[ "$EVENT_NAME" == workflow_dispatch ]]; then
-            echo 'This fixture requires the exact 1.10.54 release checkout.' >&2
-            exit 1
           else
-            echo 'active=false' >> "$GITHUB_OUTPUT"
-            echo 'Not applicable to this VERSION; update the acceptance fixture for a future release.'
+            echo 'This fixture requires the exact 1.10.55 release checkout.' >&2
+            exit 1
           fi
       - name: Validate script syntax
         if: steps.scope.outputs.active == 'true'
