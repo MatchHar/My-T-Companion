@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.10.56
+
+- Add one owner-authenticated charging-settings synchronization operation for
+  explicit charging-popup/Overview-refresh intent only. Independently require
+  an enabled car, current MQTT connection baselines, suspended logging, a
+  plugged cable and a future scheduled charge; never resume asleep/offline cars.
+- Bound logging resume with per-car single-flight, five-minute cooldown and a
+  six-second timeout. Accept only TeslaMate's exact 204 acknowledgement from a
+  fixed server-configured path; reject redirects and arbitrary commands/URLs.
+  Do not enable the broad TeslaMateAPI command switch or send wake/charge commands.
+- An accepted request is not fresh telemetry. Existing status reads must obtain
+  new settings before clients update estimates. Full reads can delay sleep.
+  Passive polls do not invoke this operation; old clients remain compatible.
+- Retain charging/sleep reconciliations and data-preserving installers. Require
+  exact56 disposable upgrade/failure/repeat/rollback gates against immutable55.
+
 ## 1.10.55
 
 - Reconcile charging Live Activities with bounded, passive, read-only TeslaMate

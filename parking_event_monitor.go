@@ -262,6 +262,8 @@ func (m *parkingEventMonitor) reconcileFleet(cars map[int]bool) {
 }
 
 var parkingEventMQTTFields = []string{
+	"state",
+	"scheduled_charging_start_time",
 	"battery_level",
 	"rated_battery_range_km",
 	"plugged_in",
@@ -315,6 +317,9 @@ func (m *parkingEventMonitor) resetMQTTBaselineLocked() {
 
 func (m *parkingEventMonitor) observeMessage(carID int, field, rawValue string, observedAt time.Time, retained bool) {
 	value := strings.ToLower(normalizedMQTTValue(rawValue))
+	if field == "scheduled_charging_start_time" {
+		value = normalizedMQTTValue(rawValue)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.boundCurrentCarsLocked(carID, observedAt)
@@ -407,6 +412,11 @@ func (m *parkingEventMonitor) observeMessage(carID int, field, rawValue string, 
 
 func parkingEventValueKnown(field, value string) bool {
 	switch field {
+	case "state":
+		return value == "online" || value == "suspended" || value == "asleep" || value == "offline" || value == "driving" || value == "charging" || value == "updating"
+	case "scheduled_charging_start_time":
+		_, err := time.Parse(time.RFC3339Nano, value)
+		return err == nil
 	case "charging_state":
 		switch value {
 		case "disconnected", "starting", "charging", "stopped", "complete", "nopower":

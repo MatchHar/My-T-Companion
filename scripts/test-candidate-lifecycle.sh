@@ -24,13 +24,13 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # read-only commands, without modifying the runner's global Git configuration.
 candidate_git() { git -c safe.directory="$repo_dir" -C "$repo_dir" "$@"; }
 [[ -z "$(candidate_git status --porcelain)" ]] || fail 'Candidate checkout is not clean.'
-previous=1.10.54
-target=1.10.55
+previous=1.10.55
+target=1.10.56
 repository=MatchHar/My-T-Companion
-previous_digest=b8611149da3fbe6b4ba15f4f233d2bdfa25add1db0f663ea29f5508e094b0249
+previous_digest=fe75461ec25b8e8d4cf348b5c556bcae4263b41c09e5ea8466db16875fe37a22
 mode="${MYT_CANDIDATE_MODE:-gitarchive}"
 [[ "$mode" == gitarchive || "$mode" == published ]] || fail 'Mode must be gitarchive or published.'
-[[ "$(candidate_git show HEAD:VERSION | tr -d '[:space:]')" == "$target" ]] || fail 'Exact HEAD must have VERSION 1.10.55.'
+[[ "$(candidate_git show HEAD:VERSION | tr -d '[:space:]')" == "$target" ]] || fail 'Exact HEAD must have VERSION 1.10.56.'
 bridge=myt-candidate0
 ! ip link show "$bridge" >/dev/null 2>&1 || fail 'Fixture bridge already exists.'
 if ss -H -lnt '( sport = :80 or sport = :8083 )' | grep -q .; then fail 'Fixture ports are occupied.'; fi
@@ -123,7 +123,7 @@ jq -n --arg mode "$mode" --arg commit "$(candidate_git rev-parse HEAD)" \
   --arg candidate_sha256 "$candidate_digest" --arg previous_sha256 "$previous_digest" \
   '{mode:$mode,head_commit:$commit,candidate_sha256:$candidate_sha256,previous_sha256:$previous_sha256,
     candidate_attestation_verified:($mode=="published"),runtime_data:"synthetic only"}' > "$log_dir/source-evidence.json"
-gate 'Immutable 1.10.54 digest/checksum/provenance verified; exact clean HEAD candidate archive recorded'
+gate 'Immutable 1.10.55 digest/checksum/provenance verified; exact clean HEAD candidate archive recorded'
 
 # The negative archive is intentionally NOT the publication candidate. Only its
 # Dockerfile differs, forcing a real Docker build failure after installer copy.

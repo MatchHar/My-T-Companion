@@ -27,24 +27,25 @@ var embeddedVersion string
 
 var (
 	// Always matches the VERSION file (enforced by TestAPIVersionMatchesReleaseVersion).
-	apiVersion            = strings.TrimSpace(embeddedVersion)
-	db                    *sql.DB
-	apiToken              string
-	authProbeURL          string
-	authClient            *http.Client
-	location              *time.Location
-	carIDPath             = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
-	currentDrivePath      = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
-	navigationHistoryPath = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/push-history$`)
-	parkingEventsPath     = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
-	companionStatusPath   = regexp.MustCompile(`^/api/v1/cars/(\d+)/companion-status$`)
-	softwarePush          *softwareNotificationMonitor
-	chargingPush          *chargingNotificationMonitor
-	navigationPush        *navigationNotificationMonitor
-	parkingEvents         *parkingEventMonitor
-	lockSecurePush        *lockSecureNotificationMonitor
-	lowBatteryPush        *lowBatteryNotificationMonitor
-	pushRegistry          *pushSubscriberRegistry
+	apiVersion             = strings.TrimSpace(embeddedVersion)
+	db                     *sql.DB
+	apiToken               string
+	authProbeURL           string
+	authClient             *http.Client
+	location               *time.Location
+	carIDPath              = regexp.MustCompile(`^/api/v1/cars/(\d+)/states$`)
+	currentDrivePath       = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/current-drive$`)
+	navigationHistoryPath  = regexp.MustCompile(`^/api/v1/cars/(\d+)/navigation/push-history$`)
+	parkingEventsPath      = regexp.MustCompile(`^/api/v1/cars/(\d+)/parking-events$`)
+	companionStatusPath    = regexp.MustCompile(`^/api/v1/cars/(\d+)/companion-status$`)
+	chargeSettingsSyncPath = regexp.MustCompile(`^/api/v1/cars/(\d+)/charging-settings-sync$`)
+	softwarePush           *softwareNotificationMonitor
+	chargingPush           *chargingNotificationMonitor
+	navigationPush         *navigationNotificationMonitor
+	parkingEvents          *parkingEventMonitor
+	lockSecurePush         *lockSecureNotificationMonitor
+	lowBatteryPush         *lowBatteryNotificationMonitor
+	pushRegistry           *pushSubscriberRegistry
 )
 
 type telemetrySample struct {
@@ -581,6 +582,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		"capabilities": []string{
+			"charging_settings_sync_v1",
 			"parking_state_history",
 			"state_boundary_battery",
 			"state_boundary_rated_range",
@@ -661,6 +663,10 @@ func handleSoftwareNotificationStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStates(w http.ResponseWriter, r *http.Request) {
+	if matches := chargeSettingsSyncPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
+		handleChargeSettingsSync(w, r, matches[1])
+		return
+	}
 	if matches := tireHistoryPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
 		handleTirePressureHistory(w, r, matches[1])
 		return
