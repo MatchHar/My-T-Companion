@@ -4,12 +4,12 @@ on:
   pull_request:
     paths-ignore: ["hostbox/**"]
   push:
-    branches: [main, codex/companion-charge-sleep-release-20261014]
+    branches: [main, codex/charge-settings-sync-20261016]
     paths-ignore: ["hostbox/**"]
   workflow_dispatch:
     inputs:
       mode:
-        description: Exact HEAD candidate archive, or matching immutable published 1.10.55
+        description: Exact HEAD candidate archive, or matching immutable published 1.10.56
         type: choice
         options: [gitarchive, published]
         default: gitarchive
@@ -27,13 +27,13 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Scope this acceptance fixture to release 1.10.55
+      - name: Scope this acceptance fixture to release 1.10.56
         id: scope
         run: |
-          if [[ "$(tr -d '[:space:]' < VERSION)" == 1.10.55 ]]; then
+          if [[ "$(tr -d '[:space:]' < VERSION)" == 1.10.56 ]]; then
             echo 'active=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'This fixture requires the exact 1.10.55 release checkout.' >&2
+            echo 'This fixture requires the exact 1.10.56 release checkout.' >&2
             exit 1
           fi
       - name: Validate script syntax

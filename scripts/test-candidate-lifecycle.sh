@@ -24,13 +24,13 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # read-only commands, without modifying the runner's global Git configuration.
 candidate_git() { git -c safe.directory="$repo_dir" -C "$repo_dir" "$@"; }
 [[ -z "$(candidate_git status --porcelain)" ]] || fail 'Candidate checkout is not clean.'
-previous=1.10.54
-target=1.10.55
+previous=1.10.55
+target=1.10.56
 repository=MatchHar/My-T-Companion
-previous_digest=b8611149da3fbe6b4ba15f4f233d2bdfa25add1db0f663ea29f5508e094b0249
+previous_digest=fe75461ec25b8e8d4cf348b5c556bcae4263b41c09e5ea8466db16875fe37a22
 mode="${MYT_CANDIDATE_MODE:-gitarchive}"
 [[ "$mode" == gitarchive || "$mode" == published ]] || fail 'Mode must be gitarchive or published.'
-[[ "$(candidate_git show HEAD:VERSION | tr -d '[:space:]')" == "$target" ]] || fail 'Exact HEAD must have VERSION 1.10.55.'
+[[ "$(candidate_git show HEAD:VERSION | tr -d '[:space:]')" == "$target" ]] || fail 'Exact HEAD must have VERSION 1.10.56.'
 bridge=myt-candidate0
 ! ip link show "$bridge" >/dev/null 2>&1 || fail 'Fixture bridge already exists.'
 if ss -H -lnt '( sport = :80 or sport = :8083 )' | grep -q .; then fail 'Fixture ports are occupied.'; fi
@@ -123,7 +123,7 @@ jq -n --arg mode "$mode" --arg commit "$(candidate_git rev-parse HEAD)" \
   --arg candidate_sha256 "$candidate_digest" --arg previous_sha256 "$previous_digest" \
   '{mode:$mode,head_commit:$commit,candidate_sha256:$candidate_sha256,previous_sha256:$previous_sha256,
     candidate_attestation_verified:($mode=="published"),runtime_data:"synthetic only"}' > "$log_dir/source-evidence.json"
-gate 'Immutable 1.10.54 digest/checksum/provenance verified; exact clean HEAD candidate archive recorded'
+gate 'Immutable 1.10.55 digest/checksum/provenance verified; exact clean HEAD candidate archive recorded'
 
 # The negative archive is intentionally NOT the publication candidate. Only its
 # Dockerfile differs, forcing a real Docker build failure after installer copy.
@@ -441,7 +441,7 @@ verify_preservation() {
   database_manifest | cmp -s "$work_dir/database-baseline.sha256" - || fail 'Source database content changed.'
 }
 verify_preservation
-gate 'Prior immutable54 actual install and synthetic configuration/pairing/history/volume baselines captured'
+gate "Prior immutable${previous} actual install and synthetic configuration/pairing/history/volume baselines captured"
 
 if MY_T_VERSION="$target" MY_T_EXPECTED_SHA256="$fault_digest" MY_T_RELEASE_BASE_URL="$transport/fault" \
   "$INSTALL_DIR/update.sh" > "$log_dir/failed-candidate-recovery.log" 2>&1; then
@@ -453,7 +453,7 @@ verify_health "$previous"
 source_manifest | cmp -s "$work_dir/source-baseline.sha256" - || fail 'Failed upgrade did not restore exact source/configuration.'
 cmp -s "$work_dir/prior-Caddyfile" "$TESLAMATE_DIR/Caddyfile" || fail 'Failed build changed proxy configuration.'
 verify_preservation
-gate 'Real candidate Docker build failure; released54 updater invokes real previous installer; healthy exact-source/data recovery'
+gate "Real candidate Docker build failure; released${previous} updater invokes real previous installer; healthy exact-source/data recovery"
 upgrade_candidate() {
   MY_T_VERSION="$target" MY_T_EXPECTED_SHA256="$candidate_digest" MY_T_RELEASE_BASE_URL="$target_base" \
     "$INSTALL_DIR/update.sh" > "$log_dir/$1.log" 2>&1
@@ -463,7 +463,7 @@ verify_health "$target"
 verify_sql_reads
 verify_preservation
 [[ "$(<"$INSTALL_DIR/RELEASE_SHA256")" == "$candidate_digest" ]] || fail 'Installed target digest mismatch.'
-gate 'Real digest-pinned54 to exact55 candidate upgrade; prior values/pairing/history/durable data retained'
+gate "Real digest-pinned${previous} to exact${target} candidate upgrade; prior values/pairing/history/durable data retained"
 upgrade_candidate same-version-repeat
 verify_health "$target"
 verify_preservation
@@ -483,7 +483,7 @@ verify_health "$previous"
 verify_sql_reads
 source_manifest | cmp -s "$work_dir/source-baseline.sha256" - || fail 'Healthy rollback did not restore exact prior source/config.'
 verify_preservation
-gate 'Backup-assisted healthy rollback runs real immutable54 installer; no new source leftovers or durable-data rewind'
+gate "Backup-assisted healthy rollback runs real immutable${previous} installer; no new source leftovers or durable-data rewind"
 upgrade_candidate final-upgrade
 verify_health "$target"
 verify_sql_reads
