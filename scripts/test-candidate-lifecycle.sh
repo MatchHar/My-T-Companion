@@ -441,7 +441,7 @@ verify_preservation() {
   database_manifest | cmp -s "$work_dir/database-baseline.sha256" - || fail 'Source database content changed.'
 }
 verify_preservation
-gate 'Prior immutable54 actual install and synthetic configuration/pairing/history/volume baselines captured'
+gate "Prior immutable${previous} actual install and synthetic configuration/pairing/history/volume baselines captured"
 
 if MY_T_VERSION="$target" MY_T_EXPECTED_SHA256="$fault_digest" MY_T_RELEASE_BASE_URL="$transport/fault" \
   "$INSTALL_DIR/update.sh" > "$log_dir/failed-candidate-recovery.log" 2>&1; then
@@ -453,7 +453,7 @@ verify_health "$previous"
 source_manifest | cmp -s "$work_dir/source-baseline.sha256" - || fail 'Failed upgrade did not restore exact source/configuration.'
 cmp -s "$work_dir/prior-Caddyfile" "$TESLAMATE_DIR/Caddyfile" || fail 'Failed build changed proxy configuration.'
 verify_preservation
-gate 'Real candidate Docker build failure; released54 updater invokes real previous installer; healthy exact-source/data recovery'
+gate "Real candidate Docker build failure; released${previous} updater invokes real previous installer; healthy exact-source/data recovery"
 upgrade_candidate() {
   MY_T_VERSION="$target" MY_T_EXPECTED_SHA256="$candidate_digest" MY_T_RELEASE_BASE_URL="$target_base" \
     "$INSTALL_DIR/update.sh" > "$log_dir/$1.log" 2>&1
@@ -463,7 +463,7 @@ verify_health "$target"
 verify_sql_reads
 verify_preservation
 [[ "$(<"$INSTALL_DIR/RELEASE_SHA256")" == "$candidate_digest" ]] || fail 'Installed target digest mismatch.'
-gate 'Real digest-pinned54 to exact55 candidate upgrade; prior values/pairing/history/durable data retained'
+gate "Real digest-pinned${previous} to exact${target} candidate upgrade; prior values/pairing/history/durable data retained"
 upgrade_candidate same-version-repeat
 verify_health "$target"
 verify_preservation
@@ -483,7 +483,7 @@ verify_health "$previous"
 verify_sql_reads
 source_manifest | cmp -s "$work_dir/source-baseline.sha256" - || fail 'Healthy rollback did not restore exact prior source/config.'
 verify_preservation
-gate 'Backup-assisted healthy rollback runs real immutable54 installer; no new source leftovers or durable-data rewind'
+gate "Backup-assisted healthy rollback runs real immutable${previous} installer; no new source leftovers or durable-data rewind"
 upgrade_candidate final-upgrade
 verify_health "$target"
 verify_sql_reads
