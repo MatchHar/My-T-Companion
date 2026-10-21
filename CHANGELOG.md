@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.57
+
+- Persist an optional originating owner-device id on Friend Together grant
+  creation. Old state rows remain null. List responses expose `owner_device_id`
+  on GrantView. GET `/grants?owner_device_id=` filters to that install.
+- Empty approve bodies still succeed and copy the invitation owner device when
+  present. A mismatched explicit owner-device id is rejected. Null or other
+  owner ids are never selected by the filter.
+
 ## 1.10.56
 
 - Add one owner-authenticated charging-settings synchronization operation for

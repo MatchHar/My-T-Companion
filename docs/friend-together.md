@@ -35,7 +35,9 @@ ten minutes and grants last at most eight hours after owner approval. Closing
 the map is not stopping a share. Both peers approve their own one-way grants.
 Owner and recipient stop controls revoke their own grant; a network/storage
 failure must not be reported as a completed stop. Copied information cannot be
-recalled. Existing grant/counter state is deliberately not resumed after server
+recalled. Grant creation accepts an optional `owner_device_id`. Persisted grants
+without that field remain null. Owner `GET /grants` may filter with
+`owner_device_id`; null and other values are excluded from that filter. Existing grant/counter state is deliberately not resumed after server
 restart: all prior shares are ended and fresh invitations are required.
 After terminal metadata cleanup, an authenticated owner cancellation stays
 idempotent. A guest401/404 must not be treated as successful cancellation:
