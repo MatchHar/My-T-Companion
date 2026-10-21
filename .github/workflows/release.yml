@@ -1,9 +1,11 @@
 name: Release
 
+# Manual only. A tag push must not start this job.
+# Local publish remains scripts/build-release.sh and scripts/publish-release.sh.
+# Dispatch this workflow on the release tag when the promotion script still
+# needs the release check and the GitHub build attestation.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write

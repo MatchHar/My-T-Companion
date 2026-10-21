@@ -1,8 +1,9 @@
 name: CI
 
+# Manual only. Push, pull_request, and tag no longer start this workflow.
+# Dispatch it on a release tag when promotion still needs test, codeql, and release-archive.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
