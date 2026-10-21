@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.58
+
+- Build and validate with Go 1.26.10 so the standard library includes the
+  crypto/x509 fix for GO-2026-6809. Go 1.26.9 is affected. Keep the existing
+  module dependencies, including golang.org/x/net 0.60.0. The Docker build
+  image is golang:1.26.10-alpine.
+- No Friend Together, charging-settings, parking, navigation, or notification
+  behavior change. This source bump is not tagged and is not a production deploy.
+
 ## 1.10.57
 
 - Persist an optional originating owner-device id on Friend Together grant
