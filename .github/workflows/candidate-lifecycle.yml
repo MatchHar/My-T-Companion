@@ -1,11 +1,7 @@
 name: Companion candidate disposable lifecycle
 
+# Manual only. Push and pull_request no longer start this 1.10.56 fixture.
 on:
-  pull_request:
-    paths-ignore: ["hostbox/**"]
-  push:
-    branches: [main, codex/charge-settings-sync-20261016]
-    paths-ignore: ["hostbox/**"]
   workflow_dispatch:
     inputs:
       mode:

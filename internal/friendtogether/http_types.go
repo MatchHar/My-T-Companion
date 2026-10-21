@@ -72,6 +72,14 @@ type GrantView struct {
 	Permissions        PermissionSet `json:"permissions"`
 	Member             Member        `json:"member"`
 	Status             string        `json:"status"`
+	// OwnerDeviceID is the originating owner-phone install. Old persisted
+	// rows omit it (nil). It is never inferred from recipient_id.
+	OwnerDeviceID *string `json:"owner_device_id,omitempty"`
+}
+
+// ApproveRequest is optional on POST .../requests/{id}/approve. {} remains valid.
+type ApproveRequest struct {
+	OwnerDeviceID string `json:"owner_device_id,omitempty"`
 }
 type JoinView struct {
 	RequestID        string      `json:"request_id"`

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -128,6 +129,42 @@ func (s *HTTPService) clockHealthyLocked() bool {
 	return s.healthy
 }
 
+var errGrantFilterNotAllowed = errors.New("grant filter not allowed")
+
+func ownerGrantListFilter(r *http.Request, path string) (string, error) {
+	if r.URL.RawQuery == "" {
+		return "", nil
+	}
+	if path != "grants" || r.Method != http.MethodGet {
+		return "", errGrantFilterNotAllowed
+	}
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil || len(values) != 1 {
+		return "", ErrInvalid
+	}
+	ids := values["owner_device_id"]
+	if len(ids) != 1 || !canonicalID(ids[0]) {
+		return "", ErrInvalid
+	}
+	return ids[0], nil
+}
+
+func originatingOwnerDeviceID(requested, invitationOwner string) (*string, error) {
+	origin := requested
+	if origin == "" {
+		origin = invitationOwner
+	} else if invitationOwner != "" && origin != invitationOwner {
+		return nil, ErrInvalid
+	}
+	if origin == "" {
+		return nil, nil
+	}
+	if !canonicalID(origin) {
+		return nil, ErrInvalid
+	}
+	return &origin, nil
+}
+
 func (s *HTTPService) OwnerHandler() http.Handler { return bufferedFriendHandler(s.serveOwner) }
 func (s *HTTPService) GuestHandler() http.Handler { return bufferedFriendHandler(s.serveGuest) }
 
@@ -192,8 +229,17 @@ func (s *HTTPService) serveOwner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/friend-together/")
-	if path == r.URL.Path || r.URL.RawQuery != "" || r.URL.RawPath != "" {
+	if path == r.URL.Path || r.URL.RawPath != "" {
 		fail(w, 404, "not_found")
+		return
+	}
+	ownerDeviceFilter, filterErr := ownerGrantListFilter(r, path)
+	if filterErr != nil {
+		if errors.Is(filterErr, errGrantFilterNotAllowed) {
+			fail(w, 404, "not_found")
+			return
+		}
+		fail(w, 400, "invalid_request")
 		return
 	}
 	s.mu.Lock()
@@ -224,6 +270,11 @@ func (s *HTTPService) serveOwner(w http.ResponseWriter, r *http.Request) {
 	if path == "grants" && r.Method == http.MethodGet {
 		out := make([]GrantView, 0, len(s.state.Grants))
 		for _, g := range s.state.Grants {
+			if ownerDeviceFilter != "" {
+				if g.View.OwnerDeviceID == nil || *g.View.OwnerDeviceID != ownerDeviceFilter {
+					continue
+				}
+			}
 			out = append(out, g.View)
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].ConsentStartedAtMS > out[j].ConsentStartedAtMS })
@@ -295,7 +346,22 @@ func (s *HTTPService) serveOwner(w http.ResponseWriter, r *http.Request) {
 		}
 		sort.Slice(views, func(i, j int) bool { return views[i].CreatedAtMS < views[j].CreatedAtMS })
 		writeResponse(w, 200, map[string]any{"requests": views})
-	case "requests/approve", "requests/reject":
+	case "requests/approve":
+		if r.Method != http.MethodPost {
+			fail(w, 405, "method_not_allowed")
+			return
+		}
+		var req ApproveRequest
+		if decodeBody(w, r, &req) != nil {
+			fail(w, 400, "invalid_request")
+			return
+		}
+		if req.OwnerDeviceID != "" && !canonicalID(req.OwnerDeviceID) {
+			fail(w, 400, "invalid_request")
+			return
+		}
+		s.decideRequestLocked(w, parts[1], true, req.OwnerDeviceID)
+	case "requests/reject":
 		if r.Method != http.MethodPost {
 			fail(w, 405, "method_not_allowed")
 			return
@@ -304,7 +370,7 @@ func (s *HTTPService) serveOwner(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "invalid_request")
 			return
 		}
-		s.decideRequestLocked(w, parts[1], parts[2] == "approve")
+		s.decideRequestLocked(w, parts[1], false, "")
 	case "grants/revoke":
 		if r.Method != http.MethodPost {
 			fail(w, 405, "method_not_allowed")
@@ -406,7 +472,7 @@ func (s *HTTPService) createInvitationLocked(w http.ResponseWriter, r *http.Requ
 	inv.RedemptionSecret = secret
 	writeResponse(w, 201, inv)
 }
-func (s *HTTPService) decideRequestLocked(w http.ResponseWriter, id string, approve bool) {
+func (s *HTTPService) decideRequestLocked(w http.ResponseWriter, id string, approve bool, ownerDeviceID string) {
 	req := s.state.Requests[id]
 	if req == nil {
 		fail(w, 404, "not_found")
@@ -463,7 +529,12 @@ func (s *HTTPService) decideRequestLocked(w http.ResponseWriter, id string, appr
 		errorResponse(w, err)
 		return
 	}
-	g := &grantRecord{View: GrantView{SchemaVersion: 1, Binding: binding, Revision: metadata.Revision, ConsentStartedAtMS: metadata.ConsentStartedAtMS, ExpiresAtMS: metadata.ExpiresAtMS, Permissions: inv.Envelope.Permissions, Member: inv.Envelope.Member, Status: "active"}, CarID: inv.CarID, RequestID: id}
+	origin, originErr := originatingOwnerDeviceID(ownerDeviceID, inv.Envelope.OwnerDevice.RecipientID)
+	if originErr != nil {
+		fail(w, 400, "invalid_request")
+		return
+	}
+	g := &grantRecord{View: GrantView{SchemaVersion: 1, Binding: binding, Revision: metadata.Revision, ConsentStartedAtMS: metadata.ConsentStartedAtMS, ExpiresAtMS: metadata.ExpiresAtMS, Permissions: inv.Envelope.Permissions, Member: inv.Envelope.Member, Status: "active", OwnerDeviceID: origin}, CarID: inv.CarID, RequestID: id}
 	s.state.Grants[grantID] = g
 	req.View.Status = "approved"
 	req.GrantID = grantID
@@ -905,6 +976,9 @@ func (s *HTTPService) load() error {
 	}
 	for id, g := range s.state.Grants {
 		if g == nil || !canonicalID(id) || g.View.GrantID != id || g.View.IssuerID != s.state.IssuerID || g.CarID < 1 {
+			return ErrInvalid
+		}
+		if g.View.OwnerDeviceID != nil && !canonicalID(*g.View.OwnerDeviceID) {
 			return ErrInvalid
 		}
 	}
