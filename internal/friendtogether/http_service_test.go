@@ -440,3 +440,114 @@ func TestHTTPConfigurationAndWriteFailure(t *testing.T) {
 		t.Fatal("write failure not latched")
 	}
 }
+
+func TestHTTPGrantOwnerDeviceIDPersistFilterAndLegacyNull(t *testing.T) {
+	f := newHTTPFixture(t, "https://a.example")
+	owner, _ := testDevice(t)
+	other, _ := testDevice(t)
+	friend, key := testDevice(t)
+	inv := f.invite(t, owner, nil, "")
+	j := f.redeem(t, inv, friend, key, nil)
+	w := f.owner(t, "POST", "requests/"+j.RequestID+"/approve", ApproveRequest{OwnerDeviceID: owner.RecipientID})
+	if w.Code != 200 {
+		t.Fatalf("approve with owner device: %d %s", w.Code, w.Body.String())
+	}
+	tagged := decodeResponse[struct {
+		Grant GrantView `json:"grant"`
+	}](t, w).Grant
+	if tagged.OwnerDeviceID == nil || *tagged.OwnerDeviceID != owner.RecipientID {
+		t.Fatal("approve did not persist owner_device_id")
+	}
+
+	mismatchInv := f.invite(t, owner, nil, "")
+	mismatchJoin := f.redeem(t, mismatchInv, friend, key, nil)
+	w = f.owner(t, "POST", "requests/"+mismatchJoin.RequestID+"/approve", ApproveRequest{OwnerDeviceID: other.RecipientID})
+	if w.Code != 400 {
+		t.Fatalf("mismatched owner device: %d %s", w.Code, w.Body.String())
+	}
+
+	listed := decodeResponse[struct {
+		Grants []GrantView `json:"grants"`
+	}](t, f.owner(t, "GET", "grants", nil))
+	if len(listed.Grants) != 1 || listed.Grants[0].OwnerDeviceID == nil || *listed.Grants[0].OwnerDeviceID != owner.RecipientID {
+		t.Fatal("unfiltered list missing owner_device_id")
+	}
+
+	filtered := decodeResponse[struct {
+		Grants []GrantView `json:"grants"`
+	}](t, f.owner(t, "GET", "grants?owner_device_id="+owner.RecipientID, nil))
+	if len(filtered.Grants) != 1 || filtered.Grants[0].GrantID != tagged.GrantID {
+		t.Fatal("owner filter missed this device")
+	}
+	foreign := decodeResponse[struct {
+		Grants []GrantView `json:"grants"`
+	}](t, f.owner(t, "GET", "grants?owner_device_id="+other.RecipientID, nil))
+	if len(foreign.Grants) != 0 {
+		t.Fatal("owner filter leaked another device")
+	}
+
+	if f.owner(t, "GET", "grants?owner_device_id=not-a-uuid", nil).Code != 400 {
+		t.Fatal("invalid filter")
+	}
+	if f.owner(t, "GET", "status?owner_device_id="+owner.RecipientID, nil).Code != 404 {
+		t.Fatal("query on non-list path")
+	}
+
+	empty := newHTTPFixture(t, "https://b.example")
+	emptyOwner, _ := testDevice(t)
+	emptyFriend, emptyKey := testDevice(t)
+	emptyInv := empty.invite(t, emptyOwner, nil, "")
+	emptyJoin := empty.redeem(t, emptyInv, emptyFriend, emptyKey, nil)
+	copied := empty.approve(t, emptyJoin.RequestID)
+	if copied.OwnerDeviceID == nil || *copied.OwnerDeviceID != emptyOwner.RecipientID {
+		t.Fatal("empty approve body did not copy invitation owner_device")
+	}
+
+	legacy := newHTTPFixture(t, "https://c.example")
+	legacyOwner, _ := testDevice(t)
+	legacyFriend, legacyKey := testDevice(t)
+	legacyInv := legacy.invite(t, legacyOwner, nil, "")
+	legacyJoin := legacy.redeem(t, legacyInv, legacyFriend, legacyKey, nil)
+	legacy.approve(t, legacyJoin.RequestID)
+	raw, err := os.ReadFile(legacy.config.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if json.Unmarshal(raw, &state) != nil {
+		t.Fatal("state json")
+	}
+	grants, _ := state["grants"].(map[string]any)
+	if len(grants) != 1 {
+		t.Fatal("expected one persisted grant")
+	}
+	for _, row := range grants {
+		record, _ := row.(map[string]any)
+		view, _ := record["view"].(map[string]any)
+		delete(view, "owner_device_id")
+	}
+	stripped, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy.config.StatePath, stripped, 0600); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewHTTPService(legacy.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.s = restored
+	legacyRows := decodeResponse[struct {
+		Grants []GrantView `json:"grants"`
+	}](t, legacy.owner(t, "GET", "grants", nil))
+	if len(legacyRows.Grants) != 1 || legacyRows.Grants[0].OwnerDeviceID != nil {
+		t.Fatal("old rows must load with null owner_device_id")
+	}
+	legacyFiltered := decodeResponse[struct {
+		Grants []GrantView `json:"grants"`
+	}](t, legacy.owner(t, "GET", "grants?owner_device_id="+legacyOwner.RecipientID, nil))
+	if len(legacyFiltered.Grants) != 0 {
+		t.Fatal("null owner grants must not match an owner filter")
+	}
+}
