@@ -513,6 +513,14 @@ if [[ -z "$friend_together_enabled_raw" || -z "$friend_together_guest_origin" ||
   fi
 fi
 friend_together_enabled="$(normalize_friend_together_enabled "$friend_together_enabled_raw")"
+# ETA share (1.10.59) is opt-in: preserve an explicit operator value across the
+# .env rewrite, otherwise keep it off.
+eta_share_enabled_raw="${ETA_SHARE_ENABLED:-$(read_env_value ETA_SHARE_ENABLED "$ENV_FILE" || true)}"
+if [[ -z "$eta_share_enabled_raw" && -f "$COMPOSE_FILE" ]]; then
+  eta_cid="$(docker compose --project-name "$COMPOSE_PROJECT" --env-file "$ENV_FILE" --file "$COMPOSE_FILE" ps -q companion 2>/dev/null || true)"
+  [[ -z "$eta_cid" ]] || eta_share_enabled_raw="$(container_env "$eta_cid" ETA_SHARE_ENABLED || true)"
+fi
+eta_share_enabled="$(normalize_friend_together_enabled "$eta_share_enabled_raw")"
 [[ -n "$friend_together_state_path" ]] || friend_together_state_path="/data/friend-together/state.json"
 if [[ -n "$push_relay_url" && ! "$push_relay_url" =~ ^https:// ]]; then
   fail "PUSH_RELAY_URL must use HTTPS."
@@ -676,6 +684,7 @@ umask 077
   printf 'FRIEND_TOGETHER_ENABLED=%s\n' "$friend_together_enabled"
   printf 'FRIEND_TOGETHER_GUEST_ORIGIN=%s\n' "$friend_together_guest_origin"
   printf 'FRIEND_TOGETHER_STATE_PATH=%s\n' "$friend_together_state_path"
+  printf 'ETA_SHARE_ENABLED=%s\n' "$eta_share_enabled"
 } > "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
@@ -740,6 +749,7 @@ YAML
       FRIEND_TOGETHER_ENABLED: \${FRIEND_TOGETHER_ENABLED:-false}
       FRIEND_TOGETHER_GUEST_ORIGIN: \${FRIEND_TOGETHER_GUEST_ORIGIN:-}
       FRIEND_TOGETHER_STATE_PATH: \${FRIEND_TOGETHER_STATE_PATH:-/data/friend-together/state.json}
+      ETA_SHARE_ENABLED: \${ETA_SHARE_ENABLED:-false}
     ports:
       - "127.0.0.1:8083:8080"
     volumes:

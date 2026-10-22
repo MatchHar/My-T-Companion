@@ -182,6 +182,7 @@ func main() {
 	mux := http.NewServeMux()
 	stopFriends := registerFriendTogether(mux)
 	defer stopFriends()
+	registerETAShare(mux)
 	mux.HandleFunc("/api/ping", handlePing)
 	mux.HandleFunc("/api/healthz", handleHealth)
 	mux.HandleFunc("/api/v1/capabilities", handleCapabilities)
@@ -581,7 +582,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 				"en":      "Adds two-way App and Companion compatibility checks with safer feature fallback.",
 			},
 		},
-		"capabilities": []string{
+		"capabilities": appendETAShareCapability([]string{
 			"charging_settings_sync_v1",
 			"parking_state_history",
 			"state_boundary_battery",
@@ -615,7 +616,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"door_detail_status",
 			"window_detail_status",
 			"service_mode_status",
-		},
+		}),
 		"data_policy":                 "teslamate_read_only_observations",
 		"storage_mode":                "teslamate_source_of_truth",
 		"retention":                   "follows_teslamate_database",
