@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.10.59
+
+- Destination-arrival notifications add `trip_energy_kwh` and
+  `trip_efficiency_wh_per_km` (bounded, rounded; never coordinates).
+- Optional ETA share links (`ETA_SHARE_ENABLED`, default off; install/update
+  preserve an explicit value). Random 256-bit tokens stored only as hashes,
+  4 h maximum, end with navigation, revocable, rate-limited, memory-only.
+  Public page `/share/v1/eta/<token>` shows ETA; approximate position only when
+  the owner opts in per share.
+
 ## 1.10.58
 
 - Build and validate with Go 1.26.10 so the standard library includes the

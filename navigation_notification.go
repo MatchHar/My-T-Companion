@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -76,6 +77,11 @@ type navigationLiveActivityEvent struct {
 	liveActivityOnly     bool
 	// alertOnly sends the destination trip-start banner without touching Live Activity.
 	alertOnly bool
+	// Arrival trip summary (destination_trip_arrived only). Never coordinates.
+	TripEnergyKWh         *float64 `json:"trip_energy_kwh,omitempty"`
+	TripEfficiencyWhPerKM *float64 `json:"trip_efficiency_wh_per_km,omitempty"`
+	// TeslaMate drive id of the leg, used only to read the summary energy.
+	driveID int64
 }
 
 type activeRouteMQTT struct {
@@ -213,6 +219,7 @@ type navigationNotificationMonitor struct {
 	pendingStartAlerts map[int]*time.Timer
 	enriching          map[int]string
 	distanceReader     func(int) (int64, *float64, bool)
+	tripEnergyReader   func(int64) *float64
 	startNameReader    func(int) string
 	mqttBaselines      map[int]navigationMQTTBaseline
 	mqttManaged        bool
@@ -718,6 +725,7 @@ func (m *navigationNotificationMonitor) observeMessage(carID int, field, value s
 		endState.Sequence = state.Sequence
 		event := m.makeEventLocked(carID, &endState, "navigation_ended", observedAt)
 		event.EndReason = endReason
+		event.driveID = state.DriveID
 		event.endReasonOverride = endReason
 		state.Revision = endState.Revision
 		state.Sequence = endState.Sequence
@@ -1601,6 +1609,9 @@ func (m *navigationNotificationMonitor) deliver(event navigationLiveActivityEven
 	if alertType != "" {
 		alertEvent := event
 		alertEvent.Type = alertType
+		if alertType == "destination_trip_arrived" {
+			m.attachTripSummary(&alertEvent)
+		}
 		alertEvent.EventID = event.EventID + ":" + alertType
 		_, alertErr = m.deliverTo(alertEvent, func(s pushSubscriber) bool { return s.wantsNavigationTripAlerts(event.CarID) })
 	}
@@ -2178,4 +2189,59 @@ func cloneInt(value *int) *int {
 	}
 	cloned := *value
 	return &cloned
+}
+
+// attachTripSummary adds battery-side energy and efficiency for the arrival
+// banner. Distance/duration are already on the event. No location is added.
+func (m *navigationNotificationMonitor) attachTripSummary(event *navigationLiveActivityEvent) {
+	if event.driveID <= 0 {
+		return
+	}
+	reader := m.tripEnergyReader
+	if reader == nil {
+		reader = navigationDriveEnergyKWh
+	}
+	energy := reader(event.driveID)
+	if energy == nil || math.IsNaN(*energy) || *energy < 0 || *energy > 300 {
+		return
+	}
+	value := math.Round(*energy*100) / 100
+	event.TripEnergyKWh = &value
+	if event.DrivenDistanceKM != nil && *event.DrivenDistanceKM >= 1 {
+		eff := math.Round(value * 1000 / *event.DrivenDistanceKM)
+		if eff > 0 && eff <= 1000 {
+			event.TripEfficiencyWhPerKM = &eff
+		}
+	}
+}
+
+// navigationDriveEnergyKWh mirrors TeslaMate's drive consumption: rated range
+// lost during the drive × the car's efficiency (kWh/km).
+func navigationDriveEnergyKWh(driveID int64) *float64 {
+	if db == nil || driveID <= 0 {
+		return nil
+	}
+	var energy sql.NullFloat64
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := db.QueryRowContext(ctx, `
+		SELECT (first_position.range - latest_position.range) * c.efficiency
+		FROM drives d
+		JOIN cars c ON c.id = d.car_id
+		JOIN LATERAL (
+			SELECT rated_battery_range_km AS range FROM positions
+			WHERE drive_id = d.id AND rated_battery_range_km IS NOT NULL
+			ORDER BY id ASC LIMIT 1
+		) first_position ON true
+		JOIN LATERAL (
+			SELECT rated_battery_range_km AS range FROM positions
+			WHERE drive_id = d.id AND rated_battery_range_km IS NOT NULL
+			ORDER BY id DESC LIMIT 1
+		) latest_position ON true
+		WHERE d.id = $1 AND c.efficiency IS NOT NULL`, driveID).Scan(&energy)
+	if err != nil || !energy.Valid {
+		return nil
+	}
+	value := energy.Float64
+	return &value
 }
