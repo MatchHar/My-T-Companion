@@ -634,6 +634,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		payload["capabilities"] = append(payload["capabilities"].([]string), "friend_together_v1")
 	}
 	addTireHistoryCapability(r.Context(), payload)
+	addRoadCoverageCapability(payload)
 	addSQLFeatureCapabilities(r.Context(), payload)
 	payload["mqtt_source"] = mqttFleetDiagnostics()
 	// Prefer a live read on the private TeslaMate network. Static install
@@ -670,6 +671,10 @@ func handleStates(w http.ResponseWriter, r *http.Request) {
 	}
 	if matches := tireHistoryPath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
 		handleTirePressureHistory(w, r, matches[1])
+		return
+	}
+	if matches := roadCoveragePath.FindStringSubmatch(r.URL.Path); len(matches) == 2 {
+		handleRoadCoverage(w, r, matches[1])
 		return
 	}
 	if r.Method != http.MethodGet {
