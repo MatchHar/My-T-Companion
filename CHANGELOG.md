@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.10.60
+
+- Read-only owner road-coverage aggregate
+  `GET /api/companion/v1/cars/<id>/road-coverage` (`road_coverage_v1`):
+  decimated drive trails (~60 m, max 80,000 points, `truncated` flag), 200 m
+  visit cells, optional `from`/`to`; `mode` reserved for future colouring.
+
 ## 1.10.59
 
 - Destination-arrival notifications add `trip_energy_kwh` and
