@@ -40,18 +40,21 @@ type lockSecurePrefs struct {
 }
 
 type lockSecureCarState struct {
-	DisplayName  string `json:"display_name,omitempty"`
-	Healthy      *bool  `json:"-"`
-	Locked       *bool  `json:"locked,omitempty"`
-	UserPresent  *bool  `json:"is_user_present,omitempty"`
-	State        string `json:"state,omitempty"`
-	ShiftState   string `json:"shift_state,omitempty"`
-	DoorsOpen    *bool  `json:"doors_open,omitempty"`
-	TrunkOpen    *bool  `json:"trunk_open,omitempty"`
-	FrunkOpen    *bool  `json:"frunk_open,omitempty"`
-	LastSecure   bool   `json:"last_secure"`
-	Initialized  bool   `json:"initialized"`
-	LastPushedAt string `json:"last_pushed_at,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Healthy     *bool  `json:"-"`
+	Locked      *bool  `json:"locked,omitempty"`
+	UserPresent *bool  `json:"is_user_present,omitempty"`
+	State       string `json:"state,omitempty"`
+	ShiftState  string `json:"shift_state,omitempty"`
+	// LastKnownShiftState keeps the most recent non-empty gear. TeslaMate 4.4.0
+	// publishes an empty shift_state after the car goes to sleep or switches off.
+	LastKnownShiftState string `json:"last_known_shift_state,omitempty"`
+	DoorsOpen           *bool  `json:"doors_open,omitempty"`
+	TrunkOpen           *bool  `json:"trunk_open,omitempty"`
+	FrunkOpen           *bool  `json:"frunk_open,omitempty"`
+	LastSecure          bool   `json:"last_secure"`
+	Initialized         bool   `json:"initialized"`
+	LastPushedAt        string `json:"last_pushed_at,omitempty"`
 }
 
 type lockSecureStore struct {
@@ -330,6 +333,9 @@ func (m *lockSecureNotificationMonitor) observeMessage(carID int, field, raw str
 		state.State = strings.ToLower(normalizedMQTTValue(raw))
 	case "shift_state":
 		state.ShiftState = strings.ToUpper(normalizedMQTTValue(raw))
+		if state.ShiftState != "" {
+			state.LastKnownShiftState = state.ShiftState
+		}
 	case "doors_open":
 		state.DoorsOpen = parseMQTTBool(raw)
 	case "trunk_open":
@@ -478,6 +484,20 @@ func (m *lockSecureNotificationMonitor) fanOutLockSecure(originID string, carID 
 	m.mu.Unlock()
 }
 
+// lockSecureIsParked accepts an explicit P, or an empty (missing) shift_state
+// only when the last non-empty gear the car reported was P. An empty value
+// after D/R/N, or with no gear history at all, is never treated as parked.
+func lockSecureIsParked(state lockSecureCarState) bool {
+	switch state.ShiftState {
+	case "P":
+		return true
+	case "":
+		return state.LastKnownShiftState == "P"
+	default:
+		return false
+	}
+}
+
 func lockSecureIsSecure(state lockSecureCarState) bool {
 	// This is vehicle-reported presence, never proof that every seat is empty.
 	if state.Locked == nil || !*state.Locked || state.UserPresent == nil || *state.UserPresent {
@@ -486,7 +506,7 @@ func lockSecureIsSecure(state lockSecureCarState) bool {
 	if state.State != "online" && state.State != "charging" {
 		return false
 	}
-	if state.ShiftState != "P" {
+	if !lockSecureIsParked(state) {
 		return false
 	}
 	for _, open := range []*bool{state.DoorsOpen, state.TrunkOpen, state.FrunkOpen} {

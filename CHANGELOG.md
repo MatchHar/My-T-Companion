@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.61
+
+- Lock-secure notification stays correct with TeslaMate 4.4.0, which now
+  publishes an empty `shift_state` once the car switches off. An empty value
+  counts as parked only when the last reported gear was `P`; after `D`/`R`/`N`
+  or with no gear history it is never treated as parked. The last known gear
+  is kept in the lock-secure state file.
+
 ## 1.10.60
 
 - Read-only owner road-coverage aggregate
