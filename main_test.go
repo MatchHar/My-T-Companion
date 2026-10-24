@@ -989,6 +989,84 @@ func TestLockSecureInitialRetainedSnapshotEstablishesBaseline(t *testing.T) {
 	}
 }
 
+func newLockSecureShiftTestMonitor(t *testing.T) *lockSecureNotificationMonitor {
+	t.Helper()
+	return &lockSecureNotificationMonitor{
+		statePath: filepath.Join(t.TempDir(), "lock-secure-state.json"),
+		store: lockSecureStore{
+			Cars:      map[int]lockSecureCarState{},
+			Delivered: map[string]string{},
+		},
+		inFlight:       map[string]bool{},
+		prefs:          lockSecurePrefs{Enabled: false, Sound: "default"},
+		paired:         false,
+		installationID: strings.Repeat("a", 48),
+	}
+}
+
+func observeLockSecureClosedCar(monitor *lockSecureNotificationMonitor, at time.Time) {
+	for _, pair := range [][2]string{{"locked", "true"}, {"is_user_present", "false"}, {"state", "online"}, {"doors_open", "false"}, {"trunk_open", "false"}, {"frunk_open", "false"}} {
+		monitor.observeMessage(1, pair[0], pair[1], at, true)
+	}
+}
+
+func TestLockSecureEmptyShiftStateAfterParkIsSecure(t *testing.T) {
+	monitor := newLockSecureShiftTestMonitor(t)
+	at := time.Date(2026, 10, 24, 20, 0, 0, 0, time.UTC)
+	observeLockSecureClosedCar(monitor, at)
+	monitor.observeMessage(1, "shift_state", "P", at, true)
+	if !monitor.store.Cars[1].LastSecure {
+		t.Fatalf("P must be secure: %+v", monitor.store.Cars[1])
+	}
+	monitor.observeMessage(1, "shift_state", "", at.Add(time.Minute), false)
+	state := monitor.store.Cars[1]
+	if state.ShiftState != "" || state.LastKnownShiftState != "P" || !state.LastSecure {
+		t.Fatalf("P -> empty must stay secure: %+v", state)
+	}
+}
+
+func TestLockSecureEmptyShiftStateAfterDriveIsNotSecure(t *testing.T) {
+	monitor := newLockSecureShiftTestMonitor(t)
+	at := time.Date(2026, 10, 24, 20, 0, 0, 0, time.UTC)
+	observeLockSecureClosedCar(monitor, at)
+	monitor.observeMessage(1, "shift_state", "D", at, false)
+	monitor.observeMessage(1, "shift_state", "", at.Add(time.Minute), false)
+	state := monitor.store.Cars[1]
+	if state.LastKnownShiftState != "D" || state.LastSecure {
+		t.Fatalf("D -> empty must not be secure: %+v", state)
+	}
+}
+
+func TestLockSecureEmptyShiftStateWithoutHistoryThenPark(t *testing.T) {
+	monitor := newLockSecureShiftTestMonitor(t)
+	at := time.Date(2026, 10, 24, 20, 0, 0, 0, time.UTC)
+	observeLockSecureClosedCar(monitor, at)
+	monitor.observeMessage(1, "shift_state", "", at, true)
+	if monitor.store.Cars[1].LastSecure {
+		t.Fatalf("empty without gear history must not be secure: %+v", monitor.store.Cars[1])
+	}
+	monitor.observeMessage(1, "shift_state", "p", at.Add(time.Minute), false)
+	state := monitor.store.Cars[1]
+	if state.ShiftState != "P" || state.LastKnownShiftState != "P" || !state.LastSecure {
+		t.Fatalf("empty -> P must be secure: %+v", state)
+	}
+}
+
+func TestLockSecureIsParkedMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		shift, last string
+		want        bool
+	}{
+		{"P", "", true}, {"P", "D", true}, {"", "P", true},
+		{"", "", false}, {"", "D", false}, {"", "R", false}, {"", "N", false},
+		{"D", "P", false}, {"R", "P", false}, {"N", "P", false},
+	} {
+		if got := lockSecureIsParked(lockSecureCarState{ShiftState: tc.shift, LastKnownShiftState: tc.last}); got != tc.want {
+			t.Errorf("shift=%q last=%q got %v want %v", tc.shift, tc.last, got, tc.want)
+		}
+	}
+}
+
 func TestLockSecureSoundWhitelistMatchesAdvertisedSet(t *testing.T) {
 	want := []string{
 		"none",
