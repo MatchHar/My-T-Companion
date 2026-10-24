@@ -1,0 +1,45 @@
+name: Companion disposable lifecycle
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/companion-lifecycle.yml
+      - scripts/test-real-lifecycle.sh
+      - docs/disposable-lifecycle.md
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/companion-lifecycle.yml
+      - scripts/test-real-lifecycle.sh
+      - docs/disposable-lifecycle.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: companion-lifecycle-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  real-installer-lifecycle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate script syntax
+        run: bash -n scripts/test-real-lifecycle.sh
+      - name: Run real installers on this disposable runner only
+        env:
+          MYT_DISPOSABLE_LIFECYCLE: "1"
+          MYT_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          GH_TOKEN: ${{ github.token }}
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_OS,RUNNER_TEMP,MYT_DISPOSABLE_LIFECYCLE,MYT_RUNNER_ENVIRONMENT,GH_TOKEN bash scripts/test-real-lifecycle.sh
+      - name: Retain synthetic lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: companion-disposable-lifecycle
+          path: ${{ runner.temp }}/myt-lifecycle-logs/
+          if-no-files-found: warn
+          retention-days: 7
