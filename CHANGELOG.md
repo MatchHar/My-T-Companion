@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.62
+
+- Low-battery alert stays correct with TeslaMate 4.4.0 empty topics. An empty
+  `battery_level`, `state` or `charging_state` is treated as unknown: the last
+  known value and the baseline are kept, so 50% -> empty -> 19% still alerts
+  once. An empty first value never creates an alert. Empty `shift_state` is
+  unchanged (parked).
+
 ## 1.10.61
 
 - Lock-secure notification stays correct with TeslaMate 4.4.0, which now

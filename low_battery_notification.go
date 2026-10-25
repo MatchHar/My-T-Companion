@@ -257,6 +257,14 @@ func (m *lowBatteryNotificationMonitor) observeMessage(carID int, field, raw str
 	if state.Actions == nil {
 		state.Actions = map[string]lowBatteryActionState{}
 	}
+	if raw == "" && (field == "battery_level" || field == "state" || field == "charging_state") {
+		// TeslaMate 4.4.0 publishes empty payloads for unknown values. Unknown
+		// is not a new observation: keep the last known value and baseline so a
+		// later live drop (50 -> empty -> 19) still alerts. Empty shift_state
+		// keeps its parked meaning and is handled below.
+		m.mu.Unlock()
+		return
+	}
 	switch field {
 	case "display_name":
 		state.DisplayName = collapsedDisplayName(raw)
