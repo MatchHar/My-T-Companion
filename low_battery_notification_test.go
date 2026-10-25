@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -241,5 +242,48 @@ func TestLowBatteryChargingCancelsPendingSnooze(t *testing.T) {
 	monitor.processDueReminders(now.Add(5 * time.Hour))
 	if len(*captured) != 1 {
 		t.Fatalf("charging must cancel the reminder, got %+v", *captured)
+	}
+}
+
+func TestLowBatteryEmptyPayloadKeepsBaselineForLaterLiveDrop(t *testing.T) {
+	for _, field := range []string{"battery_level", "state", "charging_state"} {
+		for _, retained := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/retained=%v", field, retained), func(t *testing.T) {
+				monitor, captured := newLowBatteryTestMonitor(t, 1)
+				now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+				step := func(f, v string, at time.Time, r bool) {
+					monitor.observeMessage(1, f, v, at, r)
+					monitor.mu.Lock()
+					for id, timer := range monitor.timers {
+						timer.Stop()
+						delete(monitor.timers, id)
+					}
+					monitor.mu.Unlock()
+					monitor.evaluate(1, at)
+				}
+				for _, pair := range [][2]string{{"state", "asleep"}, {"shift_state", "P"}, {"charging_state", "Disconnected"}, {"battery_level", "50"}} {
+					step(pair[0], pair[1], now, false)
+				}
+				step(field, "", now.Add(time.Minute), retained)
+				step("battery_level", "19", now.Add(2*time.Minute), false)
+				if len(*captured) != 1 || (*captured)[0].Type != "vehicle_low_battery" || (*captured)[0].BatteryLevel != 19 {
+					t.Fatalf("50 -> empty %s -> 19 should alert once, got %+v", field, *captured)
+				}
+			})
+		}
+	}
+}
+
+func TestLowBatteryEmptyLevelBeforeAnyBaselineNeverAlerts(t *testing.T) {
+	monitor, captured := newLowBatteryTestMonitor(t, 1)
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	for _, pair := range [][2]string{{"state", "asleep"}, {"shift_state", "P"}, {"charging_state", "Disconnected"}, {"battery_level", ""}} {
+		monitor.observeMessage(1, pair[0], pair[1], now, false)
+	}
+	monitor.evaluate(1, now)
+	monitor.observeMessage(1, "battery_level", "15", now.Add(time.Minute), false)
+	monitor.evaluate(1, now.Add(time.Minute))
+	if len(*captured) != 0 {
+		t.Fatalf("first real level after empty must be a baseline only, got %+v", *captured)
 	}
 }
