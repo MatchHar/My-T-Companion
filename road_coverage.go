@@ -8,13 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"time"
 )
 
 // Road coverage ("足跡地圖") is a read-only aggregate of TeslaMate drive
-// positions. Raw positions never leave the server: trails are decimated to
-// roughly one point per roadCoverageSpacingM metres, and visit heat is counted
+// positions. Only reduced track geometry is returned: trajectories preserve bends
+// with bounded simplification error and never bridge gaps, and visit heat is counted
 // per ~200 m grid cell as the number of distinct drives touching that cell.
 const (
 	roadCoverageCapability   = "road_coverage_v1"
@@ -51,19 +52,24 @@ type roadCoverageCity struct {
 }
 
 type roadCoverageData struct {
-	CarID      int                 `json:"car_id"`
-	From       *time.Time          `json:"from"`
-	To         *time.Time          `json:"to"`
-	CellMeters float64             `json:"cell_m"`
-	DriveCount int                 `json:"drive_count"`
-	DistanceKM float64             `json:"distance_km"`
-	FirstDrive *time.Time          `json:"first_drive_at"`
-	LastDrive  *time.Time          `json:"last_drive_at"`
-	Cells      []roadCoverageCell  `json:"cells"`
-	Trails     []roadCoverageTrail `json:"trails"`
-	Cities     []roadCoverageCity  `json:"cities"`
-	Anchors    []roadCoverageCell  `json:"private_anchors"`
-	Truncated  bool                `json:"truncated"`
+	GeometryIncluded        bool                `json:"geometry_included"`
+	Passport                *roadPassportData   `json:"passport,omitempty"`
+	CarID                   int                 `json:"car_id"`
+	From                    *time.Time          `json:"from"`
+	To                      *time.Time          `json:"to"`
+	CellMeters              float64             `json:"cell_m"`
+	DriveCount              int                 `json:"drive_count"`
+	DistanceKM              float64             `json:"distance_km"`
+	FirstDrive              *time.Time          `json:"first_drive_at"`
+	LastDrive               *time.Time          `json:"last_drive_at"`
+	Cells                   []roadCoverageCell  `json:"cells"`
+	Trails                  []roadCoverageTrail `json:"trails"`
+	Cities                  []roadCoverageCity  `json:"cities"`
+	Anchors                 []roadCoverageCell  `json:"private_anchors"`
+	Truncated               bool                `json:"truncated"`
+	OmittedTrails           int                 `json:"omitted_trails"`
+	PrivacyAnchorsAvailable bool                `json:"privacy_anchors_available"`
+	CitiesAvailable         bool                `json:"cities_available"`
 }
 
 type roadCellKey struct{ Y, X int64 }
@@ -94,80 +100,205 @@ func haversineM(lat1, lon1, lat2, lon2 float64) float64 {
 
 func round5(v float64) float64 { return math.Round(v*1e5) / 1e5 }
 
-// buildRoadCoverage expects points ordered by drive then time.
-func buildRoadCoverage(points []roadCoveragePoint, cellM, spacingM float64, maxPoints int) ([]roadCoverageCell, []roadCoverageTrail, bool) {
-	visits := map[roadCellKey]int{}
-	seen := map[roadCellKey]int64{}
-	type raw struct {
-		drive int64
-		pts   [][2]float64
-		cells []roadCellKey
+// Input is streamed in drive/time order. Only one bounded raw chunk is kept;
+// retained geometry has a strict global point budget. Gaps never become bridges.
+type roadCoverageBuilder struct {
+	countOnly                 bool
+	cellM, spacingM           float64
+	maxPoints, totalPoints    int
+	visits                    map[roadCellKey]int
+	seen                      map[roadCellKey]int64
+	trails                    []roadCoverageTrail
+	current, pending          []roadCoveragePoint
+	drive                     int64
+	haveDrive, haveLast       bool
+	last                      roadCoveragePoint
+	lastAt                    time.Time
+	chunkLength               float64
+	truncated, omittedCurrent bool
+	omitted                   int
+}
+
+func newRoadCoverageBuilder(cellM, spacingM float64, maxPoints int) *roadCoverageBuilder {
+	return &roadCoverageBuilder{cellM: cellM, spacingM: spacingM, maxPoints: maxPoints,
+		visits: map[roadCellKey]int{}, seen: map[roadCellKey]int64{}}
+}
+
+func (b *roadCoverageBuilder) add(p roadCoveragePoint, at time.Time) {
+	if !validRoadPoint(p.Lat, p.Lon) {
+		b.finishSegment()
+		b.haveLast = false
+		return
 	}
-	var drives []raw
-	var cur *raw
-	var lastLat, lastLon float64
+	if !b.haveDrive || b.drive != p.DriveID {
+		b.finishSegment()
+		b.drive = p.DriveID
+		b.haveDrive = true
+		b.haveLast = false
+	}
+	p.Lat, p.Lon = round5(p.Lat), round5(p.Lon)
+	k := roadCellFor(p.Lat, p.Lon, b.cellM)
+	if b.seen[k] != p.DriveID+1 {
+		b.seen[k] = p.DriveID + 1
+		b.visits[k]++
+	}
+	if b.countOnly {
+		return
+	}
+	if b.haveLast {
+		distance := haversineM(b.last.Lat, b.last.Lon, p.Lat, p.Lon)
+		gap := !at.IsZero() && !b.lastAt.IsZero() && (at.Sub(b.lastAt) > 2*time.Minute || at.Before(b.lastAt))
+		if gap || distance > 5000 {
+			b.finishSegment()
+			b.haveLast = false
+		} else if distance < 0.25 {
+			b.lastAt = at
+			return
+		} else {
+			b.chunkLength += distance
+		}
+	}
+	b.pending = append(b.pending, p)
+	if len(b.pending) >= 4096 || b.chunkLength >= 1000 {
+		b.flushChunk()
+		b.pending = []roadCoveragePoint{p}
+		b.chunkLength = 0
+	}
+	b.last, b.lastAt, b.haveLast = p, at, true
+}
+
+func (b *roadCoverageBuilder) flushChunk() {
+	if len(b.pending) == 0 {
+		return
+	}
+	epsilon := math.Min(10, b.spacingM/6)
+	if epsilon <= 0 {
+		epsilon = 10
+	}
+	points := simplifyRoadPoints(b.pending, epsilon)
 	for _, p := range points {
-		if !validRoadPoint(p.Lat, p.Lon) {
-			continue
-		}
-		k := roadCellFor(p.Lat, p.Lon, cellM)
-		if seen[k] != p.DriveID+1 {
-			seen[k] = p.DriveID + 1
-			visits[k]++
-		}
-		if cur == nil || cur.drive != p.DriveID {
-			drives = append(drives, raw{drive: p.DriveID})
-			cur = &drives[len(drives)-1]
-			cur.pts = append(cur.pts, [2]float64{round5(p.Lat), round5(p.Lon)})
-			cur.cells = append(cur.cells, k)
-			lastLat, lastLon = p.Lat, p.Lon
-			continue
-		}
-		if haversineM(lastLat, lastLon, p.Lat, p.Lon) >= spacingM {
-			cur.pts = append(cur.pts, [2]float64{round5(p.Lat), round5(p.Lon)})
-			cur.cells = append(cur.cells, k)
-			lastLat, lastLon = p.Lat, p.Lon
-		}
-	}
-	total := 0
-	for _, d := range drives {
-		total += len(d.pts)
-	}
-	stride, truncated := 1, false
-	if maxPoints > 0 && total > maxPoints {
-		stride = int(math.Ceil(float64(total) / float64(maxPoints)))
-		truncated = true
-	}
-	trails := make([]roadCoverageTrail, 0, len(drives))
-	for _, d := range drives {
-		t := roadCoverageTrail{DriveID: d.drive, Mode: "unknown", Points: [][2]float64{}, Heat: []int{}}
-		for i := range d.pts {
-			if i%stride != 0 && i != len(d.pts)-1 {
+		if len(b.current) > 0 {
+			last := b.current[len(b.current)-1]
+			if last.Lat == p.Lat && last.Lon == p.Lon {
 				continue
 			}
-			t.Points = append(t.Points, d.pts[i])
-			t.Heat = append(t.Heat, visits[d.cells[i]])
 		}
-		if len(t.Points) >= 2 {
-			trails = append(trails, t)
+		if b.maxPoints > 0 && b.totalPoints >= b.maxPoints {
+			b.truncated, b.omittedCurrent = true, true
+			continue
+		}
+		b.current = append(b.current, p)
+		b.totalPoints++
+	}
+	b.pending = nil
+}
+
+func (b *roadCoverageBuilder) finishSegment() {
+	b.flushChunk()
+	if len(b.current) >= 2 {
+		t := roadCoverageTrail{DriveID: b.drive, Mode: "unknown", Points: make([][2]float64, 0, len(b.current))}
+		for _, p := range b.current {
+			t.Points = append(t.Points, [2]float64{p.Lat, p.Lon})
+		}
+		b.trails = append(b.trails, t)
+	} else {
+		b.totalPoints -= len(b.current)
+	}
+	if b.omittedCurrent {
+		b.omitted++
+	}
+	b.current, b.pending = nil, nil
+	b.chunkLength = 0
+	b.omittedCurrent = false
+}
+
+func (b *roadCoverageBuilder) finish() ([]roadCoverageCell, []roadCoverageTrail, bool) {
+	b.finishSegment()
+	for i := range b.trails {
+		t := &b.trails[i]
+		t.Heat = make([]int, len(t.Points))
+		for j, p := range t.Points {
+			t.Heat[j] = b.visits[roadCellFor(p[0], p[1], b.cellM)]
 		}
 	}
-	cells := make([]roadCoverageCell, 0, len(visits))
-	for k, v := range visits {
-		lat, lon := roadCellCenter(k, cellM)
+	cells := make([]roadCoverageCell, 0, len(b.visits))
+	for k, v := range b.visits {
+		lat, lon := roadCellCenter(k, b.cellM)
 		cells = append(cells, roadCoverageCell{Lat: round5(lat), Lon: round5(lon), Visits: v})
 	}
 	sortRoadCells(cells)
-	return cells, trails, truncated
+	if b.trails == nil {
+		b.trails = []roadCoverageTrail{}
+	}
+	return cells, b.trails, b.truncated
+}
+
+// Ramer-Douglas-Peucker on <=1 km chunks: preserve first/last points and bends
+// within ten metres. Budget exhaustion omits geometry instead of drawing shortcuts.
+func simplifyRoadPoints(points []roadCoveragePoint, epsilon float64) []roadCoveragePoint {
+	if len(points) < 3 {
+		return points
+	}
+	keep := make([]bool, len(points))
+	keep[0], keep[len(points)-1] = true, true
+	type interval struct{ lo, hi int }
+	stack := []interval{{0, len(points) - 1}}
+	for len(stack) > 0 {
+		r := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		maximum, chosen := epsilon, -1
+		for i := r.lo + 1; i < r.hi; i++ {
+			if d := roadSegmentDistance(points[i], points[r.lo], points[r.hi]); d > maximum {
+				maximum, chosen = d, i
+			}
+		}
+		if chosen >= 0 {
+			keep[chosen] = true
+			stack = append(stack, interval{r.lo, chosen}, interval{chosen, r.hi})
+		}
+	}
+	result := make([]roadCoveragePoint, 0, len(points))
+	for i, p := range points {
+		if keep[i] {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func roadSegmentDistance(p, a, b roadCoveragePoint) float64 {
+	wrap := func(v float64) float64 {
+		if v > 180 {
+			return v - 360
+		}
+		if v < -180 {
+			return v + 360
+		}
+		return v
+	}
+	xScale := 111320 * math.Cos((a.Lat+b.Lat)*math.Pi/360)
+	px, py := wrap(p.Lon-a.Lon)*xScale, (p.Lat-a.Lat)*111320
+	bx, by := wrap(b.Lon-a.Lon)*xScale, (b.Lat-a.Lat)*111320
+	den := bx*bx + by*by
+	if den < 1e-9 {
+		return math.Hypot(px, py)
+	}
+	t := math.Max(0, math.Min(1, (px*bx+py*by)/den))
+	return math.Hypot(px-t*bx, py-t*by)
+}
+
+// Compatibility helper for deterministic tests. Production feeds the builder
+// directly from rows rather than first materializing all raw positions.
+func buildRoadCoverage(points []roadCoveragePoint, cellM, spacingM float64, maxPoints int) ([]roadCoverageCell, []roadCoverageTrail, bool) {
+	b := newRoadCoverageBuilder(cellM, spacingM, maxPoints)
+	for _, p := range points {
+		b.add(p, time.Time{})
+	}
+	return b.finish()
 }
 
 func sortRoadCells(cells []roadCoverageCell) {
-	// Deterministic output: most visited first, then by position.
-	for i := 1; i < len(cells); i++ {
-		for j := i; j > 0 && roadCellLess(cells[j], cells[j-1]); j-- {
-			cells[j], cells[j-1] = cells[j-1], cells[j]
-		}
-	}
+	sort.Slice(cells, func(i, j int) bool { return roadCellLess(cells[i], cells[j]) })
 }
 
 func roadCellLess(a, b roadCoverageCell) bool {
@@ -188,8 +319,9 @@ func validRoadPoint(lat, lon float64) bool {
 }
 
 type roadCoverageRequest struct {
-	CarID    int
-	From, To *time.Time
+	PassportOnly bool
+	CarID        int
+	From, To     *time.Time
 }
 
 func parseRoadCoverageRequest(car string, values url.Values) (roadCoverageRequest, error) {
@@ -199,6 +331,14 @@ func parseRoadCoverageRequest(car string, values url.Values) (roadCoverageReques
 		return q, errors.New("Invalid car id")
 	}
 	q.CarID = int(id)
+	switch values.Get("view") {
+	case "":
+	case "passport":
+		q.PassportOnly = true
+	default:
+		return q, errors.New("Invalid view")
+	}
+
 	for name, dst := range map[string]**time.Time{"from": &q.From, "to": &q.To} {
 		if raw := values.Get(name); raw != "" {
 			t, err := time.Parse(time.RFC3339, raw)
@@ -225,7 +365,7 @@ func nullableTime(t *time.Time) any {
 }
 
 func fetchRoadCoverage(ctx context.Context, database *sql.DB, q roadCoverageRequest) (roadCoverageData, error) {
-	data := roadCoverageData{CarID: q.CarID, From: q.From, To: q.To, CellMeters: roadCoverageCellM,
+	data := roadCoverageData{GeometryIncluded: !q.PassportOnly, CarID: q.CarID, From: q.From, To: q.To, CellMeters: roadCoverageCellM,
 		Cells: []roadCoverageCell{}, Trails: []roadCoverageTrail{}, Cities: []roadCoverageCity{}, Anchors: []roadCoverageCell{}}
 	if database == nil {
 		return data, errors.New("database unavailable")
@@ -253,45 +393,71 @@ func fetchRoadCoverage(ctx context.Context, database *sql.DB, q roadCoverageRequ
 		l := last.Time.UTC()
 		data.LastDrive = &l
 	}
-	rows, err := database.QueryContext(ctx, `SELECT p.drive_id, p.latitude::float8, p.longitude::float8 FROM positions p JOIN drives d ON d.id = p.drive_id WHERE d.car_id = $1`+roadCoverageRangeSQL+` AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL ORDER BY p.drive_id, p.date, p.id`, args...)
+	rows, err := database.QueryContext(ctx, `SELECT p.drive_id, p.latitude::float8, p.longitude::float8, p.date FROM positions p JOIN drives d ON d.id = p.drive_id WHERE d.car_id = $1`+roadCoverageRangeSQL+` ORDER BY p.drive_id DESC, p.date, p.id`, args...)
 	if err != nil {
 		return data, tireHistorySchemaError(err)
 	}
-	var points []roadCoveragePoint
+	builder := newRoadCoverageBuilder(roadCoverageCellM, roadCoverageSpacingM, roadCoverageMaxPoints)
+	builder.countOnly = q.PassportOnly
+	n := 0
 	for rows.Next() {
 		var p roadCoveragePoint
-		if err := rows.Scan(&p.DriveID, &p.Lat, &p.Lon); err != nil {
+		var at time.Time
+		var lat, lon sql.NullFloat64
+		n++
+		if n%256 == 0 {
+			if err := ctx.Err(); err != nil {
+				rows.Close()
+				return data, err
+			}
+		}
+		if err := rows.Scan(&p.DriveID, &lat, &lon, &at); err != nil {
 			rows.Close()
 			return data, err
 		}
-		points = append(points, p)
+		if lat.Valid && lon.Valid {
+			p.Lat, p.Lon = lat.Float64, lon.Float64
+		} else {
+			p.Lat, p.Lon = math.NaN(), math.NaN()
+		}
+		builder.add(p, at)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return data, err
 	}
-	data.Cells, data.Trails, data.Truncated = buildRoadCoverage(points, roadCoverageCellM, roadCoverageSpacingM, roadCoverageMaxPoints)
+	data.Cells, data.Trails, data.Truncated = builder.finish()
+	data.OmittedTrails = builder.omitted
+	data.Passport = fetchRoadPassport(ctx, database, q)
 
 	cityRows, err := database.QueryContext(ctx, `SELECT a.city, count(DISTINCT d.id) FROM drives d JOIN addresses a ON a.id IN (d.start_address_id, d.end_address_id) WHERE d.car_id = $1`+roadCoverageRangeSQL+` AND a.city IS NOT NULL AND a.city <> '' GROUP BY a.city ORDER BY 2 DESC, 1 LIMIT 100`, args...)
 	if err == nil {
+		scanned := true
 		for cityRows.Next() {
 			var c roadCoverageCity
 			if cityRows.Scan(&c.City, &c.Drives) == nil {
 				data.Cities = append(data.Cities, c)
+			} else {
+				scanned = false
 			}
 		}
+		data.CitiesAvailable = scanned && cityRows.Err() == nil && len(data.Cities) < 100
 		cityRows.Close()
 	}
 	// Frequent drive endpoints (home/work) at ~100 m precision so share images
 	// can blur them. Only endpoints used repeatedly are reported.
 	anchorRows, err := database.QueryContext(ctx, `SELECT round(p.latitude::numeric, 3)::float8, round(p.longitude::numeric, 3)::float8, count(*) FROM drives d JOIN positions p ON p.id IN (d.start_position_id, d.end_position_id) WHERE d.car_id = $1`+roadCoverageRangeSQL+` GROUP BY 1, 2 HAVING count(*) >= `+strconv.Itoa(roadCoverageAnchorMin)+` ORDER BY 3 DESC LIMIT 4`, args...)
 	if err == nil {
+		scanned := true
 		for anchorRows.Next() {
 			var c roadCoverageCell
 			if anchorRows.Scan(&c.Lat, &c.Lon, &c.Visits) == nil {
 				data.Anchors = append(data.Anchors, c)
+			} else {
+				scanned = false
 			}
 		}
+		data.PrivacyAnchorsAvailable = scanned && anchorRows.Err() == nil
 		anchorRows.Close()
 	}
 	return data, nil
