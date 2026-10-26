@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"net/url"
 	"testing"
@@ -209,11 +210,11 @@ INSERT INTO positions(id,car_id,drive_id,date,latitude,longitude) VALUES
 	if err != nil {
 		t.Fatal(err)
 	}
-	if all.DriveCount != 3 || all.DistanceKM != 60 || len(all.Trails) != 3 || !all.PrivacyAnchorsAvailable || !all.CitiesAvailable || len(all.Cities) != 2 || len(all.Anchors) == 0 {
+	if !all.CellsComplete || all.DriveCount != 3 || all.DistanceKM != 60 || len(all.Trails) != 3 || !all.PrivacyAnchorsAvailable || !all.CitiesAvailable || len(all.Cities) != 2 || len(all.Anchors) == 0 {
 		t.Fatalf("actual SQL/scanner result=%+v", all)
 	}
 	light, err := fetchRoadCoverage(context.Background(), database, roadCoverageRequest{CarID: 1, PassportOnly: true})
-	if err != nil || light.GeometryIncluded || len(light.Trails) != 0 || light.Truncated || light.OmittedTrails != 0 {
+	if err != nil || !light.CellsComplete || light.GeometryIncluded || len(light.Trails) != 0 || light.Truncated || light.OmittedTrails != 0 {
 		t.Fatalf("lightweight result=%+v %v", light, err)
 	}
 	if light.DriveCount != all.DriveCount || light.DistanceKM != all.DistanceKM || len(light.Cells) != len(all.Cells) {
@@ -252,5 +253,24 @@ func TestRoadCoveragePassportViewRequest(t *testing.T) {
 	}
 	if _, err := parseRoadCoverageRequest("1", url.Values{"view": {"other"}}); err == nil {
 		t.Fatal("unknown view silently accepted")
+	}
+}
+
+func TestRoadCoverageCellCompletenessIsExplicitAndIndependentOfRouteOmission(t *testing.T) {
+	unknown := roadCoverageData{}
+	if unknown.CellsComplete {
+		t.Fatal("unread grid cannot be complete")
+	}
+	complete := roadCoverageData{CellsComplete: true, Truncated: true, OmittedTrails: 12}
+	data, err := json.Marshal(complete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err = json.Unmarshal(data, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["cells_complete"] != true || wire["truncated"] != true {
+		t.Fatal("grid completeness must not be inferred from route truncation", wire)
 	}
 }

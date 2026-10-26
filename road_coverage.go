@@ -52,6 +52,7 @@ type roadCoverageCity struct {
 }
 
 type roadCoverageData struct {
+	CellsComplete           bool                `json:"cells_complete"`
 	GeometryIncluded        bool                `json:"geometry_included"`
 	Passport                *roadPassportData   `json:"passport,omitempty"`
 	CarID                   int                 `json:"car_id"`
@@ -427,6 +428,9 @@ func fetchRoadCoverage(ctx context.Context, database *sql.DB, q roadCoverageRequ
 		return data, err
 	}
 	data.Cells, data.Trails, data.Truncated = builder.finish()
+	// Reaching EOF without scan/context error confirms the full footprint grid.
+	// Route simplification/omission is a separate visualization concern.
+	data.CellsComplete = true
 	data.OmittedTrails = builder.omitted
 	data.Passport = fetchRoadPassport(ctx, database, q)
 
