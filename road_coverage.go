@@ -320,9 +320,10 @@ func validRoadPoint(lat, lon float64) bool {
 }
 
 type roadCoverageRequest struct {
-	PassportOnly bool
-	CarID        int
-	From, To     *time.Time
+	PassportOnly             bool
+	IncludePassportPositions bool
+	CarID                    int
+	From, To                 *time.Time
 }
 
 func parseRoadCoverageRequest(car string, values url.Values) (roadCoverageRequest, error) {
@@ -332,6 +333,13 @@ func parseRoadCoverageRequest(car string, values url.Values) (roadCoverageReques
 		return q, errors.New("Invalid car id")
 	}
 	q.CarID = int(id)
+	switch values.Get("passport_positions") {
+	case "":
+	case "1":
+		q.IncludePassportPositions = true
+	default:
+		return q, errors.New("Invalid passport_positions")
+	}
 	switch values.Get("view") {
 	case "":
 	case "passport":
@@ -394,11 +402,12 @@ func fetchRoadCoverage(ctx context.Context, database *sql.DB, q roadCoverageRequ
 		l := last.Time.UTC()
 		data.LastDrive = &l
 	}
-	rows, err := database.QueryContext(ctx, `SELECT p.drive_id, p.latitude::float8, p.longitude::float8, p.date FROM positions p JOIN drives d ON d.id = p.drive_id WHERE d.car_id = $1`+roadCoverageRangeSQL+` ORDER BY p.drive_id DESC, p.date, p.id`, args...)
+	rows, err := database.QueryContext(ctx, `SELECT p.drive_id, p.latitude::float8, p.longitude::float8, p.date FROM positions p JOIN drives d ON d.id = p.drive_id AND p.car_id = d.car_id WHERE d.car_id = $1`+roadCoverageRangeSQL+` ORDER BY p.drive_id DESC, p.date, p.id`, args...)
 	if err != nil {
 		return data, tireHistorySchemaError(err)
 	}
 	builder := newRoadCoverageBuilder(roadCoverageCellM, roadCoverageSpacingM, roadCoverageMaxPoints)
+	positionSamples := newPassportPositionSampler()
 	builder.countOnly = q.PassportOnly
 	n := 0
 	for rows.Next() {
@@ -422,6 +431,9 @@ func fetchRoadCoverage(ctx context.Context, database *sql.DB, q roadCoverageRequ
 			p.Lat, p.Lon = math.NaN(), math.NaN()
 		}
 		builder.add(p, at)
+		if q.IncludePassportPositions {
+			positionSamples.add(p, at)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -433,6 +445,11 @@ func fetchRoadCoverage(ctx context.Context, database *sql.DB, q roadCoverageRequ
 	data.CellsComplete = true
 	data.OmittedTrails = builder.omitted
 	data.Passport = fetchRoadPassport(ctx, database, q)
+	if data.Passport != nil && q.IncludePassportPositions {
+		data.Passport.PositionBasis = "timestamped_gps_samples_v1"
+		data.Passport.PositionSamples = positionSamples.samples
+		data.Passport.PositionSamplesComplete = positionSamples.complete
+	}
 
 	cityRows, err := database.QueryContext(ctx, `SELECT a.city, count(DISTINCT d.id) FROM drives d JOIN addresses a ON a.id IN (d.start_address_id, d.end_address_id) WHERE d.car_id = $1`+roadCoverageRangeSQL+` AND a.city IS NOT NULL AND a.city <> '' GROUP BY a.city ORDER BY 2 DESC, 1 LIMIT 100`, args...)
 	if err == nil {

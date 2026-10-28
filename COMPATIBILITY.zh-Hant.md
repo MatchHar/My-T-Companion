@@ -18,6 +18,10 @@ POST `/invitations` 因獨立唯讀連線池用了 `postgres:?host=...` 連不�
 `/api/v1/friend-together/*`。不需要遷移資料庫、配對、Tesla 權杖、通知偏好或
 既有歷史，並繼續相容現有 My T 用戶端。
 
+## 1.10.65 的足跡停車及 GPS 證據
+
+擁有者認證的 `road_parking_v1` 批次讀取已保存行程邊界，不更改 TeslaMate 結構、通知設定或配對，也不請求車輛。新顯示需要相容 My T 8.05 Build796 或之後；此處發布不代表公開 App Store 已上架。可選 GPS 證據只在樣本完整且有已核對市界時確認途經城市；缺失或不支援的資料維持未知。舊用戶端不受影響。見[唯讀介面說明](ROAD_PARKING_API.md)。使用既有驗證更新器或獨立簽名 HostBox 目錄更新，並保留上一份已驗證版本以便回退。
+
 ## 1.10.51 胎壓歷史
 
 選用胎壓歷史介面讀取 TeslaMate 既有的 `positions` 紀錄。所需欄位已在

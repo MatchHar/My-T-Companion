@@ -25,6 +25,10 @@ and the owner `/api/v1/friend-together/*` matcher. It requires no database,
 pairing, Tesla token, notification-preference, or stored-history migration and
 remains compatible with existing My T clients.
 
+## Footprint parking and GPS evidence in 1.10.65
+
+Owner-authenticated `road_parking_v1` reads saved drive boundaries in batches. It does not change TeslaMate schema, notification settings or pairing, and sends no vehicle requests. A compatible My T 8.05 build796 or later is required for the new displays; publication here is not public App Store availability. Opt-in GPS evidence only qualifies a traversed city with a verified boundary and complete samples. Incomplete or unsupported data remains unknown. Existing clients are unchanged. See [the read-only API contract](ROAD_PARKING_API.md). Upgrade through the existing verified updater or the separately signed HostBox catalog, retaining the previous verified release for rollback.
+
 ## Tire-pressure history in 1.10.51
 
 The optional tire-history API reads existing TeslaMate `positions` records. Its

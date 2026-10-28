@@ -14,7 +14,7 @@ const ownerAPIPrefix = "/api/companion/v1/"
 
 type ownerAuthenticationContextKey struct{}
 
-var ownerResourcePath = regexp.MustCompile(`^(capabilities|notifications/(software-update/(status|pair)|charging-live-activity/status|navigation-live-activity/status|lock-secure|low-battery/action)|cars/[0-9]+/(states|parking-events|companion-status|charging-settings-sync|tire-pressure-history|road-coverage|navigation/(current-drive|push-history))|eta-shares|eta-shares/[0-9a-f]{16}/revoke|friend-together/(status|invitations|grants|invitations/[^/]+/(cancel|requests)|requests/[^/]+/(approve|reject)|grants/[^/]+/(revoke|restrict)))$`)
+var ownerResourcePath = regexp.MustCompile(`^(capabilities|notifications/(software-update/(status|pair)|charging-live-activity/status|navigation-live-activity/status|lock-secure|low-battery/action)|cars/[0-9]+/(states|parking-events|companion-status|charging-settings-sync|tire-pressure-history|road-coverage|road-parking|navigation/(current-drive|push-history))|eta-shares|eta-shares/[0-9a-f]{16}/revoke|friend-together/(status|invitations|grants|invitations/[^/]+/(cancel|requests)|requests/[^/]+/(approve|reject)|grants/[^/]+/(revoke|restrict)))$`)
 
 // The old addresses are temporary same-handler aliases during client cutover.
 // Rewriting is internal only: no redirect, second HTTP request, new authority,

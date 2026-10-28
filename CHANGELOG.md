@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.65
+
+- Add authenticated, bounded footprint parking places/history and opt-in timestamped GPS samples. Preserve unknown time, vehicle/range separation, existing response compatibility and database schema. See localized release notes and ROAD_PARKING_API.md.
+
 ## 1.10.62
 
 - Low-battery alert stays correct with TeslaMate 4.4.0 empty topics. An empty

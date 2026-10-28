@@ -7,6 +7,25 @@ import (
 	"time"
 )
 
+func TestPassportPositionSamplesKeepActualPointTimeAndBound(t *testing.T) {
+	s := newPassportPositionSampler()
+	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	p := roadCoveragePoint{DriveID: 7, Lat: 43.123456, Lon: -79.123456}
+	s.add(p, at)
+	s.add(p, at.Add(time.Hour))
+	p.DriveID = 8
+	s.add(p, at.Add(2*time.Hour))
+	if len(s.samples) != 2 || s.samples[0].Point[0] != 43.123456 || !s.samples[0].At.Equal(at) {
+		t.Fatal("sample rounded to centroid, lost identity, or fabricated time")
+	}
+	for i := 0; i < 50010; i++ {
+		s.add(roadCoveragePoint{DriveID: int64(i + 100), Lat: 43, Lon: -79}, at)
+	}
+	if len(s.samples) != 50000 || s.complete {
+		t.Fatal("unbounded samples or hidden truncation")
+	}
+}
+
 func TestPassportUsesAdministrativeIdentityAndDistinctDrives(t *testing.T) {
 	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	km := 12.0

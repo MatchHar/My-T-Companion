@@ -32,12 +32,49 @@ type roadPassportRegion struct {
 	// Region area is deliberately absent: endpoints cannot establish admin borders.
 }
 type roadPassportData struct {
-	Version   int                  `json:"version"`
-	Basis     string               `json:"basis"`
-	Complete  bool                 `json:"complete"`
-	LongestKM *float64             `json:"longest_drive_km,omitempty"`
-	Regions   []roadPassportRegion `json:"regions"`
+	Version                 int                    `json:"version"`
+	Basis                   string                 `json:"basis"`
+	Complete                bool                   `json:"complete"`
+	LongestKM               *float64               `json:"longest_drive_km,omitempty"`
+	Regions                 []roadPassportRegion   `json:"regions"`
+	PositionBasis           string                 `json:"position_basis,omitempty"`
+	PositionSamples         []roadPassportPosition `json:"position_samples,omitempty"`
+	PositionSamplesComplete bool                   `json:"position_samples_complete"`
 }
+
+// These are actual saved positions and timestamps, never cell centroids. The
+// client may qualify a region only against its independently verified boundary.
+type roadPassportPosition struct {
+	DriveID int64      `json:"drive_id"`
+	At      time.Time  `json:"at"`
+	Point   [2]float64 `json:"point"`
+}
+type roadPassportPositionSampler struct {
+	seen     map[string]bool
+	samples  []roadPassportPosition
+	complete bool
+}
+
+func newPassportPositionSampler() *roadPassportPositionSampler {
+	return &roadPassportPositionSampler{seen: map[string]bool{}, complete: true}
+}
+func (s *roadPassportPositionSampler) add(p roadCoveragePoint, at time.Time) {
+	if !validRoadPoint(p.Lat, p.Lon) || at.IsZero() || p.DriveID <= 0 {
+		return
+	}
+	c := roadCellFor(p.Lat, p.Lon, 200)
+	key := strconv.FormatInt(p.DriveID, 10) + ":" + strconv.FormatInt(c.Y, 10) + ":" + strconv.FormatInt(c.X, 10)
+	if s.seen[key] {
+		return
+	}
+	if len(s.samples) >= 50000 {
+		s.complete = false
+		return
+	}
+	s.seen[key] = true
+	s.samples = append(s.samples, roadPassportPosition{p.DriveID, at.UTC(), [2]float64{p.Lat, p.Lon}})
+}
+
 type roadPassportEndpoint struct {
 	drive                int64
 	at                   time.Time
