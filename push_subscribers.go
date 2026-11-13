@@ -204,6 +204,7 @@ type pushDeliveryResult struct {
 }
 
 var errPushNoLongerEligible = errors.New("push event no longer eligible")
+var errPushContextUnconfirmed = errors.New("push context temporarily unconfirmed")
 
 // Used by monitor fan-out to select possible terminal cleanup recipients. The
 // registry still checks the current source and an authorized session before POST.
@@ -1129,6 +1130,11 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	if !eligible {
 		return 0, 0, nil, errPushNoLongerEligible
 	}
+	if feature, _ := pushEventFeature(metadata.Type); feature == "low_battery" {
+		if err := lowBatteryPush.payloadEligibility(payload); err != nil {
+			return 0, 0, nil, err
+		}
+	}
 	sub = current
 	r.rememberLiveActivitySession(sub, metadata)
 	// Recording a durable cleanup binding can involve disk I/O. Recheck after
@@ -1136,6 +1142,11 @@ func (r *pushSubscriberRegistry) postJSON(sub pushSubscriber, payload []byte) (i
 	current, eligible = r.deliverySubscriber(sub.InstallationID, metadata)
 	if !eligible {
 		return 0, 0, nil, errPushNoLongerEligible
+	}
+	if feature, _ := pushEventFeature(metadata.Type); feature == "low_battery" {
+		if err := lowBatteryPush.payloadEligibility(payload); err != nil {
+			return 0, 0, nil, err
+		}
 	}
 	sub = current
 	signature := hmac.New(sha256.New, relaySecretBytes(sub.RelaySecret))

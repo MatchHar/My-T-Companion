@@ -32,18 +32,19 @@ type lowBatteryActionState struct {
 }
 
 type lowBatteryCarState struct {
-	DisplayName    string                           `json:"display_name,omitempty"`
-	State          string                           `json:"state,omitempty"`
-	ShiftState     string                           `json:"shift_state,omitempty"`
-	ChargingState  string                           `json:"charging_state,omitempty"`
-	BatteryLevel   *int                             `json:"battery_level,omitempty"`
-	Initialized    bool                             `json:"initialized"`
-	LastEligible   bool                             `json:"last_eligible"`
-	Latched        bool                             `json:"latched"`
-	SevereLatched  bool                             `json:"severe_latched"`
-	EpisodeID      string                           `json:"episode_id,omitempty"`
-	Actions        map[string]lowBatteryActionState `json:"actions,omitempty"`
-	LastObservedAt string                           `json:"last_observed_at,omitempty"`
+	DisplayName        string                           `json:"display_name,omitempty"`
+	State              string                           `json:"state,omitempty"`
+	ShiftState         string                           `json:"shift_state,omitempty"`
+	ChargingState      string                           `json:"charging_state,omitempty"`
+	BatteryLevel       *int                             `json:"battery_level,omitempty"`
+	UsableBatteryLevel *int                             `json:"usable_battery_level,omitempty"`
+	Initialized        bool                             `json:"initialized"`
+	LastEligible       bool                             `json:"last_eligible"`
+	Latched            bool                             `json:"latched"`
+	SevereLatched      bool                             `json:"severe_latched"`
+	EpisodeID          string                           `json:"episode_id,omitempty"`
+	Actions            map[string]lowBatteryActionState `json:"actions,omitempty"`
+	LastObservedAt     string                           `json:"last_observed_at,omitempty"`
 }
 
 type lowBatteryStore struct {
@@ -247,6 +248,7 @@ func (m *lowBatteryNotificationMonitor) resetObservationBaselineLocked() {
 		state.Initialized = false
 		state.State, state.ShiftState, state.ChargingState = "", "", ""
 		state.BatteryLevel = nil
+		state.UsableBatteryLevel = nil
 		m.store.Cars[id] = state
 	}
 }
@@ -257,7 +259,7 @@ func (m *lowBatteryNotificationMonitor) observeMessage(carID int, field, raw str
 	if state.Actions == nil {
 		state.Actions = map[string]lowBatteryActionState{}
 	}
-	if raw == "" && (field == "battery_level" || field == "state" || field == "charging_state") {
+	if raw == "" && (field == "battery_level" || field == "usable_battery_level" || field == "state" || field == "charging_state") {
 		// TeslaMate 4.4.0 publishes empty payloads for unknown values. Unknown
 		// is not a new observation: keep the last known value and baseline so a
 		// later live drop (50 -> empty -> 19) still alerts. Empty shift_state
@@ -284,6 +286,15 @@ func (m *lowBatteryNotificationMonitor) observeMessage(carID int, field, raw str
 			return
 		}
 		state.BatteryLevel = &value
+	case "usable_battery_level":
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 || value > 100 {
+			// Unknown is not evidence that the prior contradictory reading
+			// disappeared. In particular it must not turn 0/63 into trusted0.
+			m.mu.Unlock()
+			return
+		}
+		state.UsableBatteryLevel = &value
 	default:
 		m.mu.Unlock()
 		return
@@ -312,7 +323,7 @@ func (m *lowBatteryNotificationMonitor) evaluate(carID int, observedAt time.Time
 	m.mu.Lock()
 	delete(m.timers, carID)
 	state, ok := m.store.Cars[carID]
-	if !ok || state.BatteryLevel == nil || state.State == "" || state.ChargingState == "" {
+	if !ok || !lowBatteryReadingConfirmed(state) || state.State == "" || state.ChargingState == "" {
 		m.mu.Unlock()
 		return
 	}
@@ -389,8 +400,24 @@ func (m *lowBatteryNotificationMonitor) evaluate(carID int, observedAt time.Time
 	}
 }
 
+// Scalar MQTT topics are not a vehicle sample clock. Do not let a malformed
+// stream frame become a new low episode, rearm a good episode, or consume a
+// pending reminder. TeslaMate #5905 can put a coordinate in shift_state and
+// power in battery_level. Never guess SOC from range or replace raw MQTT.
+func lowBatteryReadingConfirmed(state lowBatteryCarState) bool {
+	if state.BatteryLevel == nil || *state.BatteryLevel < 0 || *state.BatteryLevel > 100 {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(state.ShiftState)) {
+	case "", "P", "D", "N", "R":
+	default:
+		return false
+	}
+	return state.UsableBatteryLevel == nil || (*state.UsableBatteryLevel >= 0 && *state.UsableBatteryLevel <= 100 && *state.UsableBatteryLevel <= *state.BatteryLevel+2)
+}
+
 func lowBatteryEligible(state lowBatteryCarState) bool {
-	if state.BatteryLevel == nil || *state.BatteryLevel >= lowBatteryEnterPercent {
+	if !lowBatteryReadingConfirmed(state) || *state.BatteryLevel >= lowBatteryEnterPercent {
 		return false
 	}
 	shift := strings.ToUpper(strings.TrimSpace(state.ShiftState))
@@ -402,6 +429,39 @@ func lowBatteryEligible(state lowBatteryCarState) bool {
 		return false
 	}
 	return !lowBatteryIsCharging(state)
+}
+
+// Called immediately before relay delivery, including durable outbox retries.
+// An old zero/severe event must not survive recovery. A temporarily unknown
+// baseline defers delivery instead of permanently deleting a genuine alert.
+func (m *lowBatteryNotificationMonitor) acceptsPayload(payload []byte) bool {
+	return m.payloadEligibility(payload) == nil
+}
+
+func (m *lowBatteryNotificationMonitor) payloadEligibility(payload []byte) error {
+	var event lowBatteryPushEvent
+	if json.Unmarshal(payload, &event) != nil || event.EpisodeID == "" || event.BatteryLevel < 0 || event.BatteryLevel >= lowBatteryEnterPercent {
+		return errPushNoLongerEligible
+	}
+	if m == nil {
+		return errPushContextUnconfirmed
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, ok := m.store.Cars[event.CarID]
+	if !ok || !state.Initialized || !lowBatteryReadingConfirmed(state) || state.State == "" || state.ChargingState == "" {
+		return errPushContextUnconfirmed
+	}
+	if !state.Latched || state.EpisodeID != event.EpisodeID || !lowBatteryEligible(state) {
+		return errPushNoLongerEligible
+	}
+	if event.BatteryLevel == 0 && *state.BatteryLevel != 0 {
+		return errPushNoLongerEligible
+	}
+	if event.Type == "vehicle_low_battery_severe" && *state.BatteryLevel >= lowBatterySeverePercent {
+		return errPushNoLongerEligible
+	}
+	return nil
 }
 
 func lowBatteryIsCharging(state lowBatteryCarState) bool {
@@ -507,7 +567,7 @@ func (m *lowBatteryNotificationMonitor) processDueReminders(now time.Time) {
 	for carID, state := range m.store.Cars {
 		// A reconnect may temporarily invalidate the current eligibility. Keep
 		// an expired snooze pending until a complete baseline is known again.
-		if !state.Initialized || state.BatteryLevel == nil || state.State == "" || state.ChargingState == "" || !mqttCarEligible(carID) {
+		if !state.Initialized || !lowBatteryReadingConfirmed(state) || state.State == "" || state.ChargingState == "" || !mqttCarEligible(carID) {
 			continue
 		}
 		for installationID, action := range state.Actions {

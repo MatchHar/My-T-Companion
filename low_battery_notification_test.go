@@ -65,6 +65,10 @@ func newLowBatteryTestMonitor(t *testing.T, installations int) (*lowBatteryNotif
 		timers:    map[int]*time.Timer{},
 		stopCh:    make(chan struct{}),
 	}
+	previousMonitor := lowBatteryPush
+	lowBatteryPush = monitor
+	t.Cleanup(func() { lowBatteryPush = previousMonitor })
+	t.Cleanup(monitor.stop)
 	return monitor, &captured
 }
 
