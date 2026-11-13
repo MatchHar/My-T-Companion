@@ -8,7 +8,7 @@ import (
 )
 
 var lockSecureMQTTFields = []string{"locked", "is_user_present", "state", "shift_state", "doors_open", "trunk_open", "frunk_open", "display_name", "healthy"}
-var lowBatteryMQTTFields = []string{"display_name", "state", "shift_state", "charging_state", "battery_level"}
+var lowBatteryMQTTFields = []string{"display_name", "state", "shift_state", "charging_state", "battery_level", "usable_battery_level"}
 
 func resubscribeFleet(client mqtt.Client, fields []string, handler mqtt.MessageHandler) bool {
 	if client == nil || !client.IsConnected() {
