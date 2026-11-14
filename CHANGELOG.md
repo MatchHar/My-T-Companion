@@ -1,3 +1,7 @@
+# 1.10.67 — Original battery observation recovery
+
+Opt-in owner status returns the latest valid same-car original positions/charges SOC and paired ranges with original time, bounded to two seconds. Healthy clients/ordinary polls unchanged; no vehicle/database/settings mutation. My T 8.06/828 integration is planned; server publication alone is not client availability. Keeps 1.10.66 low-battery guards. See release notes for actual local tests and pending live acceptance.
+
 # 1.10.66 — Battery reading integrity
 
 Reject contradictory SOC / malformed stream gear before low-battery transitions, reminders and queued delivery. Preserve genuine zero/low thresholds and per-car episode isolation. Regression tests include the observed 0/63 mismatch, malformed gear, recovery and delayed delivery.

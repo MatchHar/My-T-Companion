@@ -610,6 +610,7 @@ func handleCapabilities(w http.ResponseWriter, r *http.Request) {
 			"parking_climate_events",
 			"lock_secure_push",
 			"low_battery_push",
+			"battery_observation",
 			"push_subscribers",
 			"per_vehicle_push_preferences",
 			"vehicle_detail_status",
@@ -827,6 +828,22 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 		chargingObservation = chargingPush.chargingObservation(carID, time.Now().UTC())
 	}
 	var updateAvailable any
+	// This read is independent of MQTT connectivity. A parked/offline vehicle
+	// retains its last real observation and the original vehicle sample clock.
+	var batteryObservation *batteryDatabaseObservation
+	batteryObservationStatus := "not_requested"
+	// Ordinary status polls do not scan history. Only a client recovering a
+	// missing battery sample opts in to this bounded original-record read.
+	if r.URL.Query().Get("include") == "battery_observation" {
+		var batteryObservationError error
+		batteryObservation, batteryObservationError = readBatteryDatabaseObservation(r.Context(), db, carID, time.Now().UTC())
+		batteryObservationStatus = "available"
+		if batteryObservationError != nil {
+			batteryObservationStatus = "unavailable"
+		} else if batteryObservation == nil {
+			batteryObservationStatus = "no_observation"
+		}
+	}
 	availabilityStatus := software.UpdateAvailabilityStatus
 	if availabilityStatus == "available" || availabilityStatus == "not_available" {
 		updateAvailable = software.UpdateAvailable
@@ -836,6 +853,8 @@ func handleCompanionStatus(w http.ResponseWriter, r *http.Request, carIDValue st
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data": map[string]any{
 			"car_id":                      carID,
+			"battery_observation":         batteryObservation,
+			"battery_observation_status":  batteryObservationStatus,
 			"presence_observation":        presence,
 			"charging_observation":        chargingObservation,
 			"locked":                      mqttBool(values, "locked"),
