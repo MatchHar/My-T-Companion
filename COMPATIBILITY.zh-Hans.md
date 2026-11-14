@@ -18,6 +18,10 @@ POST `/invitations` 因独立只读连接池用了 `postgres:?host=...` 连不�
 `/api/v1/friend-together/*`。不需要迁移数据库、配对、Tesla 令牌、通知偏好或
 已有历史，并继续兼容现有 My T 客户端。
 
+## 1.10.67 原始电量观测
+
+计划由 My T 8.06 build 828 通过现有所有者验证路由 `GET /api/companion/v1/cars/{id}/companion-status?include=battery_observation` 恢复缺少或损坏的电量摘要。旧客户端不变；服务器发布不代表 App 已可下载。新增 `battery_observation`、`battery_observation_status` 字段，返回同车最新有效 positions 或 charges 整条记录，SOC、续航和原观测时间成对。仅主动请求时查询，最多两秒；普通轮询不扫历史。失败或不可用不能生成当前百分比，真实零仍为零。不唤醒、不改结构、原始数据、配对或通知偏好。保留 1.10.66 误报保护。验收范围和限制见[发布说明](RELEASE_NOTES_1.10.67.zh-Hans.md)。
+
 ## 1.10.65 的足迹停车及 GPS 证据
 
 所有者认证的 `road_parking_v1` 批量读取已保存行程边界，不更改 TeslaMate 结构、通知设置或配对，也不请求车辆。新显示需要兼容 My T 8.05 Build796 或之后；此处发布不代表公开 App Store 已上架。可选 GPS 证据只在样本完整且有已核对市界时确认途经城市；缺失或不支持的数据维持未知。旧客户端不受影响。见[只读接口说明](ROAD_PARKING_API.md)。使用既有验证更新器或独立签名 HostBox 目录更新，并保留上一份已验证版本以便回退。

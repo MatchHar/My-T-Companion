@@ -709,3 +709,7 @@ authentication. My T detects the capability endpoint automatically.
 Yes. The companion is a separate Compose project. The uninstall script removes
 its container and installer-managed proxy routes while preserving TeslaMate and
 its database.
+
+## Original battery observations in 1.10.67
+
+My T 8.06 build 828 is planned to recover a missing or damaged battery summary through the existing owner-authenticated `GET /api/companion/v1/cars/{id}/companion-status?include=battery_observation` route. Older clients remain unchanged; server publication is not App availability. Additive `battery_observation` and `battery_observation_status` fields return the latest valid same-car positions or charges record with paired SOC/ranges and the original observation time. The opt-in query has a two-second timeout; normal polls do not scan history. Unavailable or failed reads cannot invent a fresh percentage; genuine zero remains zero. No wake, schema, telemetry, pairing or notification-preference changes. The 1.10.66 false-alert guard remains. See [release notes](RELEASE_NOTES_1.10.67.md) for measured acceptance and limitations.

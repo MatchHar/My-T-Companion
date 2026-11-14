@@ -25,6 +25,10 @@ and the owner `/api/v1/friend-together/*` matcher. It requires no database,
 pairing, Tesla token, notification-preference, or stored-history migration and
 remains compatible with existing My T clients.
 
+## Original battery observations in 1.10.67
+
+My T 8.06 build 828 is planned to recover a missing or damaged battery summary through the existing owner-authenticated `GET /api/companion/v1/cars/{id}/companion-status?include=battery_observation` route. Older clients remain unchanged; server publication is not App availability. Additive `battery_observation` and `battery_observation_status` fields return the latest valid same-car positions or charges record with paired SOC/ranges and the original observation time. The opt-in query has a two-second timeout; normal polls do not scan history. Unavailable or failed reads cannot invent a fresh percentage; genuine zero remains zero. No wake, schema, telemetry, pairing or notification-preference changes. The 1.10.66 false-alert guard remains. See [release notes](RELEASE_NOTES_1.10.67.md) for measured acceptance and limitations.
+
 ## Footprint parking and GPS evidence in 1.10.65
 
 Owner-authenticated `road_parking_v1` reads saved drive boundaries in batches. It does not change TeslaMate schema, notification settings or pairing, and sends no vehicle requests. A compatible My T 8.05 build796 or later is required for the new displays; publication here is not public App Store availability. Opt-in GPS evidence only qualifies a traversed city with a verified boundary and complete samples. Incomplete or unsupported data remains unknown. Existing clients are unchanged. See [the read-only API contract](ROAD_PARKING_API.md). Upgrade through the existing verified updater or the separately signed HostBox catalog, retaining the previous verified release for rollback.

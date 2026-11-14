@@ -558,3 +558,7 @@ TeslaMateAPI 維護者不存在隸屬或官方認可關係。元件不儲存 Tes
 
 不會。Companion 是獨立 Compose 專案；解除安裝程式只移除自身容器及安裝程式
 管理的代理路由，TeslaMate 主服務及資料庫保持不變。
+
+## 1.10.67 原始電量觀測
+
+預計由 My T 8.06 build 828 透過現有擁有者驗證路由 `GET /api/companion/v1/cars/{id}/companion-status?include=battery_observation` 恢復缺少或損壞的電量摘要。舊用戶端不變；伺服器發布不代表 App 已可下載。新增 `battery_observation`、`battery_observation_status` 欄位，回傳同車最新有效 positions 或 charges 整筆記錄，SOC、續航和原觀測時間成對。僅主動請求時查詢，最多兩秒；一般輪詢不掃歷史。失敗或不可用不能產生目前百分比，真正零仍為零。不喚醒、不改結構、原始資料、配對或通知偏好。保留 1.10.66 誤報保護。驗收範圍和限制見[發布說明](RELEASE_NOTES_1.10.67.zh-Hant.md)。
